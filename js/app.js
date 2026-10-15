@@ -662,7 +662,11 @@
   }
 
   function getActive() {
-    return state.campaigns.find(c => c.id === state.activeCampaignId) || null;
+    let c = (state.campaigns || []).find(x => x.id === state.activeCampaignId) || null;
+    if (!c && document.body && document.body.dataset && document.body.dataset.app === 'combat-tracker') {
+      c = ensureCombatWorkspace();
+    }
+    return c || null;
   }
 
   // ─── Toast ───────────────────────────────────────────────────────────────
@@ -738,17 +742,26 @@
           notes: '',
           combat: { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 },
           factions: [],
-          forces: []
+          forces: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         }];
-        state.activeId = id;
+        state.activeCampaignId = id;
       }
-      if (!state.activeId && state.campaigns[0]) state.activeId = state.campaigns[0].id;
-      const c = state.campaigns.find(x => x.id === state.activeId) || state.campaigns[0];
+      if (!state.activeCampaignId || !state.campaigns.some(function(c) { return c.id === state.activeCampaignId; })) {
+        state.activeCampaignId = state.campaigns[0].id;
+      }
+      const c = state.campaigns.find(function(x) { return x.id === state.activeCampaignId; }) || state.campaigns[0];
       if (c && !c.combat) c.combat = { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 };
+      if (c && !Array.isArray(c.combat.combatants)) c.combat.combatants = [];
       if (c && !Array.isArray(c.party)) c.party = [];
       if (c && !Array.isArray(c.villains)) c.villains = [];
       try { save(); } catch (e) {}
-    } catch (e) { console.warn('ensureCombatWorkspace', e); }
+      return c;
+    } catch (e) {
+      console.warn('ensureCombatWorkspace', e);
+      return null;
+    }
   }
 
 
@@ -928,7 +941,7 @@
     if (!Array.isArray(c.factions)) c.factions = [];
     if (!Array.isArray(c.forces)) c.forces = [];
     if (!Array.isArray(c.sessions)) c.sessions = [];
-    if (c.combat === undefined) c.combat = null;
+    if (!c.combat || typeof c.combat !== 'object') c.combat = { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 };
     return c;
   }
 
@@ -1069,7 +1082,7 @@
   // ─── Overview ────────────────────────────────────────────────────────────
   function renderOverview() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
 
     $('#overview-title').textContent = c.name;
     $('#current-world').value = c.currentWorld || 'Luminaris';
@@ -1185,7 +1198,7 @@
 
   function renderSessions() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
 
     const list = $('#sessions-list');
     const empty = $('#empty-sessions');
@@ -8231,7 +8244,7 @@ function parseAttackLines(ch) {
           // explicit clear only if export says so — otherwise keep existing on update
         }
         const c = getActive();
-        if (!c) { toast('Open a campaign first'); return; }
+        if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
         ensureCampaignShape(c);
         const isVillain = asVillain || ch.type === 'villain' || data.asVillain;
         if (isVillain) {
@@ -8375,7 +8388,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   function renderParty() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
     ensureCampaignShape(c);
 
     const list = $('#party-list');
@@ -8635,7 +8648,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   function renderFactions() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
 
     const list = $('#factions-list');
     const empty = $('#empty-factions');
@@ -9123,7 +9136,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   function renderForces() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
 
     const list = $('#forces-list');
     const empty = $('#empty-forces');
@@ -9208,7 +9221,7 @@ setTimeout(function(){window.focus();window.print();},280);
   // ─── Notes ───────────────────────────────────────────────────────────────
   function renderNotes() {
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) { ensureCombatWorkspace(); c = getActive(); if (!c) return; }
     $('#campaign-notes').value = c.notes || '';
   }
 
@@ -9293,10 +9306,7 @@ setTimeout(function(){window.focus();window.print();},280);
         `;
         out.querySelector('.use-faction')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) {
-            toast('Open or create a campaign first');
-            return;
-          }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           c.factions.push({ id: uid(), ...g });
           c.updatedAt = new Date().toISOString();
           save();
@@ -9324,10 +9334,7 @@ setTimeout(function(){window.focus();window.print();},280);
         `;
         out.querySelector('.use-force')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) {
-            toast('Open or create a campaign first');
-            return;
-          }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           c.forces.push({ id: uid(), ...g });
           c.updatedAt = new Date().toISOString();
           save();
@@ -9398,7 +9405,7 @@ setTimeout(function(){window.focus();window.print();},280);
         });
         out.querySelector('.use-npc-party')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) { toast('Open or create a campaign first'); return; }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           ensureCampaignShape(c);
           c.party.push(makeNpcRecord('ally'));
           c.updatedAt = new Date().toISOString();
@@ -9408,7 +9415,7 @@ setTimeout(function(){window.focus();window.print();},280);
         });
         out.querySelector('.use-npc-villain')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) { toast('Open or create a campaign first'); return; }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           ensureCampaignShape(c);
           c.villains.push(makeNpcRecord('villain'));
           c.updatedAt = new Date().toISOString();
@@ -9484,7 +9491,7 @@ setTimeout(function(){window.focus();window.print();},280);
         });
         outEl.querySelector('.use-villain-roster')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) { toast('Open a campaign first'); return; }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           ensureCampaignShape(c);
           c.villains.push(toChar());
           save();
@@ -9493,7 +9500,7 @@ setTimeout(function(){window.focus();window.print();},280);
         });
         outEl.querySelector('.use-villain-combat')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) { toast('Open a campaign first'); return; }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           const combat = getCombat(c);
           combat.combatants.push(villainToCombatant(v));
           save();
@@ -9502,7 +9509,7 @@ setTimeout(function(){window.focus();window.print();},280);
         });
         outEl.querySelector('.use-villain-sheet')?.addEventListener('click', () => {
           const c = getActive();
-          if (!c) { toast('Open a campaign first'); return; }
+          if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
           ensureCampaignShape(c);
           const ch = toChar();
           c.villains.push(ch);
@@ -11021,13 +11028,11 @@ setTimeout(function(){window.focus();window.print();},280);
   }
 
   function renderCombat() {
-    if (document.body?.dataset?.app === 'combat-tracker') ensureCombatWorkspace();
+    ensureCombatWorkspace();
     const c = getActive();
     if (!c) {
-      ensureCombatWorkspace();
-      const c2 = getActive();
-      if (!c2) return;
-      return renderCombat();
+      console.warn('renderCombat: no active workspace');
+      return;
     }
     const combat = getCombat(c);
     const list = $('#combat-list');
@@ -11434,7 +11439,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   function addBestiaryToCombat(b) {
     const c = getActive();
-    if (!c) { toast('Open a campaign first'); return; }
+    if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
     const combat = getCombat(c);
     combat.combatants.push(combatantFromBestiary(b));
     save();
@@ -11443,7 +11448,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   function addBestiaryAsVillain(b) {
     const c = getActive();
-    if (!c) { toast('Open a campaign first'); return; }
+    if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
     ensureCampaignShape(c);
     c.villains.push({
       id: uid(),
@@ -11507,7 +11512,7 @@ setTimeout(function(){window.focus();window.print();},280);
 
   async function combatRandomEncounter() {
     const c = getActive();
-    if (!c) { toast('Open a campaign first'); return; }
+    if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
     const world = c.currentWorld || '';
     // Estimate party tier from average level
     const levels = (c.party || []).map(p => Number(p.level) || 1);
@@ -11659,7 +11664,7 @@ setTimeout(function(){window.focus();window.print();},280);
   $('#combat-add-villain-gen-btn')?.addEventListener('click', () => {
     const v = generateVillain({});
     const c = getActive();
-    if (!c) { toast('Open a campaign first'); return; }
+    if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
     getCombat(c).combatants.push(villainToCombatant(v));
     save();
     renderCombat();
@@ -12101,7 +12106,7 @@ function renderUmbrarians() {
             if (data.diceHistory) state.diceHistory = data.diceHistory;
             save();
             updateNavEnabled();
-            setView('campaigns');
+            if (document.body?.dataset?.app === 'combat-tracker') { ensureCombatWorkspace(); setView('combat'); } else setView('campaigns');
             toast('Data imported');
             return true;
           },

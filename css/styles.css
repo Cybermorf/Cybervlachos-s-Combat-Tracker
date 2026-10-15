@@ -2674,3 +2674,7 @@ body.sidebar-collapsed #main {
 .turn-phase-steps { line-height: 1.4; }
 .turn-step.on { color: #c4a35a; font-weight: 600; }
 .combat-turn-phases .combat-res-row { margin-bottom: 0.25rem; }
+
+/* combat-tracker view fix */
+.view { display: none !important; }
+.view.active { display: block !important; }
