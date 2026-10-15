@@ -2423,65 +2423,125 @@
     const moveLeft = Math.max(0, speed - moveUsed);
     const phase = cb.turnPhase || 'ready';
     const phaseLabel = phase === 'active' ? 'Your turn' : phase === 'ended' ? 'Turn ended' : 'Waiting';
-    return `<div class="detail-block combat-turn-phases">
-      <div class="detail-label">Turn structure <span class="muted small">(${escapeHtml(phaseLabel)})</span></div>
-      <div class="turn-phase-steps muted small" style="margin-bottom:0.4rem">
-        <span class="turn-step ${phase==='active'?'on':''}">1. Start</span> →
-        <span class="turn-step ${phase==='active'?'on':''}">2. Move / Action / Bonus</span> →
-        <span class="turn-step ${phase==='ended'?'on':''}">3. End</span> →
-        <span class="turn-step">4. Reaction / LA</span>
+    const done = (flag) => flag ? 'stage-done' : 'stage-open';
+    const badge = (flag, openLabel) => flag
+      ? '<span class="stage-badge used">Used</span>'
+      : `<span class="stage-badge open">${openLabel || 'Available'}</span>`;
+
+    return `<div class="combat-turn-board">
+      <div class="turn-board-header">
+        <span class="detail-label">Turn stages</span>
+        <span class="turn-phase-pill phase-${escapeHtml(phase)}">${escapeHtml(phaseLabel)}</span>
       </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Movement</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-move-dec" title="Reduce used">−</button>
-        <span class="combat-res-val"><strong>${moveLeft}</strong> / ${speed} ft</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-move-inc" title="Spend 5 ft">+5</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-move-all" title="Use full speed">All</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-move-reset">Reset</button>
-      </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Action</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Used ✓' : 'Available'}</button>
-        <span class="muted small">Attack · Cast · Dash · Dodge · Help · Hide · Ready · …</span>
-      </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Attack budget</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
-        <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-atk-inc">+</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>
-        <span class="muted small">Extra Attack included</span>
-      </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Bonus action</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-bonus-toggle">${cb.bonusUsed ? 'Used ✓' : 'Available'}</button>
-        <span class="muted small">Only if a feature grants one</span>
-      </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Object interaction</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-object-toggle">${cb.objectInteractUsed ? 'Used ✓' : 'Available'}</button>
-        <span class="muted small">Draw weapon, open door, …</span>
-      </div>
-      <div class="combat-res-row">
-        <span class="combat-res-name">Reaction</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-reaction-toggle">${cb.reactionUsed ? 'Used ✓' : 'Available'}</button>
-        <span class="muted small">Until start of next turn</span>
-      </div>
-      ${cb.legendary ? `<div class="combat-res-row">
-        <span class="combat-res-name">Legendary actions</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-la-dec">−</button>
-        <span class="combat-res-val"><strong>${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3}</strong> / ${cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3}</span>
-        <button type="button" class="btn secondary btn-tiny" id="cd-la-inc">+</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-spend-la">Spend</button>
-      </div>` : ''}
-      <div class="tool-btns" style="margin-top:0.4rem">
-        <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-end-turn-local">End turn (mark)</button>
-        <button type="button" class="btn secondary btn-tiny" id="cd-reset-turn">Reset turn economy</button>
-      </div>
-      <p class="muted small" style="margin-top:0.35rem">Order: <strong>Start</strong> → Move / Action / Bonus / Object (any order) → <strong>End</strong>. Reaction &amp; LA happen outside your turn.</p>
+
+      <section class="turn-stage ${phase === 'active' || phase === 'ended' ? 'stage-current' : ''} ${done(false)}" data-stage="start">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">1</span>
+          <strong>Start of turn</strong>
+          ${phase === 'active' || phase === 'ended' ? '<span class="stage-badge open">Begun</span>' : '<span class="stage-badge muted">Pending</span>'}
+        </div>
+        <p class="muted small">Effects that end “at the start of your turn” resolve here. Reaction refreshes. Death saves if at 0 HP.</p>
+        <div class="tool-btns">
+          <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
+        </div>
+      </section>
+
+      <section class="turn-stage ${done(moveUsed > 0)}" data-stage="move">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">2</span>
+          <strong>Movement</strong>
+          ${moveUsed > 0 ? `<span class="stage-badge used">${moveUsed} ft used</span>` : '<span class="stage-badge open">Not moved</span>'}
+        </div>
+        <div class="combat-res-row">
+          <span class="combat-res-val"><strong>${moveLeft}</strong> / ${speed} ft left</span>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-dec" title="Restore 5 ft">−5</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-inc" title="Spend 5 ft">+5</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-all">All</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-reset">Reset</button>
+        </div>
+      </section>
+
+      <section class="turn-stage ${done(cb.actionUsed)}" data-stage="action">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">3</span>
+          <strong>Action</strong>
+          ${badge(cb.actionUsed)}
+        </div>
+        <p class="muted small">Attack · Cast a Spell · Dash · Disengage · Dodge · Help · Hide · Ready · Search · Use object…</p>
+        <div class="combat-res-row">
+          <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Mark available' : 'Mark used'}</button>
+        </div>
+        <div class="turn-stage-sub">
+          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack)</span></div>
+          <div class="combat-res-row">
+            <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
+            <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-atk-inc">+</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="turn-stage ${done(cb.bonusUsed)}" data-stage="bonus">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">4</span>
+          <strong>Bonus action</strong>
+          ${badge(cb.bonusUsed)}
+        </div>
+        <p class="muted small">Only if a feature or spell grants one.</p>
+        <button type="button" class="btn secondary btn-tiny" id="cd-bonus-toggle">${cb.bonusUsed ? 'Mark available' : 'Mark used'}</button>
+      </section>
+
+      <section class="turn-stage ${done(cb.objectInteractUsed)}" data-stage="object">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">5</span>
+          <strong>Object interaction</strong>
+          ${badge(cb.objectInteractUsed)}
+        </div>
+        <p class="muted small">Draw/stow a weapon, open a door, pick up an item…</p>
+        <button type="button" class="btn secondary btn-tiny" id="cd-object-toggle">${cb.objectInteractUsed ? 'Mark available' : 'Mark used'}</button>
+      </section>
+
+      <section class="turn-stage ${done(phase === 'ended')}" data-stage="end">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">6</span>
+          <strong>End of turn</strong>
+          ${phase === 'ended' ? '<span class="stage-badge used">Ended</span>' : '<span class="stage-badge open">Not yet</span>'}
+        </div>
+        <p class="muted small">Effects that end “at the end of your turn” resolve here.</p>
+        <div class="tool-btns">
+          <button type="button" class="btn secondary btn-tiny" id="cd-end-turn-local">Mark turn ended</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-reset-turn">Reset turn economy</button>
+        </div>
+      </section>
+
+      <section class="turn-stage turn-stage-anytime ${cb.reactionUsed ? 'stage-done' : 'stage-open'}" data-stage="reaction">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">⟳</span>
+          <strong>Reaction</strong>
+          ${badge(cb.reactionUsed, 'Ready anytime')}
+        </div>
+        <p class="muted small">Available <em>any time</em> until the start of your next turn (not only on your turn).</p>
+        <button type="button" class="btn secondary btn-tiny" id="cd-reaction-toggle">${cb.reactionUsed ? 'Restore reaction' : 'Use reaction'}</button>
+      </section>
+
+      ${cb.legendary ? `<section class="turn-stage turn-stage-anytime" data-stage="legendary">
+        <div class="turn-stage-head">
+          <span class="turn-stage-num">★</span>
+          <strong>Legendary actions</strong>
+          <span class="stage-badge open">${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3} left</span>
+        </div>
+        <p class="muted small">At the end of another creature’s turn.</p>
+        <div class="combat-res-row">
+          <button type="button" class="btn secondary btn-tiny" id="cd-la-dec">−</button>
+          <span class="combat-res-val"><strong>${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3}</strong> / ${cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3}</span>
+          <button type="button" class="btn secondary btn-tiny" id="cd-la-inc">+</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-spend-la">Spend</button>
+        </div>
+      </section>` : ''}
     </div>`;
   }
+
 
   function resourcesSheetHtml(ch, opts = {}) {
     const res = classResourcesForCharacter(ch);
