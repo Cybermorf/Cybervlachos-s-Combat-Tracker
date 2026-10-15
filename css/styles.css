@@ -2675,9 +2675,174 @@ body.sidebar-collapsed #main {
 .turn-step.on { color: #c4a35a; font-weight: 600; }
 .combat-turn-phases .combat-res-row { margin-bottom: 0.25rem; }
 
-/* combat-tracker view fix */
-.view { display: none !important; }
-.view.active { display: block !important; }
+/* ═══════════ Combat Tracker layout (clean) ═══════════ */
+body[data-app="combat-tracker"] {
+  --sidebar-w: 220px;
+  --header-h: 3.25rem;
+}
+
+body[data-app="combat-tracker"] #app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: var(--header-h) 1fr;
+  min-height: 100vh;
+  min-height: 100dvh;
+  width: 100%;
+}
+
+body[data-app="combat-tracker"] .app-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+body[data-app="combat-tracker"] .sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  width: var(--sidebar-w) !important;
+  min-width: var(--sidebar-w);
+  max-width: var(--sidebar-w);
+  transform: none !important;
+  position: relative !important;
+  height: auto;
+  min-height: calc(100dvh - var(--header-h));
+  overflow-y: auto;
+  pointer-events: auto !important;
+  border-right: 1px solid rgba(196, 163, 90, 0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+}
+
+body[data-app="combat-tracker"] .main-content,
+body[data-app="combat-tracker"] #main {
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  min-height: calc(100dvh - var(--header-h));
+  padding: 0.75rem 1rem 1.25rem;
+  overflow: auto;
+}
+
+/* Collapsed: sidebar off-canvas, main full width */
+body[data-app="combat-tracker"].sidebar-collapsed {
+  --sidebar-w: 0px;
+}
+body[data-app="combat-tracker"].sidebar-collapsed .sidebar {
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+  opacity: 0;
+  pointer-events: none !important;
+}
+body[data-app="combat-tracker"].sidebar-collapsed .main-content,
+body[data-app="combat-tracker"].sidebar-collapsed #main {
+  grid-column: 1 / -1;
+  padding-left: 2.75rem;
+}
+
+/* Collapse toggle always visible */
+body[data-app="combat-tracker"] #sidebar-collapse-btn,
+body[data-app="combat-tracker"] .sidebar-collapse-btn {
+  position: fixed;
+  top: calc(var(--header-h) + 0.5rem);
+  left: 0.5rem;
+  z-index: 50;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 8px;
+  border: 1px solid rgba(196, 163, 90, 0.35);
+  background: #1a1510;
+  color: #c4a35a;
+  cursor: pointer;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto !important;
+}
+body[data-app="combat-tracker"]:not(.sidebar-collapsed) #sidebar-collapse-btn {
+  left: calc(var(--sidebar-w) - 0.25rem);
+}
+
+/* Hide non-combat views */
+body[data-app="combat-tracker"] #view-campaigns,
+body[data-app="combat-tracker"] #view-overview,
+body[data-app="combat-tracker"] #view-sessions,
+body[data-app="combat-tracker"] #view-party,
+body[data-app="combat-tracker"] #view-bestiary,
+body[data-app="combat-tracker"] #view-umbrarians,
+body[data-app="combat-tracker"] #view-dsc-classes,
+body[data-app="combat-tracker"] #view-factions,
+body[data-app="combat-tracker"] #view-forces,
+body[data-app="combat-tracker"] #view-notes {
+  display: none !important;
+}
+
+body[data-app="combat-tracker"] #view-combat.view.active,
+body[data-app="combat-tracker"] #view-tools.view.active {
+  display: flex !important;
+  flex-direction: column;
+  min-height: calc(100dvh - var(--header-h) - 1.5rem);
+}
+
+body[data-app="combat-tracker"] #view-combat .combat-layout {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.95fr);
+  gap: 0.75rem;
+  align-items: stretch;
+  min-height: 0;
+  width: 100%;
+}
+body[data-app="combat-tracker"] #view-combat .combat-detail,
+body[data-app="combat-tracker"] #combat-detail {
+  max-height: none !important;
+  height: 100%;
+  overflow-y: auto;
+  min-height: 16rem;
+}
+body[data-app="combat-tracker"] #view-combat .combat-list {
+  overflow-y: auto;
+  min-height: 12rem;
+}
+
+@media (max-width: 900px) {
+  body[data-app="combat-tracker"] #app {
+    grid-template-columns: 1fr;
+  }
+  body[data-app="combat-tracker"] .sidebar {
+    position: fixed !important;
+    left: 0;
+    top: var(--header-h);
+    bottom: 0;
+    width: min(260px, 85vw) !important;
+    min-width: min(260px, 85vw) !important;
+    max-width: min(260px, 85vw) !important;
+    transform: translateX(-105%) !important;
+    transition: transform 0.2s ease;
+    opacity: 1;
+    z-index: 40;
+    background: #12100c;
+  }
+  body[data-app="combat-tracker"] .sidebar.open {
+    transform: translateX(0) !important;
+    pointer-events: auto !important;
+  }
+  body[data-app="combat-tracker"] .main-content,
+  body[data-app="combat-tracker"] #main {
+    grid-column: 1;
+  }
+  body[data-app="combat-tracker"] #view-combat .combat-layout {
+    grid-template-columns: 1fr !important;
+  }
+  body[data-app="combat-tracker"] #menu-toggle {
+    display: flex !important;
+  }
+}
 
 /* ── Turn stage board ── */
 .combat-turn-board {
@@ -2700,18 +2865,13 @@ body.sidebar-collapsed #main {
   color: #c4a35a;
 }
 .turn-phase-pill.phase-active { background: rgba(196, 163, 90, 0.15); }
-.turn-phase-pill.phase-ended { opacity: 0.7; }
 .turn-stage {
   border: 1px solid rgba(196, 163, 90, 0.18);
   border-radius: 8px;
   padding: 0.45rem 0.55rem;
   background: rgba(0, 0, 0, 0.2);
 }
-.turn-stage.stage-done {
-  border-color: rgba(120, 140, 120, 0.35);
-  opacity: 0.92;
-}
-.turn-stage.stage-open.stage-current,
+.turn-stage.stage-done { border-color: rgba(120, 140, 120, 0.35); }
 .turn-stage.stage-current {
   border-color: rgba(196, 163, 90, 0.55);
   box-shadow: 0 0 0 1px rgba(196, 163, 90, 0.12);
@@ -2757,101 +2917,3 @@ body.sidebar-collapsed #main {
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 .turn-stage-sub-head { font-size: 0.8rem; margin-bottom: 0.2rem; color: #c4a35a; }
-
-/* ── Combat fills space when sidebar collapsed ── */
-#app {
-  min-height: 100vh;
-  min-height: 100dvh;
-}
-.main-content, #main {
-  min-height: 0;
-}
-body.sidebar-collapsed .main-content,
-body.sidebar-collapsed #main {
-  width: 100% !important;
-  max-width: none !important;
-  margin-left: 0 !important;
-  padding-left: 0.75rem !important;
-  padding-right: 0.75rem !important;
-}
-body.sidebar-collapsed .sidebar {
-  transform: translateX(-100%);
-  width: 0 !important;
-  min-width: 0 !important;
-  overflow: hidden;
-  border: none;
-  pointer-events: none;
-}
-body.sidebar-collapsed .sidebar-collapse-btn,
-#sidebar-collapse-btn {
-  z-index: 40;
-}
-.view.active#view-combat,
-#view-combat.view.active {
-  display: flex !important;
-  flex-direction: column;
-  min-height: calc(100vh - 3.5rem);
-  min-height: calc(100dvh - 3.5rem);
-}
-#view-combat .combat-layout {
-  flex: 1 1 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.9fr);
-  gap: 0.75rem;
-  min-height: 0;
-  align-items: stretch;
-  width: 100%;
-}
-body.sidebar-collapsed #view-combat .combat-layout {
-  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 1fr);
-}
-#view-combat .combat-main,
-#view-combat .combat-list-panel {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-#view-combat .combat-list {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  min-height: 12rem;
-}
-#view-combat .combat-detail,
-#combat-detail {
-  min-height: 0;
-  max-height: none !important;
-  height: 100%;
-  overflow-y: auto;
-  width: 100%;
-}
-@media (max-width: 900px) {
-  #view-combat .combat-layout {
-    grid-template-columns: 1fr !important;
-  }
-}
-/* Zoom / small height */
-@media (max-height: 700px) {
-  #view-combat.view.active {
-    min-height: calc(100dvh - 3rem);
-  }
-  .turn-stage { padding: 0.3rem 0.45rem; }
-}
-
-/* Combat Tracker: never show campaign manager */
-body[data-app="combat-tracker"] #view-campaigns,
-body[data-app="combat-tracker"] #view-overview,
-body[data-app="combat-tracker"] #view-sessions,
-body[data-app="combat-tracker"] #view-party,
-body[data-app="combat-tracker"] #view-bestiary,
-body[data-app="combat-tracker"] #view-umbrarians,
-body[data-app="combat-tracker"] #view-dsc-classes,
-body[data-app="combat-tracker"] #view-factions,
-body[data-app="combat-tracker"] #view-forces,
-body[data-app="combat-tracker"] #view-notes {
-  display: none !important;
-}
-body[data-app="combat-tracker"] #view-combat.view.active,
-body[data-app="combat-tracker"] #view-tools.view.active {
-  display: flex !important;
-  flex-direction: column;
-}

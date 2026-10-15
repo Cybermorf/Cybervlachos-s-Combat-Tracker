@@ -12263,11 +12263,38 @@ function renderUmbrarians() {
     bindBestiaryListeners();
     setupDice();
 
-    $('#sidebar-collapse-btn')?.addEventListener('click', () => {
-    document.body.classList.toggle('sidebar-collapsed');
-    try { localStorage.setItem('cv_combat_sidebar_collapsed', document.body.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch (e) {}
-  });
-  try { if (localStorage.getItem('cv_combat_sidebar_collapsed') === '1') document.body.classList.add('sidebar-collapsed'); } catch (e) {}
+    const collapseBtn = $('#sidebar-collapse-btn');
+    if (collapseBtn && !collapseBtn.dataset.wired) {
+      collapseBtn.dataset.wired = '1';
+      collapseBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        document.body.classList.toggle('sidebar-collapsed');
+        const collapsed = document.body.classList.contains('sidebar-collapsed');
+        collapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        collapseBtn.title = collapsed ? 'Show menu' : 'Hide menu';
+        try { localStorage.setItem('cv_combat_sidebar_collapsed_v2', collapsed ? '1' : '0'); } catch (err) {}
+      });
+    }
+    // Default: menu visible (only collapse if user previously chose so)
+    try {
+      if (localStorage.getItem('cv_combat_sidebar_collapsed_v2') === '1') {
+        document.body.classList.add('sidebar-collapsed');
+      } else {
+        document.body.classList.remove('sidebar-collapsed');
+      }
+    } catch (err) {}
+    // Mobile menu toggle
+    const menuToggle = $('#menu-toggle');
+    if (menuToggle && !menuToggle.dataset.wired) {
+      menuToggle.dataset.wired = '1';
+      menuToggle.addEventListener('click', () => {
+        const sb = $('#sidebar');
+        if (sb) sb.classList.toggle('open');
+        document.body.classList.remove('sidebar-collapsed');
+      });
+    }
+
   $('#export-btn').addEventListener('click', exportData);
     $('#import-btn').addEventListener('click', () => $('#import-file').click());
     $('#import-file').addEventListener('change', (e) => {
