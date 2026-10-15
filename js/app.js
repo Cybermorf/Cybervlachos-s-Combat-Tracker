@@ -751,7 +751,101 @@
     } catch (e) { console.warn('ensureCombatWorkspace', e); }
   }
 
-function setView(viewName) {
+
+  function exportPartyRoster(opts) {
+    opts = opts || {};
+    ensureCombatWorkspace();
+    const c = getActive();
+    if (!c) { toast('No workspace'); return; }
+    const payload = {
+      format: 'DSC-roster-v1',
+      exportedAt: new Date().toISOString(),
+      source: opts.source || (document.body?.dataset?.app === 'combat-tracker' ? 'CombatTracker' : 'DSCToolkt'),
+      campaignName: c.name || '',
+      party: (c.party || []).map(ch => ({ ...ch })),
+      villains: (c.villains || []).map(ch => ({ ...ch }))
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (c.name || 'roster').replace(/[^\w\-]+/g, '_') + '-roster.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Roster exported (' + payload.party.length + ' party, ' + payload.villains.length + ' villains)');
+  }
+
+  function importPartyRoster(file) {
+    if (!file) return;
+    ensureCombatWorkspace();
+    const c = getActive();
+    if (!c) { toast('No workspace'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        let party = [];
+        let villains = [];
+        if (data && data.format === 'DSC-roster-v1') {
+          party = Array.isArray(data.party) ? data.party : [];
+          villains = Array.isArray(data.villains) ? data.villains : [];
+        } else if (Array.isArray(data)) {
+          // bare array of characters
+          party = data;
+        } else if (data && Array.isArray(data.party)) {
+          party = data.party;
+          villains = Array.isArray(data.villains) ? data.villains : [];
+        } else if (data && (data.name || data.characterId || data.id) && (data.class || data.classes || data.level != null)) {
+          // single character sheet
+          party = [data];
+        } else {
+          toast('Unrecognized roster JSON');
+          return;
+        }
+        const mode = window._rosterImportMode || 'merge';
+        const byId = (list) => {
+          const m = new Map();
+          (list || []).forEach(ch => {
+            const id = ch.characterId || ch.id;
+            if (id) m.set(id, ch);
+          });
+          return m;
+        };
+        if (mode === 'replace') {
+          c.party = party.map(ch => ({ ...ch, id: ch.id || ch.characterId || uid(), characterId: ch.characterId || ch.id || uid() }));
+          c.villains = villains.map(ch => ({ ...ch, id: ch.id || ch.characterId || uid(), characterId: ch.characterId || ch.id || uid() }));
+        } else {
+          // merge / upsert by characterId
+          const pm = byId(c.party);
+          party.forEach(ch => {
+            const id = ch.characterId || ch.id || uid();
+            const merged = { ...ch, id, characterId: id };
+            pm.set(id, merged);
+          });
+          c.party = Array.from(pm.values());
+          const vm = byId(c.villains);
+          villains.forEach(ch => {
+            const id = ch.characterId || ch.id || uid();
+            const merged = { ...ch, id, characterId: id };
+            vm.set(id, merged);
+          });
+          c.villains = Array.from(vm.values());
+        }
+        c.updatedAt = new Date().toISOString();
+        save();
+        toast('Roster imported: ' + party.length + ' party, ' + villains.length + ' villains');
+        try { if (typeof renderParty === 'function' && $('#view-party')?.classList.contains('active')) renderParty(); } catch (e) {}
+        try { if (typeof renderCombat === 'function' && $('#view-combat')?.classList.contains('active')) renderCombat(); } catch (e) {}
+        try { renderTools(); } catch (e) {}
+      } catch (e) {
+        console.warn(e);
+        toast('Failed to import roster');
+      }
+    };
+    reader.readAsText(file);
+  }
+
+
+  function setView(viewName) {
     $$('.view').forEach(v => v.classList.remove('active'));
     $$('.nav-item').forEach(n => n.classList.remove('active'));
 
@@ -777,12 +871,12 @@ function setView(viewName) {
   }
 
   function updateNavEnabled() {
-    const hasActive = !!getActive();
     const isCombatApp = document.body?.dataset?.app === 'combat-tracker';
+    const hasActive = !!getActive();
     $$('.nav-item').forEach(btn => {
       const v = btn.dataset.view;
-      if (isCombatApp && (v === 'combat' || v === 'tools')) {
-        btn.disabled = false;
+      if (isCombatApp) {
+        btn.disabled = false; // Combat Tracker: no campaign gate
       } else if (v === 'campaigns' || v === 'tools' || v === 'bestiary') {
         btn.disabled = false;
       } else {
@@ -9142,7 +9236,42 @@ setTimeout(function(){window.focus();window.print();},280);
 
   // ─── Tools (generators + reference) ──────────────────────────────────────
   function renderTools() {
+    const isCombatApp = document.body?.dataset?.app === 'combat-tracker';
     try { renderClassTablesTools(); } catch (e) {}
+
+    // Roster import/export (both apps)
+    const rosterStatus = $('#roster-io-status');
+    if (rosterStatus) {
+      ensureCombatWorkspace();
+      const c = getActive();
+      const pc = (c && c.party) ? c.party.length : 0;
+      const vc = (c && c.villains) ? c.villains.length : 0;
+      rosterStatus.textContent = 'Workspace roster: ' + pc + ' party · ' + vc + ' villains';
+    }
+    const expBtn = $('#roster-export-btn');
+    if (expBtn && !expBtn.dataset.wired) {
+      expBtn.dataset.wired = '1';
+      expBtn.addEventListener('click', () => exportPartyRoster());
+    }
+    const impBtn = $('#roster-import-btn');
+    const impFile = $('#roster-import-file');
+    if (impBtn && impFile && !impBtn.dataset.wired) {
+      impBtn.dataset.wired = '1';
+      impBtn.addEventListener('click', () => impFile.click());
+      impFile.addEventListener('change', () => {
+        const f = impFile.files && impFile.files[0];
+        window._rosterImportMode = ($('#roster-import-mode') && $('#roster-import-mode').value) || 'merge';
+        if (f) importPartyRoster(f);
+        impFile.value = '';
+      });
+    }
+
+    if (isCombatApp) {
+      // No campaign generators in Combat Tracker
+      return;
+    }
+
+
 
     // Tools view is mostly static HTML; we just wire the generator buttons if present
     const genFactionBtn = $('#tool-gen-faction');

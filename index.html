@@ -310,86 +310,32 @@
       <section id="view-tools" class="view">
         <div class="view-header">
           <h1>Tools</h1>
-        <div id="class-tables-tools"></div>
         </div>
-        <div class="tools-grid">
-          <div class="card tool-card span-2">
-            <h3>Generators — Living Campaign Fuel</h3>
-            <p class="view-desc" style="margin-bottom:0.75rem">Quick random content aligned with Eldoria’s tone. Use the 🎲 button when adding Factions or Forces for the same generators inside the form.</p>
-            <div class="gen-buttons">
-              <button id="tool-gen-faction" class="btn primary">🎲 Random Faction</button>
-              <button id="tool-gen-force" class="btn primary">🎲 Random Active Force</button>
-              <button id="tool-gen-complication" class="btn secondary">🎲 World Complication</button>
-              <button id="tool-gen-npc" class="btn primary">🎲 Random NPC (Full Stats)</button>
-              <button id="tool-gen-villain" class="btn danger">🎲 Villain Generator (Boss)</button>
-            </div>
-            <div class="npc-gen-options">
-              <label class="checkbox-row">
-                <input type="checkbox" id="npc-gen-umbrarian" />
-                <span>Generate as <strong>Umbrarian</strong> (Dark Shard host)</span>
-              </label>
-              <div class="form-row" style="margin-top:0.35rem;max-width:420px">
-                <div class="field">
-                  <label>Umbrarian Stage</label>
-                  <select id="npc-gen-umb-stage">
-                    <option value="">Random</option>
-                    <option value="dormant">Dormant</option>
-                    <option value="awakened">Awakened</option>
-                    <option value="ascendant">Ascendant</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div id="tool-generator-output" class="generator-output"></div>
-            <div id="tool-custom-content" class="tools-block" style="margin-top:1rem"></div>
+        <p class="view-desc">Import a party/villain roster from the DM Toolkit (or export this workspace). Combat Tracker does not edit character sheets — use the Toolkit or Player Companion for that.</p>
+
+        <div class="card tool-card" style="margin-bottom:1rem">
+          <h3>Party &amp; Roster</h3>
+          <p class="muted small" id="roster-io-status">Workspace roster: —</p>
+          <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem">
+            <button type="button" class="btn primary" id="roster-export-btn">Export Roster JSON</button>
+            <button type="button" class="btn secondary" id="roster-import-btn">Import Roster JSON</button>
+            <input type="file" id="roster-import-file" accept=".json,application/json" hidden />
+            <label class="muted small" style="display:flex;align-items:center;gap:0.35rem">
+              Mode
+              <select id="roster-import-mode">
+                <option value="merge">Merge / update by ID</option>
+                <option value="replace">Replace roster</option>
+              </select>
+            </label>
           </div>
-          <div class="card tool-card">
-            <h3>Quick Reference — Seven Worlds</h3>
-            <ul class="world-list">
-              <li><strong>Luminaris</strong> — Light, order, radiant institutions</li>
-              <li><strong>Umbraria</strong> — Shadow, corruption, hidden bargains</li>
-              <li><strong>Eternum</strong> — Time, memory, ancient continuity</li>
-              <li><strong>Solara</strong> — Sun, heat, survival &amp; empire</li>
-              <li><strong>Aetheria</strong> — Sky, travel, celestial gateways</li>
-              <li><strong>Harmonia</strong> — Balance, music, living systems</li>
-              <li><strong>Celestia</strong> — Higher planes, prophecy, cosmic stakes</li>
-            </ul>
-          </div>
-          <div class="card tool-card">
-            <h3>Campaign Principles</h3>
-            <ol class="principles">
-              <li><strong>Worlds are distinct but connected</strong> — action on one world affects others.</li>
-              <li><strong>Power creates attention</strong> — success makes the party important.</li>
-              <li><strong>Choice matters more than predestination</strong> — prophecy pressures; it does not write the response.</li>
-            </ol>
-          </div>
-          <div class="card tool-card">
-            <h3>Reputation Guide (−3 to +3)</h3>
-            <ul class="rep-guide">
-              <li><span class="rep -3">−3</span> Open hostility / hunted</li>
-              <li><span class="rep -2">−2</span> Strong distrust / barred</li>
-              <li><span class="rep -1">−1</span> Cool / cautious</li>
-              <li><span class="rep 0">0</span> Neutral / unknown</li>
-              <li><span class="rep +1">+1</span> Favorable / open doors</li>
-              <li><span class="rep +2">+2</span> Trusted ally</li>
-              <li><span class="rep +3">+3</span> Inner circle / blood debt</li>
-            </ul>
-          </div>
-          <div class="card tool-card">
-            <h3>Dynamic Influence Engine</h3>
-            <p>Track only forces that can change situations the characters care about. Between sessions use <strong>Force Turn</strong> on the Forces tab to run the Dynamic Influence Engine — Agenda Clocks advance, forces take Political/Corruptive/Disruptive actions, and Awareness &amp; Pressure shift.</p>
-            <p class="muted">A hungry power does not forget its hunger because the heroes sailed away.</p>
-          </div>
-          <div class="card tool-card">
-            <h3>About This Companion</h3>
-            <p>Built for <em>The Dark Sun Chronicles: Dungeon Master’s Guide</em>. Data is stored locally in your browser. Export regularly. Works offline once loaded.</p>
-            <p class="muted">Compatible with 5e (2014 &amp; 2024) living campaigns across Eldoria’s seven worlds.</p>
-          </div>
+          <p class="muted small" style="margin-top:0.5rem">Compatible with DSC Toolkit exports (<code>DSC-roster-v1</code>) and single character JSON files.</p>
         </div>
-      
+
+        <div id="class-tables-tools" class="tools-block"></div>
         <div id="compendium-tools" class="tools-block"></div>
         <div id="extensions-tools" class="tools-block"></div>
         <div id="feature-compendium-tools" class="tools-block"></div>
+        <div id="tool-custom-content" class="tools-block"></div>
       </section>
     </main>
 
