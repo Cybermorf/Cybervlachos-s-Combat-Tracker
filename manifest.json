@@ -1,0 +1,9 @@
+{
+  "name": "Cybervlachos's Combat Tracker",
+  "short_name": "Combat Tracker",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0c0a09",
+  "theme_color": "#0c0a09",
+  "description": "Autonomous 5e combat tracker for DSC and official material"
+}
