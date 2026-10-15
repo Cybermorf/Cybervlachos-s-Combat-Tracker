@@ -722,7 +722,36 @@
   }
 
   // ─── Navigation ──────────────────────────────────────────────────────────
-  function setView(viewName) {
+  
+  function ensureCombatWorkspace() {
+    try {
+      if (!state.campaigns) state.campaigns = [];
+      if (!state.campaigns.length) {
+        const id = typeof uid === 'function' ? uid() : ('c' + Date.now());
+        state.campaigns = [{
+          id,
+          name: 'Combat Workspace',
+          world: 'Eldoria',
+          party: [],
+          villains: [],
+          sessions: [],
+          notes: '',
+          combat: { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 },
+          factions: [],
+          forces: []
+        }];
+        state.activeId = id;
+      }
+      if (!state.activeId && state.campaigns[0]) state.activeId = state.campaigns[0].id;
+      const c = state.campaigns.find(x => x.id === state.activeId) || state.campaigns[0];
+      if (c && !c.combat) c.combat = { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 };
+      if (c && !Array.isArray(c.party)) c.party = [];
+      if (c && !Array.isArray(c.villains)) c.villains = [];
+      try { save(); } catch (e) {}
+    } catch (e) { console.warn('ensureCombatWorkspace', e); }
+  }
+
+function setView(viewName) {
     $$('.view').forEach(v => v.classList.remove('active'));
     $$('.nav-item').forEach(n => n.classList.remove('active'));
 
@@ -749,9 +778,12 @@
 
   function updateNavEnabled() {
     const hasActive = !!getActive();
+    const isCombatApp = document.body?.dataset?.app === 'combat-tracker';
     $$('.nav-item').forEach(btn => {
       const v = btn.dataset.view;
-      if (v === 'campaigns' || v === 'tools' || v === 'bestiary') {
+      if (isCombatApp && (v === 'combat' || v === 'tools')) {
+        btn.disabled = false;
+      } else if (v === 'campaigns' || v === 'tools' || v === 'bestiary') {
         btn.disabled = false;
       } else {
         btn.disabled = !hasActive;
@@ -10860,8 +10892,14 @@ setTimeout(function(){window.focus();window.print();},280);
   }
 
   function renderCombat() {
+    if (document.body?.dataset?.app === 'combat-tracker') ensureCombatWorkspace();
     const c = getActive();
-    if (!c) return setView('campaigns');
+    if (!c) {
+      ensureCombatWorkspace();
+      const c2 = getActive();
+      if (!c2) return;
+      return renderCombat();
+    }
     const combat = getCombat(c);
     const list = $('#combat-list');
     const empty = $('#empty-combat');
@@ -11973,7 +12011,13 @@ function renderUmbrarians() {
     }).catch(e => console.warn(e));
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
     load();
-    updateNavEnabled();
+    if (document.body?.dataset?.app === 'combat-tracker') {
+      ensureCombatWorkspace();
+      updateNavEnabled();
+      setView('combat');
+    } else {
+      updateNavEnabled();
+    }
 
     $$('.nav-item').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -12039,25 +12083,7 @@ function renderUmbrarians() {
 
   if (document.readyState === 'loading') {
     
-  // Combat Tracker autonomous boot
   document.body.dataset.app = 'combat-tracker';
-  (function ensureCombatWorkspace() {
-    try {
-      if (!state.campaigns || !state.campaigns.length) {
-        const id = typeof uid === 'function' ? uid() : 'c' + Date.now();
-        const camp = {
-          id, name: 'Combat Workspace', world: 'Eldoria',
-          party: [], villains: [], sessions: [], notes: '',
-          combat: { round: 1, turnIndex: 0, combatants: [] },
-          factions: [], forces: []
-        };
-        state.campaigns = [camp];
-        state.activeId = id;
-        if (typeof save === 'function') save();
-      }
-      if (!state.activeId && state.campaigns[0]) state.activeId = state.campaigns[0].id;
-    } catch (e) { console.warn(e); }
-  })();
 
   document.addEventListener('DOMContentLoaded', init);
   } else {
