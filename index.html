@@ -59,102 +59,16 @@
     <!-- Main Content -->
     <main id="main" class="main-content">
       <!-- Campaigns View -->
-      <section id="view-campaigns" class="view" hidden style="display:none!important" aria-hidden="true">
-        <div class="view-header">
-          <h1>Your Campaigns</h1>
-          <button id="new-campaign-btn" class="btn primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            New Campaign
-          </button>
-        </div>
-        <p class="view-desc">Track multiple living campaigns across the Seven Worlds of Eldoria. Each campaign maintains its own sessions, party, reputations, and active forces.</p>
-        <div id="campaigns-grid" class="campaigns-grid"></div>
-        <div id="empty-campaigns" class="empty-state hidden">
-          <div class="empty-icon">☀</div>
-          <h2>No campaigns yet</h2>
-          <p>Create your first campaign to begin tracking a living world of Eldoria.</p>
-          <button class="btn primary" onclick="document.getElementById('new-campaign-btn').click()">Create Campaign</button>
-        </div>
-      </section>
+
 
       <!-- Overview View -->
-      <section id="view-overview" class="view" style="display:none">
-        <div class="view-header">
-          <h1 id="overview-title">Campaign Overview</h1>
-          <button id="edit-campaign-btn" class="btn secondary">Edit Details</button>
-        </div>
-        <div class="overview-grid">
-          <div class="card">
-            <h3>Current World</h3>
-            <select id="current-world" class="world-select">
-              <option value="Luminaris">Luminaris</option>
-              <option value="Umbraria">Umbraria</option>
-              <option value="Eternum">Eternum</option>
-              <option value="Solara">Solara</option>
-              <option value="Aetheria">Aetheria</option>
-              <option value="Harmonia">Harmonia</option>
-              <option value="Celestia">Celestia</option>
-            </select>
-          </div>
-          <div class="card">
-            <h3>Campaign Tier</h3>
-            <select id="campaign-tier">
-              <option value="1-4">Local (1–4)</option>
-              <option value="5-10">Regional (5–10)</option>
-              <option value="11-16">Planetary (11–16)</option>
-              <option value="17-20">Cosmic (17–20)</option>
-            </select>
-          </div>
-          <div class="card span-2">
-            <h3>Campaign Status</h3>
-            <textarea id="campaign-status" rows="3" placeholder="Current situation, major open threads, next expected pressure..."></textarea>
-          </div>
-          <div class="card span-2">
-            <h3>Key Goals &amp; Hooks</h3>
-            <textarea id="campaign-goals" rows="4" placeholder="Player goals, GM hooks, prophecies, open questions..."></textarea>
-          </div>
-        </div>
-        <div class="quick-stats" id="quick-stats"></div>
-      </section>
+
 
       <!-- Sessions View -->
-      <section id="view-sessions" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Session Log</h1>
-          <button id="new-session-btn" class="btn primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            Log Session
-          </button>
-        </div>
-        <div id="sessions-list" class="sessions-list"></div>
-        <div id="empty-sessions" class="empty-state hidden">
-          <p>No sessions logged yet. After each game, record what happened so the living campaign stays coherent.</p>
-        </div>
-      </section>
+
 
       <!-- Party & Roster View -->
-      <section id="view-party" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Party &amp; Roster</h1>
-          <button id="import-character-btn" class="btn secondary">Import Character</button>
-        <input type="file" id="import-character-file" accept=".json,application/json" hidden />
-        <button id="new-character-btn" class="btn primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            Add Character
-          </button>
-        </div>
-        <p class="view-desc">Player characters, allies/contacts, and villains. Generate NPCs in Tools and add them as allies or villains. Use Combat to pull combatants from either list.</p>
-        <h2 class="roster-heading">Player Characters &amp; Allies</h2>
-        <div id="party-list" class="party-list"></div>
-        <div id="empty-party" class="empty-state hidden">
-          <p>No characters yet. Add full player character sheets or import NPCs from Tools as allies.</p>
-        </div>
-        <h2 class="roster-heading villains-heading">Villains &amp; Enemies</h2>
-        <div id="villains-list" class="party-list"></div>
-        <div id="empty-villains" class="empty-state hidden">
-          <p>No villains yet. Generate an NPC in Tools and choose <strong>Add as Villain</strong>, or add one manually from Combat.</p>
-        </div>
-      </section>
+
 
       <!-- Combat Tracker View -->
       <section id="view-combat" class="view active">
@@ -201,109 +115,22 @@
       </section>
 
       <!-- Bestiary View -->
-      <section id="view-bestiary" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Bestiary of the Seven Worlds</h1>
-        </div>
-        <p class="view-desc">115 principal creatures from the Dark Sun Chronicles bestiary. Filter by world, origin, or CR. Add any creature to the Combat Tracker or save it as a Villain on the roster.</p>
-        <div class="bestiary-filters">
-          <input type="search" id="bestiary-search" placeholder="Search name…" />
-          <select id="bestiary-world">
-            <option value="">All Worlds</option>
-            <option value="Luminaris">Luminaris</option>
-            <option value="Umbraria">Umbraria</option>
-            <option value="Eternum">Eternum</option>
-            <option value="Solara">Solara</option>
-            <option value="Aetheria">Aetheria</option>
-            <option value="Harmonia">Harmonia</option>
-            <option value="Celestia">Celestia</option>
-          </select>
-          <select id="bestiary-origin">
-            <option value="">All Origins</option>
-            <option value="Natural">Natural</option>
-            <option value="Swordborn">Swordborn</option>
-            <option value="Wardenborn">Wardenborn</option>
-            <option value="Sword-Touched">Sword-Touched</option>
-          </select>
-          <select id="bestiary-source" class="filter-select">
-              <option value="all">All sources</option>
-              <option value="dsc">DSC only</option>
-              <option value="imported">Imported only</option>
-            </select>
-            <select id="bestiary-cr">
-            <option value="">Any CR</option>
-            <option value="0-2">CR 0–2</option>
-            <option value="3-5">CR 3–5</option>
-            <option value="6-9">CR 6–9</option>
-            <option value="10-14">CR 10–14</option>
-            <option value="15+">CR 15+</option>
-          </select>
-        </div>
-        <div class="form-row" style="align-items:center;gap:0.5rem;margin:0.35rem 0">
-          <p class="muted small" id="bestiary-count" style="margin:0;flex:1"></p>
-          <button type="button" class="btn secondary" id="bestiary-refresh-btn" title="Reload imports and refresh list">Refresh Bestiary</button>
-        </div>
-        <div id="bestiary-list" class="bestiary-grid"></div>
-      </section>
+
 
       <!-- DSC Classes Reference -->
-      <section id="view-dsc-classes" class="view" style="display:none">
-        <div class="view-header">
-          <h1>DSC Classes</h1>
-        </div>
-        <p class="view-desc">Signature classes of The Dark Sun Chronicles — Moon Guardian, Bloodhunter, Ghostblade, and Shadowblade — with full progression and ability details.</p>
-        <div id="dsc-classes-content" class="race-reference"></div>
-      </section>
+
 
       <!-- Umbrarians Reference (PHB + DMG) -->
-      <section id="view-umbrarians" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Umbrarians</h1>
-        </div>
-        <p class="view-desc">Hosts of the Dark Shards — combined reference from the Player’s Handbook (Umbralites / Umbraria) and the Dungeon Master’s Guide (Shards, Umbrarians &amp; Corruption).</p>
-        <div id="umbrarians-content" class="race-reference"></div>
-      </section>
+
 
       <!-- Factions View -->
-      <section id="view-factions" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Factions &amp; Reputation</h1>
-          <button id="new-faction-btn" class="btn primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            Add Faction
-          </button>
-        </div>
-        <p class="view-desc">Reputation ranges from −3 (hostile) to +3 (allied). Track only factions that can change situations that matter to the characters.</p>
-        <div id="factions-list" class="factions-list"></div>
-        <div id="empty-factions" class="empty-state hidden">
-          <p>No factions tracked yet. Add governments, cults, merchant houses, or temples the party interacts with.</p>
-        </div>
-      </section>
+
 
       <!-- Forces View -->
-      <section id="view-forces" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Active Forces</h1>
-          <button id="new-force-btn" class="btn primary">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-            Add Force
-          </button>
-        </div>
-        <p class="view-desc">The <strong>Dynamic Influence Engine</strong> treats major antagonists, factions, cults, or disasters as active forces. Each force has a Public Face, Primary Goal, Political / Corruptive / Disruptive Influence (0–6), a six-segment Agenda Clock, Awareness of the party (0–4), and Pressure (0–4). Use <strong>Force Turn</strong> after major operations, downtime, or journeys.</p>
-        <div id="forces-list" class="forces-list"></div>
-        <div id="empty-forces" class="empty-state hidden">
-          <p>No active forces. When a power has goals that will progress even without the heroes, record it here.</p>
-        </div>
-      </section>
+
 
       <!-- Notes View -->
-      <section id="view-notes" class="view" style="display:none">
-        <div class="view-header">
-          <h1>Campaign Notes</h1>
-          <button id="save-notes-btn" class="btn secondary">Save Notes</button>
-        </div>
-        <textarea id="campaign-notes" class="notes-area" placeholder="Free-form notes, secrets the players don't know, future plot seeds, world state changes..."></textarea>
-      </section>
+
 
       <!-- Tools View -->
         <!-- class tables injected -->
