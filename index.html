@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Cybervlachos Combat Tracker — autonomous 5e combat tracker" />
+  <meta name="theme-color" content="#0c0a09" />
+  <title>Cybervlachos's Combat Tracker</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="header-left">
+        <button id="menu-toggle" class="icon-btn" aria-label="Menu" title="Menu">☰</button>
+        <div class="brand">
+          <span class="brand-icon">⚔</span>
+          <div class="brand-text">
+            <span class="brand-title">Cybervlachos</span>
+            <span class="brand-sub">Combat Tracker</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <button id="dice-toggle" class="icon-btn dice-btn" aria-label="Dice">🎲</button>
+      </div>
+    </header>
+    <aside class="sidebar" id="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="combat">Combat</button>
+        <button class="nav-item" data-view="tools">Tools</button>
+      </nav>
+    </aside>
+    <main class="main-content">
+      <section id="view-combat" class="view active">
+        <div class="view-header">
+          <h1>Combat Tracker</h1>
+          <div class="view-actions">
+            <span class="muted">Round <strong id="combat-round">1</strong></span>
+            <button type="button" class="btn secondary" id="btn-combat-prev">Prev</button>
+            <button type="button" class="btn primary" id="btn-combat-next">End Turn</button>
+            <button type="button" class="btn secondary" id="btn-combat-end-round">End Round</button>
+          </div>
+        </div>
+        <div class="combat-layout">
+          <div class="combat-list-panel">
+            <div class="tool-btns" style="margin-bottom:0.5rem">
+              <button type="button" class="btn primary btn-tiny" id="btn-add-combatant">+ Add</button>
+              <button type="button" class="btn secondary btn-tiny" id="btn-sort-init">Sort Init</button>
+              <button type="button" class="btn secondary btn-tiny" id="btn-clear-combat">Clear</button>
+            </div>
+            <div id="empty-combat" class="empty-state muted">No combatants yet. Add from roster, bestiary, or create manually.</div>
+            <div id="combat-list" class="combat-list"></div>
+          </div>
+          <div class="combat-detail-panel" id="combat-detail">
+            <p class="muted">Select a combatant to view details, actions, and turn economy.</p>
+          </div>
+        </div>
+      </section>
+      <section id="view-tools" class="view">
+        <div class="view-header"><h1>Tools</h1></div>
+        <div id="tools-root" class="tools-block"></div>
+        <div id="tool-custom-content" class="tools-block"></div>
+      </section>
+      <!-- Hidden workspace views used by app data model -->
+      <section id="view-campaigns" class="view" style="display:none"></section>
+      <section id="view-party" class="view" style="display:none"></section>
+      <section id="view-bestiary" class="view" style="display:none"></section>
+    </main>
+    <div id="toast" class="toast hidden"></div>
+    <div id="modal-root"></div>
+  </div>
+  <script src="js/phb-data.js"></script>
+  <script src="js/equipment-data.js"></script>
+  <script src="js/custom-content-data.js"></script>
+  <script src="js/class-tables-data.js"></script>
+  <script>window.DSC_APP_MODE="dm";</script>
+  <script src="js/extensions.js"></script>
+  <script src="js/loader.js"></script>
+</body>
+</html>
