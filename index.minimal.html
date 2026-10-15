@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Cybervlachos Combat Tracker</title>
+<link rel="stylesheet" href="css/styles.css"/>
+</head>
+<body>
+<div id="app">
+<header class="app-header"><div class="brand"><span class="brand-icon">⚔</span>
+<div class="brand-text"><span class="brand-title">Cybervlachos</span>
+<span class="brand-sub">Combat Tracker</span></div></div></header>
+<aside class="sidebar"><nav class="sidebar-nav">
+<button class="nav-item active" data-view="combat">Combat</button>
+<button class="nav-item" data-view="tools">Tools</button>
+</nav></aside>
+<main class="main-content">
+<section id="view-combat" class="view active"></section>
+<section id="view-tools" class="view"></section>
+</main>
+<div id="toast" class="toast hidden"></div>
+</div>
+<script src="js/phb-data.js"></script>
+<script src="js/equipment-data.js"></script>
+<script src="js/custom-content-data.js"></script>
+<script src="js/class-tables-data.js"></script>
+<script>window.DSC_APP_MODE="dm";</script>
+<script src="js/extensions.js"></script>
+<script src="js/loader.js"></script>
+</body>
+</html>
