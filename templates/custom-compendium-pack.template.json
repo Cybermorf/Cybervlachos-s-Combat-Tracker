@@ -1,0 +1,168 @@
+{
+  "format": "DSCToolkt-compendium-v2",
+  "meta": {
+    "name": "My Custom Content Pack",
+    "author": "DM Name",
+    "version": "1.0",
+    "notes": "Import via Tools \u2192 Compendium. Player app accepts spells, equipment, races, classes, subclasses, feats (not creatures)."
+  },
+  "races": [
+    {
+      "id": "custom-race-example",
+      "name": "Example Folk",
+      "source": "Homebrew",
+      "size": "Medium",
+      "speed": "30 ft.",
+      "summary": "A sample custom race for the Seven Worlds.",
+      "abilityBonuses": {
+        "str": 0,
+        "dex": 2,
+        "con": 1,
+        "int": 0,
+        "wis": 0,
+        "cha": 0
+      },
+      "traits": [
+        {
+          "name": "Night Eyes",
+          "text": "You have darkvision out to 60 feet."
+        },
+        {
+          "name": "Worldwise",
+          "text": "You gain proficiency in one skill of your choice."
+        }
+      ]
+    }
+  ],
+  "classes": [
+    {
+      "id": "custom-class-example",
+      "name": "Example Class",
+      "source": "Homebrew",
+      "hitDie": "d8",
+      "primaryAbility": [
+        "Dexterity",
+        "Wisdom"
+      ],
+      "saves": [
+        "DEX",
+        "WIS"
+      ],
+      "skillsChoose": 2,
+      "skills": [
+        "Acrobatics",
+        "Stealth",
+        "Perception",
+        "Survival"
+      ],
+      "summary": "A flexible skirmisher class for home games.",
+      "progression": [
+        [
+          1,
+          "Example Feature"
+        ],
+        [
+          2,
+          "Skirmish"
+        ],
+        [
+          3,
+          "Subclass feature"
+        ],
+        [
+          5,
+          "Extra Attack"
+        ]
+      ],
+      "features": [
+        {
+          "name": "Example Feature",
+          "lvl": 1,
+          "text": "Once per short rest, you can dash as a bonus action."
+        }
+      ]
+    }
+  ],
+  "subclasses": [
+    {
+      "id": "custom-subclass-example",
+      "name": "Path of Examples",
+      "parentClass": "Example Class",
+      "source": "Homebrew",
+      "summary": "Subclass for Example Class.",
+      "features": [
+        {
+          "name": "Path Technique",
+          "lvl": 3,
+          "text": "You gain a climbing speed equal to your walking speed."
+        }
+      ]
+    }
+  ],
+  "feats": [
+    {
+      "id": "custom-feat-example",
+      "name": "Example Feat",
+      "source": "Homebrew",
+      "prerequisite": "",
+      "text": "Increase one ability score by 1, to a maximum of 20. You gain proficiency in one skill."
+    }
+  ],
+  "equipment": [
+    {
+      "id": "custom-blade",
+      "name": "Moonsteel Blade",
+      "category": "weapon",
+      "weaponType": "martial melee",
+      "damage": "1d8",
+      "damageType": "slashing",
+      "props": "Versatile (1d10)",
+      "cost": "50 gp",
+      "weight": 3,
+      "notes": "Homebrew moonsteel longsword equivalent.",
+      "source": "Homebrew"
+    },
+    {
+      "id": "custom-armor",
+      "name": "Warden Scale",
+      "category": "armor",
+      "armorType": "medium",
+      "acBase": 14,
+      "acDexMax": 2,
+      "cost": "75 gp",
+      "weight": 25,
+      "notes": "Medium armor of woven ward-scale.",
+      "source": "Homebrew"
+    },
+    {
+      "id": "custom-shield",
+      "name": "Tower Ward",
+      "category": "shield",
+      "acBonus": 2,
+      "cost": "20 gp",
+      "weight": 8,
+      "notes": "Standard shield.",
+      "source": "Homebrew"
+    }
+  ],
+  "spells": [
+    {
+      "id": "custom-cantrip",
+      "name": "Spark Sigil",
+      "level": 0,
+      "school": "Evocation",
+      "time": "Action",
+      "range": "60 feet",
+      "components": "V, S",
+      "duration": "Instantaneous",
+      "classes": [
+        "Wizard",
+        "Sorcerer"
+      ],
+      "summary": "Ranged spell attack for 1d8 fire damage.",
+      "description": "You hurl a glowing sigil. Make a ranged spell attack against one creature within range. On a hit, the target takes 1d8 fire damage. The damage increases by 1d8 at levels 5, 11, and 17.",
+      "source": "Homebrew"
+    }
+  ],
+  "creatures": []
+}

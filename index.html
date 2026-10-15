@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Companion app for The Dark Sun Chronicles Dungeon Master's Guide — Autonomous 5e combat tracker for DSC and official material." />
+  <meta name="theme-color" content="#0c0a09" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Cybervlachos's Combat Tracker</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀</text></svg>" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="menu-toggle" class="icon-btn" aria-label="Menu" title="Menu">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="brand">
+          <span class="brand-icon">☀</span>
+          <div class="brand-text">
+            <span class="brand-title">Cybervlachos</span>
+            <span class="brand-sub">Combat Tracker</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div id="active-campaign-badge" class="campaign-badge hidden"></div>
+        <button id="dice-toggle" class="icon-btn dice-btn" aria-label="Dice Roller" title="Dice Roller">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><circle cx="15.5" cy="8.5" r="1.5" fill="currentColor"/><circle cx="8.5" cy="15.5" r="1.5" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Sidebar Navigation -->
+    <button type="button" id="sidebar-collapse-btn" class="sidebar-collapse-btn" title="Hide/show menu" aria-label="Toggle menu">☰</button>
+    <aside id="sidebar" class="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="combat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2"/><path d="M14.5 6.5L18 3h3v3l-3.5 3.5"/></svg>
+          Combat
+        </button>
+        <button class="nav-item" data-view="tools">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          Tools
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="export-btn" class="text-btn" title="Export all data">Export Data</button>
+        <button id="import-btn" class="text-btn" title="Import data">Import</button>
+        <input type="file" id="import-file" accept=".json" hidden />
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main" class="main-content">
+      <!-- Campaigns View -->
+      <section id="view-campaigns" class="view hidden" style="display:none">
+        <div class="view-header">
+          <h1>Your Campaigns</h1>
+          <button id="new-campaign-btn" class="btn primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            New Campaign
+          </button>
+        </div>
+        <p class="view-desc">Track multiple living campaigns across the Seven Worlds of Eldoria. Each campaign maintains its own sessions, party, reputations, and active forces.</p>
+        <div id="campaigns-grid" class="campaigns-grid"></div>
+        <div id="empty-campaigns" class="empty-state hidden">
+          <div class="empty-icon">☀</div>
+          <h2>No campaigns yet</h2>
+          <p>Create your first campaign to begin tracking a living world of Eldoria.</p>
+          <button class="btn primary" onclick="document.getElementById('new-campaign-btn').click()">Create Campaign</button>
+        </div>
+      </section>
+
+      <!-- Overview View -->
+      <section id="view-overview" class="view" style="display:none">
+        <div class="view-header">
+          <h1 id="overview-title">Campaign Overview</h1>
+          <button id="edit-campaign-btn" class="btn secondary">Edit Details</button>
+        </div>
+        <div class="overview-grid">
+          <div class="card">
+            <h3>Current World</h3>
+            <select id="current-world" class="world-select">
+              <option value="Luminaris">Luminaris</option>
+              <option value="Umbraria">Umbraria</option>
+              <option value="Eternum">Eternum</option>
+              <option value="Solara">Solara</option>
+              <option value="Aetheria">Aetheria</option>
+              <option value="Harmonia">Harmonia</option>
+              <option value="Celestia">Celestia</option>
+            </select>
+          </div>
+          <div class="card">
+            <h3>Campaign Tier</h3>
+            <select id="campaign-tier">
+              <option value="1-4">Local (1–4)</option>
+              <option value="5-10">Regional (5–10)</option>
+              <option value="11-16">Planetary (11–16)</option>
+              <option value="17-20">Cosmic (17–20)</option>
+            </select>
+          </div>
+          <div class="card span-2">
+            <h3>Campaign Status</h3>
+            <textarea id="campaign-status" rows="3" placeholder="Current situation, major open threads, next expected pressure..."></textarea>
+          </div>
+          <div class="card span-2">
+            <h3>Key Goals &amp; Hooks</h3>
+            <textarea id="campaign-goals" rows="4" placeholder="Player goals, GM hooks, prophecies, open questions..."></textarea>
+          </div>
+        </div>
+        <div class="quick-stats" id="quick-stats"></div>
+      </section>
+
+      <!-- Sessions View -->
+      <section id="view-sessions" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Session Log</h1>
+          <button id="new-session-btn" class="btn primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Log Session
+          </button>
+        </div>
+        <div id="sessions-list" class="sessions-list"></div>
+        <div id="empty-sessions" class="empty-state hidden">
+          <p>No sessions logged yet. After each game, record what happened so the living campaign stays coherent.</p>
+        </div>
+      </section>
+
+      <!-- Party & Roster View -->
+      <section id="view-party" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Party &amp; Roster</h1>
+          <button id="import-character-btn" class="btn secondary">Import Character</button>
+        <input type="file" id="import-character-file" accept=".json,application/json" hidden />
+        <button id="new-character-btn" class="btn primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Add Character
+          </button>
+        </div>
+        <p class="view-desc">Player characters, allies/contacts, and villains. Generate NPCs in Tools and add them as allies or villains. Use Combat to pull combatants from either list.</p>
+        <h2 class="roster-heading">Player Characters &amp; Allies</h2>
+        <div id="party-list" class="party-list"></div>
+        <div id="empty-party" class="empty-state hidden">
+          <p>No characters yet. Add full player character sheets or import NPCs from Tools as allies.</p>
+        </div>
+        <h2 class="roster-heading villains-heading">Villains &amp; Enemies</h2>
+        <div id="villains-list" class="party-list"></div>
+        <div id="empty-villains" class="empty-state hidden">
+          <p>No villains yet. Generate an NPC in Tools and choose <strong>Add as Villain</strong>, or add one manually from Combat.</p>
+        </div>
+      </section>
+
+      <!-- Combat Tracker View -->
+      <section id="view-combat" class="view active">
+        <div class="view-header">
+          <h1>Combat Tracker</h1>
+          <div class="header-actions">
+            <button id="combat-clear-btn" class="btn danger ghost">Clear</button>
+            <button id="combat-next-btn" class="btn primary">Next Turn</button>
+          </div>
+        </div>
+        <p class="view-desc">Track initiative, HP, conditions, concentration, and actions. Select a combatant for the <strong>info + attack roller</strong> panel (actions, bonus/legendary, spells). Generate bosses with the Villain Generator.</p>
+        <div class="combat-toolbar">
+          <div class="combat-meta">
+            <span class="stat-pill">Round <strong id="combat-round">1</strong></span>
+            <span class="stat-pill" id="combat-turn-label">—</span>
+          </div>
+          <div class="tool-btns">
+            <button id="combat-add-party-btn" class="btn secondary">+ From Party</button>
+            <button id="combat-add-villain-btn" class="btn secondary">+ From Villains</button>
+            <button id="combat-add-bestiary-btn" class="btn secondary">+ From Bestiary</button>
+            <button id="combat-quick-add-btn" class="btn secondary">Quick Add</button>
+            <button id="combat-random-enc-btn" class="btn primary">🎲 Random Encounter</button>
+            <button id="combat-roll-init-btn" class="btn secondary">Roll Init</button>
+            <button id="combat-sort-btn" class="btn secondary">Sort by Init</button>
+            <button id="combat-end-round-btn" class="btn secondary" title="Advance to next initiative">End Turn / Next</button>
+            <button id="combat-delay-btn" class="btn secondary" title="Delay this turn">Delay</button>
+            <button id="combat-save-enc-btn" class="btn secondary" title="Save encounter preset">Save Encounter</button>
+            <button id="combat-load-enc-btn" class="btn secondary" title="Load encounter preset">Load Encounter</button>
+            <button id="combat-export-log-btn" class="btn secondary" title="Export combat log">Export Log</button>
+            <button id="combat-add-villain-gen-btn" class="btn danger">+ Generate Villain</button>
+          </div>
+        </div>
+        <div class="combat-layout">
+          <div class="combat-main">
+            <div id="combat-list" class="combat-list"></div>
+            <div id="empty-combat" class="empty-state">
+              <p>No combatants. Add from Party, Villains, Bestiary, or roll a Random Encounter.</p>
+            </div>
+          </div>
+          <aside id="combat-detail" class="combat-detail">
+            <div class="combat-detail-empty muted">Select a combatant to view details, traits, and description.</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Bestiary View -->
+      <section id="view-bestiary" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Bestiary of the Seven Worlds</h1>
+        </div>
+        <p class="view-desc">115 principal creatures from the Dark Sun Chronicles bestiary. Filter by world, origin, or CR. Add any creature to the Combat Tracker or save it as a Villain on the roster.</p>
+        <div class="bestiary-filters">
+          <input type="search" id="bestiary-search" placeholder="Search name…" />
+          <select id="bestiary-world">
+            <option value="">All Worlds</option>
+            <option value="Luminaris">Luminaris</option>
+            <option value="Umbraria">Umbraria</option>
+            <option value="Eternum">Eternum</option>
+            <option value="Solara">Solara</option>
+            <option value="Aetheria">Aetheria</option>
+            <option value="Harmonia">Harmonia</option>
+            <option value="Celestia">Celestia</option>
+          </select>
+          <select id="bestiary-origin">
+            <option value="">All Origins</option>
+            <option value="Natural">Natural</option>
+            <option value="Swordborn">Swordborn</option>
+            <option value="Wardenborn">Wardenborn</option>
+            <option value="Sword-Touched">Sword-Touched</option>
+          </select>
+          <select id="bestiary-source" class="filter-select">
+              <option value="all">All sources</option>
+              <option value="dsc">DSC only</option>
+              <option value="imported">Imported only</option>
+            </select>
+            <select id="bestiary-cr">
+            <option value="">Any CR</option>
+            <option value="0-2">CR 0–2</option>
+            <option value="3-5">CR 3–5</option>
+            <option value="6-9">CR 6–9</option>
+            <option value="10-14">CR 10–14</option>
+            <option value="15+">CR 15+</option>
+          </select>
+        </div>
+        <div class="form-row" style="align-items:center;gap:0.5rem;margin:0.35rem 0">
+          <p class="muted small" id="bestiary-count" style="margin:0;flex:1"></p>
+          <button type="button" class="btn secondary" id="bestiary-refresh-btn" title="Reload imports and refresh list">Refresh Bestiary</button>
+        </div>
+        <div id="bestiary-list" class="bestiary-grid"></div>
+      </section>
+
+      <!-- DSC Classes Reference -->
+      <section id="view-dsc-classes" class="view" style="display:none">
+        <div class="view-header">
+          <h1>DSC Classes</h1>
+        </div>
+        <p class="view-desc">Signature classes of The Dark Sun Chronicles — Moon Guardian, Bloodhunter, Ghostblade, and Shadowblade — with full progression and ability details.</p>
+        <div id="dsc-classes-content" class="race-reference"></div>
+      </section>
+
+      <!-- Umbrarians Reference (PHB + DMG) -->
+      <section id="view-umbrarians" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Umbrarians</h1>
+        </div>
+        <p class="view-desc">Hosts of the Dark Shards — combined reference from the Player’s Handbook (Umbralites / Umbraria) and the Dungeon Master’s Guide (Shards, Umbrarians &amp; Corruption).</p>
+        <div id="umbrarians-content" class="race-reference"></div>
+      </section>
+
+      <!-- Factions View -->
+      <section id="view-factions" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Factions &amp; Reputation</h1>
+          <button id="new-faction-btn" class="btn primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Add Faction
+          </button>
+        </div>
+        <p class="view-desc">Reputation ranges from −3 (hostile) to +3 (allied). Track only factions that can change situations that matter to the characters.</p>
+        <div id="factions-list" class="factions-list"></div>
+        <div id="empty-factions" class="empty-state hidden">
+          <p>No factions tracked yet. Add governments, cults, merchant houses, or temples the party interacts with.</p>
+        </div>
+      </section>
+
+      <!-- Forces View -->
+      <section id="view-forces" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Active Forces</h1>
+          <button id="new-force-btn" class="btn primary">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+            Add Force
+          </button>
+        </div>
+        <p class="view-desc">The <strong>Dynamic Influence Engine</strong> treats major antagonists, factions, cults, or disasters as active forces. Each force has a Public Face, Primary Goal, Political / Corruptive / Disruptive Influence (0–6), a six-segment Agenda Clock, Awareness of the party (0–4), and Pressure (0–4). Use <strong>Force Turn</strong> after major operations, downtime, or journeys.</p>
+        <div id="forces-list" class="forces-list"></div>
+        <div id="empty-forces" class="empty-state hidden">
+          <p>No active forces. When a power has goals that will progress even without the heroes, record it here.</p>
+        </div>
+      </section>
+
+      <!-- Notes View -->
+      <section id="view-notes" class="view" style="display:none">
+        <div class="view-header">
+          <h1>Campaign Notes</h1>
+          <button id="save-notes-btn" class="btn secondary">Save Notes</button>
+        </div>
+        <textarea id="campaign-notes" class="notes-area" placeholder="Free-form notes, secrets the players don't know, future plot seeds, world state changes..."></textarea>
+      </section>
+
+      <!-- Tools View -->
+        <!-- class tables injected -->
+      <section id="view-tools" class="view">
+        <div class="view-header">
+          <h1>Tools</h1>
+        <div id="class-tables-tools"></div>
+        </div>
+        <div class="tools-grid">
+          <div class="card tool-card span-2">
+            <h3>Generators — Living Campaign Fuel</h3>
+            <p class="view-desc" style="margin-bottom:0.75rem">Quick random content aligned with Eldoria’s tone. Use the 🎲 button when adding Factions or Forces for the same generators inside the form.</p>
+            <div class="gen-buttons">
+              <button id="tool-gen-faction" class="btn primary">🎲 Random Faction</button>
+              <button id="tool-gen-force" class="btn primary">🎲 Random Active Force</button>
+              <button id="tool-gen-complication" class="btn secondary">🎲 World Complication</button>
+              <button id="tool-gen-npc" class="btn primary">🎲 Random NPC (Full Stats)</button>
+              <button id="tool-gen-villain" class="btn danger">🎲 Villain Generator (Boss)</button>
+            </div>
+            <div class="npc-gen-options">
+              <label class="checkbox-row">
+                <input type="checkbox" id="npc-gen-umbrarian" />
+                <span>Generate as <strong>Umbrarian</strong> (Dark Shard host)</span>
+              </label>
+              <div class="form-row" style="margin-top:0.35rem;max-width:420px">
+                <div class="field">
+                  <label>Umbrarian Stage</label>
+                  <select id="npc-gen-umb-stage">
+                    <option value="">Random</option>
+                    <option value="dormant">Dormant</option>
+                    <option value="awakened">Awakened</option>
+                    <option value="ascendant">Ascendant</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div id="tool-generator-output" class="generator-output"></div>
+            <div id="tool-custom-content" class="tools-block" style="margin-top:1rem"></div>
+          </div>
+          <div class="card tool-card">
+            <h3>Quick Reference — Seven Worlds</h3>
+            <ul class="world-list">
+              <li><strong>Luminaris</strong> — Light, order, radiant institutions</li>
+              <li><strong>Umbraria</strong> — Shadow, corruption, hidden bargains</li>
+              <li><strong>Eternum</strong> — Time, memory, ancient continuity</li>
+              <li><strong>Solara</strong> — Sun, heat, survival &amp; empire</li>
+              <li><strong>Aetheria</strong> — Sky, travel, celestial gateways</li>
+              <li><strong>Harmonia</strong> — Balance, music, living systems</li>
+              <li><strong>Celestia</strong> — Higher planes, prophecy, cosmic stakes</li>
+            </ul>
+          </div>
+          <div class="card tool-card">
+            <h3>Campaign Principles</h3>
+            <ol class="principles">
+              <li><strong>Worlds are distinct but connected</strong> — action on one world affects others.</li>
+              <li><strong>Power creates attention</strong> — success makes the party important.</li>
+              <li><strong>Choice matters more than predestination</strong> — prophecy pressures; it does not write the response.</li>
+            </ol>
+          </div>
+          <div class="card tool-card">
+            <h3>Reputation Guide (−3 to +3)</h3>
+            <ul class="rep-guide">
+              <li><span class="rep -3">−3</span> Open hostility / hunted</li>
+              <li><span class="rep -2">−2</span> Strong distrust / barred</li>
+              <li><span class="rep -1">−1</span> Cool / cautious</li>
+              <li><span class="rep 0">0</span> Neutral / unknown</li>
+              <li><span class="rep +1">+1</span> Favorable / open doors</li>
+              <li><span class="rep +2">+2</span> Trusted ally</li>
+              <li><span class="rep +3">+3</span> Inner circle / blood debt</li>
+            </ul>
+          </div>
+          <div class="card tool-card">
+            <h3>Dynamic Influence Engine</h3>
+            <p>Track only forces that can change situations the characters care about. Between sessions use <strong>Force Turn</strong> on the Forces tab to run the Dynamic Influence Engine — Agenda Clocks advance, forces take Political/Corruptive/Disruptive actions, and Awareness &amp; Pressure shift.</p>
+            <p class="muted">A hungry power does not forget its hunger because the heroes sailed away.</p>
+          </div>
+          <div class="card tool-card">
+            <h3>About This Companion</h3>
+            <p>Built for <em>The Dark Sun Chronicles: Dungeon Master’s Guide</em>. Data is stored locally in your browser. Export regularly. Works offline once loaded.</p>
+            <p class="muted">Compatible with 5e (2014 &amp; 2024) living campaigns across Eldoria’s seven worlds.</p>
+          </div>
+        </div>
+      
+        <div id="compendium-tools" class="tools-block"></div>
+        <div id="extensions-tools" class="tools-block"></div>
+        <div id="feature-compendium-tools" class="tools-block"></div>
+      </section>
+    </main>
+
+    <!-- Dice Roller Panel -->
+    <div id="dice-panel" class="dice-panel hidden">
+      <div class="dice-header">
+        <h2>Dice Roller</h2>
+        <button id="dice-close" class="icon-btn" aria-label="Close">×</button>
+      </div>
+      <div class="dice-body">
+        <div class="dice-controls">
+          <div class="dice-row">
+            <label>Dice</label>
+            <div class="dice-buttons">
+              <button class="die-btn" data-sides="4">d4</button>
+              <button class="die-btn" data-sides="6">d6</button>
+              <button class="die-btn" data-sides="8">d8</button>
+              <button class="die-btn" data-sides="10">d10</button>
+              <button class="die-btn" data-sides="12">d12</button>
+              <button class="die-btn primary" data-sides="20">d20</button>
+              <button class="die-btn" data-sides="100">d100</button>
+            </div>
+          </div>
+          <div class="dice-row">
+            <label for="dice-count">Count</label>
+            <input type="number" id="dice-count" min="1" max="99" value="1" />
+            <label for="dice-mod">Mod</label>
+            <input type="number" id="dice-mod" value="0" />
+          </div>
+          <div class="dice-row advantage-row">
+            <label class="checkbox-label"><input type="checkbox" id="adv-check" /> Advantage</label>
+            <label class="checkbox-label"><input type="checkbox" id="dis-check" /> Disadvantage</label>
+          </div>
+          <div class="dice-row">
+            <input type="text" id="custom-formula" placeholder="Custom: 2d6+3, 1d20+5, etc." />
+            <button id="roll-custom" class="btn secondary">Roll</button>
+          </div>
+          <button id="roll-btn" class="btn primary full-width">Roll Selected</button>
+        </div>
+        <div id="dice-result" class="dice-result">
+          <div class="result-total">—</div>
+          <div class="result-detail"></div>
+        </div>
+        <div class="dice-history">
+          <h4>History</h4>
+          <ul id="roll-history"></ul>
+          <button id="clear-history" class="text-btn">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title">Title</h2>
+          <button id="modal-close" class="icon-btn">×</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-footer">
+          <button id="modal-cancel" class="btn secondary">Cancel</button>
+          <button id="modal-confirm" class="btn primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="js/bestiary-data.js"></script>
+  <script src="js/phb-data.js"></script>
+  <script src="js/equipment-data.js"></script>
+  <script src="js/spells-data.js"></script>
+  <script src="js/custom-content-data.js"></script>
+  <script src="js/class-tables-data.js"></script>
+  <script>window.DSC_APP_MODE="dm";</script>
+  <script src="js/app.js"></script>
+  <script src="js/extensions.js"></script>
+</body>
+</html>
