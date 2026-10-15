@@ -868,6 +868,84 @@
   function updateNavEnabled() {
     const isCombatApp = document.body?.dataset?.app === 'combat-tracker';
     const hasActive = !!getActive();
+    (function bindSidebarToggle() {
+      function isMobile() { return window.matchMedia && window.matchMedia('(max-width: 900px)').matches; }
+      function setCollapsed(collapsed) {
+        document.body.classList.toggle('sidebar-collapsed', !!collapsed);
+        const sb = document.getElementById('sidebar');
+        if (sb) {
+          if (isMobile()) {
+            sb.classList.toggle('open', !collapsed);
+          } else {
+            sb.classList.remove('open');
+          }
+        }
+        document.querySelectorAll('#sidebar-collapse-btn, #menu-toggle').forEach(function(btn) {
+          if (!btn) return;
+          btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+          btn.title = collapsed ? 'Show menu' : 'Hide menu';
+        });
+        try { localStorage.setItem('cv_combat_sidebar_v3', collapsed ? '1' : '0'); } catch (e) {}
+      }
+      function toggle() {
+        const collapsed = !document.body.classList.contains('sidebar-collapsed');
+        // if mobile and sidebar has .open, treat as visible
+        if (isMobile()) {
+          const sb = document.getElementById('sidebar');
+          const open = sb && sb.classList.contains('open');
+          setCollapsed(open); // if open -> collapse; if closed -> show
+          if (!open) { if (sb) sb.classList.add('open'); document.body.classList.remove('sidebar-collapsed'); }
+          else { if (sb) sb.classList.remove('open'); }
+          try { localStorage.setItem('cv_combat_sidebar_v3', open ? '1' : '0'); } catch (e) {}
+          return;
+        }
+        setCollapsed(!document.body.classList.contains('sidebar-collapsed') ? true : false);
+        setCollapsed(document.body.classList.contains('sidebar-collapsed'));
+        document.body.classList.toggle('sidebar-collapsed');
+        try { localStorage.setItem('cv_combat_sidebar_v3', document.body.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch (e) {}
+        document.querySelectorAll('#sidebar-collapse-btn, #menu-toggle').forEach(function(btn) {
+          if (!btn) return;
+          const col = document.body.classList.contains('sidebar-collapsed');
+          btn.setAttribute('aria-expanded', col ? 'false' : 'true');
+          btn.title = col ? 'Show menu' : 'Hide menu';
+        });
+      }
+      ['sidebar-collapse-btn', 'menu-toggle'].forEach(function(id) {
+        const btn = document.getElementById(id);
+        if (!btn || btn.dataset.wired === '1') return;
+        btn.dataset.wired = '1';
+        btn.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (isMobile()) {
+            const sb = document.getElementById('sidebar');
+            if (!sb) return;
+            sb.classList.toggle('open');
+            document.body.classList.toggle('sidebar-collapsed', !sb.classList.contains('open'));
+          } else {
+            document.body.classList.toggle('sidebar-collapsed');
+          }
+          const col = document.body.classList.contains('sidebar-collapsed');
+          try { localStorage.setItem('cv_combat_sidebar_v3', col ? '1' : '0'); } catch (err) {}
+          document.querySelectorAll('#sidebar-collapse-btn, #menu-toggle').forEach(function(b) {
+            if (!b) return;
+            b.setAttribute('aria-expanded', col ? 'false' : 'true');
+            b.title = col ? 'Show menu' : 'Hide menu';
+          });
+        });
+      });
+      // Restore preference (default: menu visible)
+      try {
+        if (localStorage.getItem('cv_combat_sidebar_v3') === '1') {
+          document.body.classList.add('sidebar-collapsed');
+        } else {
+          document.body.classList.remove('sidebar-collapsed');
+          const sb = document.getElementById('sidebar');
+          if (sb && isMobile()) sb.classList.remove('open');
+        }
+      } catch (e) {}
+    })();
+
     $$('.nav-item').forEach(btn => {
       const v = btn.dataset.view;
       if (isCombatApp) {
@@ -1016,7 +1094,7 @@
   function renderOverview() { /* stripped */ }
 
   function bindOverviewListeners() {
-    $('#current-world').addEventListener('change', () => {
+    $('#current-world')?.addEventListener('change', () => {
       const c = getActive();
       if (!c) return;
       c.currentWorld = $('#current-world').value;
@@ -1024,7 +1102,7 @@
       save();
       updateNavEnabled();
     });
-    $('#campaign-tier').addEventListener('change', () => {
+    $('#campaign-tier')?.addEventListener('change', () => {
       const c = getActive();
       if (!c) return;
       c.tier = $('#campaign-tier').value;
@@ -1032,7 +1110,7 @@
       save();
     });
     let statusTimer, goalsTimer;
-    $('#campaign-status').addEventListener('input', () => {
+    $('#campaign-status')?.addEventListener('input', () => {
       clearTimeout(statusTimer);
       statusTimer = setTimeout(() => {
         const c = getActive();
@@ -1042,7 +1120,7 @@
         save();
       }, 400);
     });
-    $('#campaign-goals').addEventListener('input', () => {
+    $('#campaign-goals')?.addEventListener('input', () => {
       clearTimeout(goalsTimer);
       goalsTimer = setTimeout(() => {
         const c = getActive();
@@ -1052,7 +1130,7 @@
         save();
       }, 400);
     });
-    $('#edit-campaign-btn').addEventListener('click', () => {
+    $('#edit-campaign-btn')?.addEventListener('click', () => {
       const c = getActive();
       if (c) promptNewCampaign(c);
     });
@@ -1645,12 +1723,19 @@
     return n;
   }
 
+  function parseSpeed(v) {
+    if (v == null || v === '') return 30;
+    if (typeof v === 'number' && !isNaN(v) && v > 0) return v;
+    const m = String(v).match(/(\d+)/);
+    return m ? Math.max(0, Number(m[1])) : 30;
+  }
+
   function ensureCombatantTurnState(cb, ch) {
     if (!cb) return;
     if (cb.attacksMax == null) cb.attacksMax = attacksPerAction(ch);
     if (cb.attacksUsed == null) cb.attacksUsed = 0;
     // Full turn economy defaults
-    if (cb.speed == null) cb.speed = (ch && ch.speed) ? Number(ch.speed) || 30 : 30;
+    if (cb.speed == null || (typeof cb.speed === 'number' && isNaN(cb.speed))) cb.speed = parseSpeed(ch && ch.speed);
     if (cb.moveUsed == null) cb.moveUsed = 0;
     if (cb.actionUsed == null) cb.actionUsed = false;
     if (cb.bonusUsed == null) cb.bonusUsed = false;
@@ -1794,8 +1879,8 @@
     const max = cb.attacksMax != null ? cb.attacksMax : 1;
     const used = cb.attacksUsed || 0;
     const left = Math.max(0, max - used);
-    const speed = cb.speed != null ? cb.speed : 30;
-    const moveUsed = cb.moveUsed || 0;
+    const speed = parseSpeed(cb.speed);
+    const moveUsed = Math.max(0, Number(cb.moveUsed) || 0);
     const moveLeft = Math.max(0, speed - moveUsed);
     const phase = cb.turnPhase || 'ready';
     const phaseLabel = phase === 'active' ? 'Your turn' : phase === 'ended' ? 'Turn ended' : 'Waiting';
@@ -5145,7 +5230,7 @@ function parseAttackLines(ch) {
 
   function bindNotes() {
     let notesTimer;
-    $('#campaign-notes').addEventListener('input', () => {
+    $('#campaign-notes')?.addEventListener('input', () => {
       clearTimeout(notesTimer);
       notesTimer = setTimeout(() => {
         const c = getActive();
@@ -5155,7 +5240,7 @@ function parseAttackLines(ch) {
         save();
       }, 500);
     });
-    $('#save-notes-btn').addEventListener('click', () => {
+    $('#save-notes-btn')?.addEventListener('click', () => {
       const c = getActive();
       if (!c) return;
       c.notes = $('#campaign-notes').value;
@@ -7387,7 +7472,7 @@ function renderUmbrarians() { /* stripped */ }
     });
     $('.die-btn[data-sides="20"]')?.classList.add('selected');
 
-    $('#roll-btn').addEventListener('click', () => {
+    $('#roll-btn')?.addEventListener('click', () => {
       const count = Math.max(1, Math.min(99, parseInt($('#dice-count').value, 10) || 1));
       const mod = parseInt($('#dice-mod').value, 10) || 0;
       const advantage = $('#adv-check').checked;
@@ -7395,7 +7480,7 @@ function renderUmbrarians() { /* stripped */ }
       performRoll({ count, sides: state.selectedDie, mod, advantage, disadvantage });
     });
 
-    $('#roll-custom').addEventListener('click', () => {
+    $('#roll-custom')?.addEventListener('click', () => {
       const formula = $('#custom-formula').value.trim();
       if (!formula) return;
       const parsed = parseFormula(formula);
@@ -7406,11 +7491,11 @@ function renderUmbrarians() { /* stripped */ }
       performRoll({ ...parsed, label: formula });
     });
 
-    $('#custom-formula').addEventListener('keydown', (e) => {
+    $('#custom-formula')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') $('#roll-custom').click();
     });
 
-    $('#clear-history').addEventListener('click', () => {
+    $('#clear-history')?.addEventListener('click', () => {
       state.diceHistory = [];
       save();
       renderDiceHistory();
@@ -7418,17 +7503,17 @@ function renderUmbrarians() { /* stripped */ }
       $('#dice-result .result-detail').textContent = '';
     });
 
-    $('#dice-toggle').addEventListener('click', () => {
+    $('#dice-toggle')?.addEventListener('click', () => {
       $('#dice-panel').classList.toggle('hidden');
     });
-    $('#dice-close').addEventListener('click', () => {
+    $('#dice-close')?.addEventListener('click', () => {
       $('#dice-panel').classList.add('hidden');
     });
 
-    $('#adv-check').addEventListener('change', () => {
+    $('#adv-check')?.addEventListener('change', () => {
       if ($('#adv-check').checked) $('#dis-check').checked = false;
     });
-    $('#dis-check').addEventListener('change', () => {
+    $('#dis-check')?.addEventListener('change', () => {
       if ($('#dis-check').checked) $('#adv-check').checked = false;
     });
 
@@ -7526,12 +7611,10 @@ function renderUmbrarians() { /* stripped */ }
       });
     });
 
-    $('#menu-toggle').addEventListener('click', () => {
-      $('#sidebar').classList.toggle('open');
-    });
+    // menu-toggle wired in bindSidebarToggle()
 
-    $('#new-campaign-btn').addEventListener('click', () => promptNewCampaign());
-    $('#new-session-btn').addEventListener('click', () => promptSession());
+    $('#new-campaign-btn')?.addEventListener('click', () => promptNewCampaign());
+    $('#new-session-btn')?.addEventListener('click', () => promptSession());
     
     const impCharBtn = $('#import-character-btn');
     const impCharFile = $('#import-character-file');
@@ -7545,51 +7628,21 @@ function renderUmbrarians() { /* stripped */ }
       });
     }
 
-    $('#new-character-btn').addEventListener('click', () => promptCharacter());
-    $('#new-faction-btn').addEventListener('click', () => promptFaction());
-    $('#new-force-btn').addEventListener('click', () => promptForce());
+    $('#new-character-btn')?.addEventListener('click', () => promptCharacter());
+    $('#new-faction-btn')?.addEventListener('click', () => promptFaction());
+    $('#new-force-btn')?.addEventListener('click', () => promptForce());
 
-    bindOverviewListeners();
-    bindNotes();
-    bindCombatListeners();
-    bindBestiaryListeners();
-    setupDice();
+    try { bindOverviewListeners(); } catch (e) { console.warn(e); }
+    try { bindNotes(); } catch (e) { console.warn(e); }
+    try { bindCombatListeners(); } catch (e) { console.warn(e); }
+    try { bindBestiaryListeners(); } catch (e) { console.warn(e); }
+    try { setupDice(); } catch (e) { console.warn(e); }
 
-    const collapseBtn = $('#sidebar-collapse-btn');
-    if (collapseBtn && !collapseBtn.dataset.wired) {
-      collapseBtn.dataset.wired = '1';
-      collapseBtn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        document.body.classList.toggle('sidebar-collapsed');
-        const collapsed = document.body.classList.contains('sidebar-collapsed');
-        collapseBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-        collapseBtn.title = collapsed ? 'Show menu' : 'Hide menu';
-        try { localStorage.setItem('cv_combat_sidebar_collapsed_v2', collapsed ? '1' : '0'); } catch (err) {}
-      });
-    }
-    // Default: menu visible (only collapse if user previously chose so)
-    try {
-      if (localStorage.getItem('cv_combat_sidebar_collapsed_v2') === '1') {
-        document.body.classList.add('sidebar-collapsed');
-      } else {
-        document.body.classList.remove('sidebar-collapsed');
-      }
-    } catch (err) {}
-    // Mobile menu toggle
-    const menuToggle = $('#menu-toggle');
-    if (menuToggle && !menuToggle.dataset.wired) {
-      menuToggle.dataset.wired = '1';
-      menuToggle.addEventListener('click', () => {
-        const sb = $('#sidebar');
-        if (sb) sb.classList.toggle('open');
-        document.body.classList.remove('sidebar-collapsed');
-      });
-    }
+    
 
-  $('#export-btn').addEventListener('click', exportData);
-    $('#import-btn').addEventListener('click', () => $('#import-file').click());
-    $('#import-file').addEventListener('change', (e) => {
+  $('#export-btn')?.addEventListener('click', exportData);
+    $('#import-btn')?.addEventListener('click', () => $('#import-file').click());
+    $('#import-file')?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       if (file) importData(file);
       e.target.value = '';

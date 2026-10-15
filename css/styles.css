@@ -2917,3 +2917,23 @@ body[data-app="combat-tracker"] #view-combat .combat-list {
   border-top: 1px solid rgba(255,255,255,0.06);
 }
 .turn-stage-sub-head { font-size: 0.8rem; margin-bottom: 0.2rem; color: #c4a35a; }
+
+/* menu toggle fix */
+body[data-app="combat-tracker"] #sidebar-collapse-btn,
+body[data-app="combat-tracker"] #menu-toggle {
+  pointer-events: auto !important;
+  z-index: 100 !important;
+  cursor: pointer;
+}
+body[data-app="combat-tracker"] .sidebar {
+  pointer-events: auto !important;
+}
+body[data-app="combat-tracker"].sidebar-collapsed .sidebar {
+  pointer-events: none !important;
+}
+body[data-app="combat-tracker"]:not(.sidebar-collapsed) .sidebar {
+  opacity: 1 !important;
+  width: var(--sidebar-w, 220px) !important;
+  min-width: var(--sidebar-w, 220px) !important;
+  max-width: var(--sidebar-w, 220px) !important;
+}
