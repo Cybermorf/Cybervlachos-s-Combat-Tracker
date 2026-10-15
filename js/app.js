@@ -859,6 +859,13 @@
 
 
   function setView(viewName) {
+    // Combat Tracker app: only combat + tools are valid top-level views
+    if (document.body && document.body.dataset && document.body.dataset.app === 'combat-tracker') {
+      if (viewName !== 'combat' && viewName !== 'tools') {
+        viewName = 'combat';
+      }
+    }
+
     $$('.view').forEach(v => v.classList.remove('active'));
     $$('.nav-item').forEach(n => n.classList.remove('active'));
 
@@ -867,20 +874,27 @@
     if (view) view.classList.add('active');
     if (nav) nav.classList.add('active');
 
-    $('#sidebar').classList.remove('open');
+    const sidebar = $('#sidebar');
+    if (sidebar) sidebar.classList.remove('open');
 
-    if (viewName === 'campaigns') renderCampaigns();
+    if (viewName === 'combat') renderCombat();
+    else if (viewName === 'tools') { try { renderCompendiumTools(); } catch (e) {} renderTools(); }
+    else if (viewName === 'campaigns') {
+      if (document.body && document.body.dataset && document.body.dataset.app === 'combat-tracker') {
+        renderCombat();
+      } else {
+        renderCampaigns();
+      }
+    }
     else if (viewName === 'overview') renderOverview();
     else if (viewName === 'sessions') renderSessions();
     else if (viewName === 'party') renderParty();
-    else if (viewName === 'combat') renderCombat();
     else if (viewName === 'bestiary') renderBestiary();
     else if (viewName === 'umbrarians') renderUmbrarians();
     else if (viewName === 'dsc-classes') renderDscClasses();
     else if (viewName === 'factions') renderFactions();
     else if (viewName === 'forces') renderForces();
     else if (viewName === 'notes') renderNotes();
-    else if (viewName === 'tools') { renderCompendiumTools(); renderTools(); }
   }
 
   function updateNavEnabled() {
@@ -12166,7 +12180,7 @@ function renderUmbrarians() {
             if (data.diceHistory) state.diceHistory = data.diceHistory;
             save();
             updateNavEnabled();
-            if (document.body?.dataset?.app === 'combat-tracker') { ensureCombatWorkspace(); setView('combat'); } else setView('campaigns');
+            ensureCombatWorkspace(); setView(document.body?.dataset?.app === 'combat-tracker' ? 'combat' : 'campaigns');
             toast('Data imported');
             return true;
           },
@@ -12262,7 +12276,7 @@ function renderUmbrarians() {
       e.target.value = '';
     });
 
-    setView('campaigns');
+    setView(document.body?.dataset?.app === 'combat-tracker' ? 'combat' : 'campaigns');
 
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {

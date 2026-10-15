@@ -2836,3 +2836,22 @@ body.sidebar-collapsed #view-combat .combat-layout {
   }
   .turn-stage { padding: 0.3rem 0.45rem; }
 }
+
+/* Combat Tracker: never show campaign manager */
+body[data-app="combat-tracker"] #view-campaigns,
+body[data-app="combat-tracker"] #view-overview,
+body[data-app="combat-tracker"] #view-sessions,
+body[data-app="combat-tracker"] #view-party,
+body[data-app="combat-tracker"] #view-bestiary,
+body[data-app="combat-tracker"] #view-umbrarians,
+body[data-app="combat-tracker"] #view-dsc-classes,
+body[data-app="combat-tracker"] #view-factions,
+body[data-app="combat-tracker"] #view-forces,
+body[data-app="combat-tracker"] #view-notes {
+  display: none !important;
+}
+body[data-app="combat-tracker"] #view-combat.view.active,
+body[data-app="combat-tracker"] #view-tools.view.active {
+  display: flex !important;
+  flex-direction: column;
+}

@@ -12,7 +12,7 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀</text></svg>" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
-<body>
+<body data-app="combat-tracker">
   <div id="app">
     <!-- Header -->
     <header class="app-header">
@@ -59,7 +59,7 @@
     <!-- Main Content -->
     <main id="main" class="main-content">
       <!-- Campaigns View -->
-      <section id="view-campaigns" class="view hidden" style="display:none">
+      <section id="view-campaigns" class="view" hidden style="display:none!important" aria-hidden="true">
         <div class="view-header">
           <h1>Your Campaigns</h1>
           <button id="new-campaign-btn" class="btn primary">
