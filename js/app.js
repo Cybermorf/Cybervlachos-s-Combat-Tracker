@@ -1704,23 +1704,55 @@
   function attacksPerAction(ch) {
     if (!ch) return 1;
     let n = 1;
-    const list = typeof normalizeClassLevels === 'function' ? normalizeClassLevels(ch) : [];
-    list.forEach(c => {
-      const name = c.name || '';
+    let list = [];
+    try {
+      if (typeof normalizeClassLevels === 'function') list = normalizeClassLevels(ch) || [];
+    } catch (e) { list = []; }
+    // Fallback: single class fields
+    if (!list.length) {
+      const cn = ch.className || ch.class || (ch.classes && ch.classes[0] && (ch.classes[0].name || ch.classes[0])) || '';
+      const lv = Number(ch.level) || Number(ch.totalLevel) || 1;
+      if (cn) list = [{ name: cn, level: lv }];
+      // multiclass array without normalize
+      if (Array.isArray(ch.classes)) {
+        list = ch.classes.map(function(c) {
+          if (typeof c === 'string') return { name: c, level: lv };
+          return { name: c.name || c.className || c.class || '', level: Number(c.level) || 1 };
+        });
+      }
+      if (Array.isArray(ch.classLevels)) {
+        list = ch.classLevels.map(function(c) {
+          return { name: c.name || c.className || '', level: Number(c.level) || 1 };
+        });
+      }
+    }
+    // Official rule: Extra Attack does not stack across classes — take the best progression
+    list.forEach(function(c) {
+      const name = String(c.name || c.className || '').trim();
       const lvl = Number(c.level) || 1;
-      // Fighter: Extra Attack at 5, 11, 20
-      if (name === 'Fighter') {
+      const low = name.toLowerCase();
+      // Fighter (and Echo Knight etc.): 5→2, 11→3, 20→4
+      if (low === 'fighter' || low.indexOf('fighter') === 0) {
         if (lvl >= 20) n = Math.max(n, 4);
         else if (lvl >= 11) n = Math.max(n, 3);
         else if (lvl >= 5) n = Math.max(n, 2);
-      } else if (['Barbarian','Monk','Paladin','Ranger','Moon Guardian','Bloodhunter','Ghostblade'].includes(name)) {
-        if (lvl >= 5) n = Math.max(n, 2);
-      } else if (name === 'Shadowblade' && lvl >= 5) {
-        // rogue-like — no extra attack by default
+      } else if ([
+        'barbarian','monk','paladin','ranger','moon guardian','bloodhunter','blood hunter',
+        'ghostblade','bladesinger','valor','college of valor','college of swords'
+      ].some(function(x) { return low === x || low.indexOf(x) !== -1; })) {
+        // Extra Attack at 5 (Valor/Swords Bard / Bladesinger often at 6)
+        const thr = (low.indexOf('valor') !== -1 || low.indexOf('swords') !== -1 || low.indexOf('bladesinger') !== -1) ? 6 : 5;
+        if (lvl >= thr) n = Math.max(n, 2);
       }
+      // Path of the Beast / other subclass extras not auto-counted
     });
-    // Haste etc. not auto — DM can override via combatant.attacksMax
-    return n;
+    // Subclass on character may grant Extra Attack at 6 (Valor Bard stored as Bard)
+    const sub = String(ch.subclass || ch.subClass || '').toLowerCase();
+    const totalLvl = list.reduce(function(s, c) { return s + (Number(c.level) || 0); }, 0) || Number(ch.level) || 1;
+    if ((sub.indexOf('valor') !== -1 || sub.indexOf('swords') !== -1 || sub.indexOf('bladesinger') !== -1) && totalLvl >= 6) {
+      n = Math.max(n, 2);
+    }
+    return Math.max(1, n);
   }
 
   function parseSpeed(v) {
@@ -1732,8 +1764,14 @@
 
   function ensureCombatantTurnState(cb, ch) {
     if (!cb) return;
-    if (cb.attacksMax == null) cb.attacksMax = attacksPerAction(ch);
+    // Recalc from class levels unless DM locked the budget
+    if (!cb.attacksMaxLocked) {
+      cb.attacksMax = attacksPerAction(ch);
+    } else if (cb.attacksMax == null) {
+      cb.attacksMax = attacksPerAction(ch);
+    }
     if (cb.attacksUsed == null) cb.attacksUsed = 0;
+    if (cb.attacksUsed > cb.attacksMax) cb.attacksUsed = cb.attacksMax;
     // Full turn economy defaults
     if (cb.speed == null || (typeof cb.speed === 'number' && isNaN(cb.speed))) cb.speed = parseSpeed(ch && ch.speed);
     if (cb.moveUsed == null) cb.moveUsed = 0;
@@ -1933,7 +1971,7 @@
           <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Mark available' : 'Mark used'}</button>
         </div>
         <div class="turn-stage-sub">
-          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack)</span></div>
+          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack · level/multiclass)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
@@ -5391,6 +5429,15 @@ function parseAttackLines(ch) {
       ac: n.ac,
       conditions: '',
       side: side || 'party',
+      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : (Number(n.speed) || 30)),
+      moveUsed: 0,
+      actionUsed: false,
+      bonusUsed: false,
+      objectInteractUsed: false,
+      reactionUsed: false,
+      attacksUsed: 0,
+      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1),
+      turnPhase: 'ready',
       notes: n.attacks || '',
       attacks: n.attacks || '',
       cantrips: n.cantrips || '',
@@ -5516,6 +5563,18 @@ function parseAttackLines(ch) {
   }
 
   function showCombatDetail(cb) {
+    if (!cb) return;
+    // Resolve linked character for Extra Attack / speed
+    let _ch = null;
+    try {
+      const _c = getActive();
+      if (_c && cb.sourceId) {
+        const lists = [].concat(_c.party || [], _c.villains || []);
+        _ch = lists.find(function(x) { return x && (x.id === cb.sourceId || x.characterId === cb.sourceId || x.id === cb.charId); }) || null;
+      }
+    } catch (e) {}
+    if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, _ch);
+
     const panel = $('#combat-detail');
     if (!panel) return;
     if (!cb) {
@@ -6085,7 +6144,20 @@ function parseAttackLines(ch) {
       toast(`Spent level ${L} slot`);
       syncCombatResourcesToCharacter(cb); save(); renderCombat();
     });
-    function refreshCombatDetail() { try { save(); } catch(e) {} renderCombat(); }
+    function refreshCombatDetail() {
+      try { save(); } catch(e) {}
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const sel = combat && combat.selectedIndex;
+      renderCombat();
+      // Re-open detail so turn stage numbers update
+      if (combat && sel != null && combat.combatants[sel]) {
+        try {
+          combat.selectedIndex = sel;
+          if (typeof showCombatDetail === 'function') showCombatDetail(combat.combatants[sel], sel);
+        } catch (e) {}
+      }
+    }
     panel.querySelector('#cd-atk-dec')?.addEventListener('click', () => {
       cb.attacksUsed = Math.max(0, (cb.attacksUsed || 0) - 1); refreshCombatDetail();
     });
@@ -6097,17 +6169,30 @@ function parseAttackLines(ch) {
       cb.attacksUsed = 0; refreshCombatDetail();
     });
     panel.querySelector('#cd-move-dec')?.addEventListener('click', () => {
-      cb.moveUsed = Math.max(0, (cb.moveUsed || 0) - 5); refreshCombatDetail();
+      const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
+      cb.speed = sp;
+      cb.moveUsed = Math.max(0, (Number(cb.moveUsed) || 0) - 5);
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     panel.querySelector('#cd-move-inc')?.addEventListener('click', () => {
-      const sp = cb.speed != null ? cb.speed : 30;
-      cb.moveUsed = Math.min(sp, (cb.moveUsed || 0) + 5); refreshCombatDetail();
+      const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
+      cb.speed = sp;
+      cb.moveUsed = Math.min(sp, (Number(cb.moveUsed) || 0) + 5);
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     panel.querySelector('#cd-move-all')?.addEventListener('click', () => {
-      cb.moveUsed = cb.speed != null ? cb.speed : 30; refreshCombatDetail();
+      const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
+      cb.speed = sp;
+      cb.moveUsed = sp;
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     panel.querySelector('#cd-move-reset')?.addEventListener('click', () => {
-      cb.moveUsed = 0; refreshCombatDetail();
+      cb.moveUsed = 0;
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     panel.querySelector('#cd-action-toggle')?.addEventListener('click', () => {
       cb.actionUsed = !cb.actionUsed; refreshCombatDetail();
