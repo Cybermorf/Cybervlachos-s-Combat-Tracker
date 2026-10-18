@@ -1571,7 +1571,7 @@
         ${list.map(f => {
           const full = findFeat(f.id) || f;
           const prereq = full.prerequisite ? ` <span class="muted small">(${escapeHtml(full.prerequisite)})</span>` : '';
-          return `<li><strong>${escapeHtml(full.name || f.name)}</strong>${prereq}. ${escapeHtml(full.text || f.text || '')}</li>`;
+          return `<li><strong>${escapeHtml(full.name || f.name)}</strong>${prereq}. ${formatRichText(full.text || f.text || '')}</li>`;
         }).join('')}
       </ul>
     </div>`;
@@ -2620,7 +2620,7 @@
       <div class="class-abilities">
         <div class="detail-label">Class Abilities</div>
         <ul class="trait-list">
-          ${abilities.map(a => `<li><strong>L${a.lvl} — ${escapeHtml(a.name)}.</strong> ${escapeHtml(a.text)}</li>`).join('')}
+          ${abilities.map(a => `<li><strong>L${a.lvl} — ${escapeHtml(a.name)}.</strong> ${formatRichText(a.text)}</li>`).join('')}
         </ul>
       </div>` : '';
     return `
@@ -4312,7 +4312,7 @@
         </div>
         ${slotsLine ? `<p class="cs-body"><strong>Slots:</strong> ${escapeHtml(slotsLine)}</p>` : ''}
         ${cantrips ? `<p class="cs-body"><strong>Cantrips:</strong> ${escapeHtml(cantrips)}</p>` : ''}
-        ${spells ? `<pre class="cs-pre">${escapeHtml(spells)}</pre>` : ''}
+        ${spells ? `<pre class="cs-pre">${formatRichText(spells)}</pre>` : ''}
       </div>`;
   }
 
@@ -4921,7 +4921,7 @@ function parseAttackLines(ch) {
     const featsBlock = Array.isArray(ch.feats) && ch.feats.length
       ? `<div class="cs-feat-block"><div class="cs-panel-subtitle">Feats</div><ul class="trait-list compact">${ch.feats.map(f => {
           const full = (typeof findFeat === 'function' ? findFeat(f.id) : null) || f;
-          return `<li><strong>${escapeHtml(full.name || f.name)}</strong>. ${escapeHtml(full.text || f.text || '')}</li>`;
+          return `<li><strong>${escapeHtml(full.name || f.name)}</strong>. ${formatRichText(full.text || f.text || '')}</li>`;
         }).join('')}</ul></div>`
       : '';
 
@@ -4984,7 +4984,7 @@ function parseAttackLines(ch) {
           if (pf.length) {
             inner += `<p class="muted small"><strong>${escapeHtml(path.name)}</strong></p>`;
             inner += `<ul class="trait-list compact">${pf.map(f =>
-              `<li><strong>L${f.lvl} ${escapeHtml(f.name)}.</strong> ${escapeHtml(f.text || '')}</li>`
+              `<li><strong>L${f.lvl} ${escapeHtml(f.name)}.</strong> ${formatRichText(f.text || '')}</li>`
             ).join('')}</ul>`;
           }
         }
@@ -5154,9 +5154,9 @@ function parseAttackLines(ch) {
         </div>
       </div>
       <div class="sheet-section">
-        <div class="field"><label>Attacks</label><textarea id="m-attacks" rows="2">${escapeHtml(ch.attacks)}</textarea></div>
-        <div class="field"><label>Features &amp; Traits</label><textarea id="m-features" rows="2">${escapeHtml(ch.features)}</textarea></div>
-        <div class="field"><label>Notes / Secret</label><textarea id="m-notes" rows="2">${escapeHtml(ch.notes)}</textarea></div>
+        <div class="field"><label>Attacks</label><textarea id="m-attacks" rows="2">${formatRichText(ch.attacks)}</textarea></div>
+        <div class="field"><label>Features &amp; Traits</label><textarea id="m-features" rows="2">${formatRichText(ch.features)}</textarea></div>
+        <div class="field"><label>Notes / Secret</label><textarea id="m-notes" rows="2">${formatRichText(ch.notes)}</textarea></div>
       </div>`;
       })(),
       afterOpen: () => {
@@ -5240,7 +5240,7 @@ function parseAttackLines(ch) {
       </div>
       <div class="field">
         <label>Notes</label>
-        <textarea id="m-notes" rows="2" placeholder="Goals, key NPCs, how they view the party...">${escapeHtml(prefill.notes || '')}</textarea>
+        <textarea id="m-notes" rows="2" placeholder="Goals, key NPCs, how they view the party...">${formatRichText(prefill.notes || '')}</textarea>
       </div>
     `;
 
@@ -5784,7 +5784,7 @@ function parseAttackLines(ch) {
             <div class="detail-text muted small">
               ${cb.resistances || best?.resistances ? `<div><strong>Resist:</strong> ${escapeHtml(cb.resistances || best.resistances || '')}</div>` : ''}
               ${cb.immunities || best?.immunities ? `<div><strong>Immune:</strong> ${escapeHtml(cb.immunities || best.immunities || '')}</div>` : ''}
-              ${cb.vulnerabilities || best?.vulnerabilities ? `<div><strong>Vulnerable:</strong> ${escapeHtml(cb.vulnerabilities || best.vulnerabilities || '')}</div>` : ''}
+              ${cb.vulnerabilities || best?.vulnerabilities ? `<div><strong>Vulnerable:</strong> ${formatRichText(cb.vulnerabilities || best.vulnerabilities || '')}</div>` : ''}
               ${cb.legendaryResist != null ? `<div><strong>Legendary Resist:</strong> ${cb.legendaryResist}/${cb.legendaryResistMax || cb.legendaryResist}</div>` : ''}
             </div>
           </div>` : ''}
@@ -5794,7 +5794,7 @@ function parseAttackLines(ch) {
           ${renderActionSection('Legendary Actions', actions.legendary)}
           ${renderActionSection('Special Abilities', actions.ability)}
           ${renderActionSection('Spells', actions.spell)}
-          ${cb.notes ? `<div class="detail-block"><div class="detail-label">Notes</div><div class="detail-text">${escapeHtml(cb.notes)}</div></div>` : ''}
+          ${cb.notes ? `<div class="detail-block"><div class="detail-label">Notes</div><div class="detail-text">${formatRichText(cb.notes)}</div></div>` : ''}
           ${best && best.desc ? `<div class="detail-block"><div class="detail-label">Description</div><div class="detail-text">${formatRichText(best.desc)}</div></div>` : ''}
           ${best && best.run ? `<div class="detail-block"><div class="detail-label">Running the Creature</div><div class="detail-text">${formatRichText(best.run)}</div></div>` : ''}
         </div>
@@ -6559,7 +6559,7 @@ function parseAttackLines(ch) {
         if (box) {
           box.innerHTML = `<div>Loaded <strong>${escapeHtml(name)}</strong></div>
             <div class="muted small">Targets: <strong>${escapeHtml(targetType)}</strong> · Range: <strong>${range === 0 ? 'Self' : (range != null ? range + ' ft.' : '—')}</strong> · Effect: <strong>${escapeHtml(effect)}</strong>${aoe ? ' · AoE' : ''}</div>
-            <div class="muted small">${escapeHtml(text || '')}</div>
+            <div class="muted small">${formatRichText(text || '')}</div>
             <div class="muted small">Select targets, roll if needed, then <strong>Apply Effect</strong>.</div>`;
         }
         panel.querySelectorAll('.combat-action-chip').forEach(b => b.classList.remove('active'));
@@ -7828,16 +7828,12 @@ function renderUmbrarians() { /* stripped */ }
   function formatRichText(str) {
     if (str == null || str === '') return '';
     let s = String(str);
-    // literal backslash-n from JSON dumps
+    // Literal backslash-n from JSON/export dumps → real newline
     s = s.replace(/\\n/g, '\n').replace(/\\r/g, '');
     s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    // escape HTML
     s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    // bold **text**
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // italic *text* (single)
-    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
-    // bullets starting with -
+    s = s.replace(/(^|[^*])\*([^\*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
     s = s.replace(/(^|\n)\s*-\s+/g, '$1• ');
     s = s.replace(/\n/g, '<br>');
     return s;
