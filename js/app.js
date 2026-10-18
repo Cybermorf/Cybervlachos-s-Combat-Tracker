@@ -1851,6 +1851,15 @@
     return Math.max(1, n);
   }
 
+  function mergeCondition(existing, add) {
+    const cur = String(existing || '').trim();
+    if (!add) return cur;
+    if (!cur) return add;
+    const parts = cur.split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+    if (parts.some(p => p.toLowerCase() === String(add).toLowerCase())) return cur;
+    return parts.concat([add]).join(', ');
+  }
+
   function parseSpeed(v) {
     if (v == null || v === '') return 30;
     if (typeof v === 'number' && !isNaN(v) && v > 0) return v;
@@ -2045,14 +2054,17 @@
     const seen = new Set();
     function add(label, kind) {
       const name = String(label || '').trim();
-      if (!name || seen.has(name.toLowerCase())) return;
-      seen.add(name.toLowerCase());
+      if (!name) return;
       const sp = lookupSpellByName(name);
+      const displayName = sp ? sp.name : name.replace(/\s*\(\d+\w*\)\s*$/, '').trim();
+      const dedupeKey = (sp && sp.id) ? String(sp.id).toLowerCase() : displayName.toLowerCase().replace(/\s+/g, ' ');
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
       const level = sp ? Number(sp.level) || 0 : parseSpellLevelFromLabel(name);
       const time = sp ? String(sp.time || sp.casting_time || 'Action') : 'Action';
       out.push({
-        name: sp ? sp.name : name.replace(/\s*\(\d+\w*\)\s*$/, '').trim(),
-        label: name,
+        name: displayName,
+        label: displayName,
         level: level,
         kind: kind || (level === 0 ? 'cantrip' : 'spell'),
         time: time,
@@ -2129,6 +2141,120 @@
     if (/reaction/.test(t)) return 'reaction';
     return 'action';
   }
+
+  
+  function applyCombatTurnPhaseLocks(panel, cb) {
+    if (!panel || !cb) return;
+    const phase = cb.turnPhase || 'ready';
+    // ready: must Start turn first
+    // active: full turn
+    // ended: only reaction + legendary
+    const lockedUntilStart = phase === 'ready' || phase === 'pending' || !phase;
+    const turnEnded = phase === 'ended';
+    const allowMain = phase === 'active';
+    const allowReaction = phase === 'active' || turnEnded || lockedUntilStart; // reaction anytime until next start — but if not started yet, still allow reaction from prior turn
+    // Clarify rules:
+    // - Before Start turn: block move/action/bonus/object/cast/attack (except reaction if not used)
+    // - Active: all on-turn options
+    // - Ended: only reaction + legendary (+ legendary resistance if present)
+
+    const setDisabled = (el, dis, title) => {
+      if (!el) return;
+      el.disabled = !!dis;
+      if (dis && title) el.title = title;
+      else if (!dis) el.removeAttribute('title');
+      el.classList.toggle('turn-locked', !!dis);
+    };
+    const lockMsg = lockedUntilStart ? 'Start turn first' : (turnEnded ? 'Turn ended — only Reaction / Legendary' : '');
+
+    // Turn economy buttons
+    ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
+     'cd-action-toggle','cd-atk-dec','cd-atk-inc','cd-atk-reset',
+     'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local',
+     'cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'
+    ].forEach(id => {
+      const el = panel.querySelector('#' + id);
+      setDisabled(el, !allowMain, lockMsg);
+    });
+    panel.querySelectorAll('.ba-toggle, .cd-option-btn, .act-opt').forEach(el => {
+      setDisabled(el, !allowMain, lockMsg);
+    });
+    panel.querySelectorAll('.reac-opt').forEach(el => {
+      setDisabled(el, !!cb.reactionUsed, cb.reactionUsed ? 'Reaction already used' : '');
+    });
+    ['cd-short-rest','cd-long-rest'].forEach(id => {
+      // rests allowed anytime when viewing this creature
+      setDisabled(panel.querySelector('#' + id), false);
+    });
+
+    // Attack roller main actions
+    ['cr-roll-btn','cr-dmg-only','cr-damage-only','cr-apply-dmg','cr-apply-heal','cr-apply-effect','cr-apply-condition','cr-save-check'].forEach(id => {
+      const el = panel.querySelector('#' + id);
+      if (!el) return;
+      // After turn ended: allow apply tools for reaction resolution; block new attacks/casts
+      if (turnEnded && (id === 'cr-apply-dmg' || id === 'cr-apply-effect' || id === 'cr-apply-condition' || id === 'cr-apply-heal')) {
+        setDisabled(el, false);
+      } else if (lockedUntilStart) {
+        setDisabled(el, true, lockMsg);
+      } else {
+        setDisabled(el, !allowMain, lockMsg);
+      }
+    });
+    // Save DC check can be used for reaction (e.g. Counterspell) when turn ended
+    const saveBtn = panel.querySelector('#cr-save-check') || panel.querySelector('#cr-save-btn');
+    if (saveBtn && turnEnded) setDisabled(saveBtn, false);
+
+    // Also disable Roll Attack buttons by text search
+    panel.querySelectorAll('button').forEach(btn => {
+      const label = (btn.textContent || '').trim().toLowerCase();
+      if (/^roll attack|damage only|cast spell$/.test(label)) {
+        setDisabled(btn, !allowMain, lockMsg);
+      }
+      if (/^use reaction|restore reaction/.test(label)) {
+        setDisabled(btn, false); // reaction always interactive if available
+      }
+      if (/^spend$|^cd-la|legendary/i.test(btn.id + label)) {
+        setDisabled(btn, lockedUntilStart && !turnEnded ? true : false, lockMsg);
+      }
+    });
+
+    // Reaction controls always available if not used (anytime)
+    setDisabled(panel.querySelector('#cd-reaction-toggle'), false);
+    // Legendary only when ended or active (enemy)
+    ['cd-la-dec','cd-la-inc','cd-spend-la'].forEach(id => {
+      setDisabled(panel.querySelector('#' + id), lockedUntilStart, lockMsg);
+    });
+
+    // Start turn only when not active
+    const startBtn = panel.querySelector('#cd-start-turn');
+    if (startBtn) {
+      setDisabled(startBtn, phase === 'active', phase === 'active' ? 'Turn already started' : '');
+      startBtn.classList.toggle('btn-primary', lockedUntilStart || turnEnded);
+    }
+
+    // Banner
+    let banner = panel.querySelector('#turn-phase-banner');
+    if (!banner) {
+      banner = document.createElement('div');
+      banner.id = 'turn-phase-banner';
+      banner.className = 'turn-phase-banner muted small';
+      const board = panel.querySelector('.combat-turn-board');
+      if (board) board.insertBefore(banner, board.firstChild);
+    }
+    if (banner) {
+      if (lockedUntilStart) {
+        banner.textContent = 'Press Start turn before moving, acting, casting, or attacking.';
+        banner.className = 'turn-phase-banner warn small';
+      } else if (turnEnded) {
+        banner.textContent = 'Turn ended — only Reaction and Legendary Actions / Resistances are available until this creature’s next turn.';
+        banner.className = 'turn-phase-banner warn small';
+      } else {
+        banner.textContent = 'Turn in progress — move, action, and bonus action are independent.';
+        banner.className = 'turn-phase-banner ok small';
+      }
+    }
+  }
+
 
   function combatSpellcastingPanelHtml(cb, ch) {
     if (!ch && !cb) return '';
@@ -2301,7 +2427,11 @@
           ${phase === 'active' || phase === 'ended' ? '<span class="stage-badge open">Begun</span>' : '<span class="stage-badge muted">Pending</span>'}
         </div>
         <p class="muted small">Start-of-turn effects · reaction refreshes · death saves at 0 HP.</p>
-        <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
+        <div class="tool-btns">
+          <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-short-rest" title="Recover CD, some class resources, Warlock slots (edition-dependent)">Short Rest</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-long-rest" title="Recover slots, CD, most resources">Long Rest</button>
+        </div>
       </section>
 
       <section class="turn-stage ${moveUsed > 0 ? 'stage-partial' : ''}" data-stage="move">
@@ -2326,9 +2456,23 @@
           <strong>Action</strong>
           ${badge(!!cb.actionUsed || used >= max, used > 0 && !cb.actionUsed ? 'Attacks spent' : 'Available')}
         </div>
-        <p class="muted small">Attack · Cast · Dash · Disengage · Dodge · Help · Hide · Ready · … — independent of movement.</p>
-        <div class="combat-res-row">
+        <p class="muted small">Choose one Action (or Mark used). Independent of movement.</p>
+        <div class="action-menu" id="cd-action-menu">
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="attack" title="Use the Attack action">Attack</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="cast" title="Cast a 1-action spell (use Spellcasting panel)">Cast a spell</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="dash" title="Gain extra movement equal to your speed">Dash</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="disengage" title="Movement does not provoke opportunity attacks">Disengage</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="dodge" title="Attacks vs you have disadvantage; Dex saves advantage">Dodge</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="help" title="Help an ally (advantage)">Help</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="hide" title="Make a Stealth check to Hide">Hide</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="ready" title="Ready a trigger; response uses your reaction">Ready</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="search" title="Search for something">Search</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="use-object" title="Use an object that needs your action">Use an object</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="other" title="Other action">Other…</button>
+        </div>
+        <div class="combat-res-row" style="margin-top:0.35rem">
           <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Mark available' : 'Mark used'}</button>
+          ${cb.lastAction ? `<span class="muted small">Last: ${escapeHtml(cb.lastAction)}</span>` : ''}
         </div>
         <div class="turn-stage-sub">
           <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack · multiclass = best progression)</span></div>
@@ -2380,8 +2524,16 @@
           <strong>Reaction</strong>
           ${badge(!!cb.reactionUsed, 'Ready anytime')}
         </div>
-        <p class="muted small">Available any time until the start of your next turn.</p>
-        <button type="button" class="btn secondary btn-tiny" id="cd-reaction-toggle">${cb.reactionUsed ? 'Restore reaction' : 'Use reaction'}</button>
+        <p class="muted small">One reaction until the start of your next turn (not only on your turn).</p>
+        <div class="action-menu" id="cd-reaction-menu">
+          <button type="button" class="btn secondary btn-tiny reac-opt" data-reac="opportunity-attack">Opportunity Attack</button>
+          <button type="button" class="btn secondary btn-tiny reac-opt" data-reac="shield">Shield</button>
+          <button type="button" class="btn secondary btn-tiny reac-opt" data-reac="counterspell">Counterspell</button>
+          <button type="button" class="btn secondary btn-tiny reac-opt" data-reac="uncanny-dodge">Uncanny Dodge</button>
+          <button type="button" class="btn secondary btn-tiny reac-opt" data-reac="absorb">Absorb / other</button>
+        </div>
+        <button type="button" class="btn secondary btn-tiny" id="cd-reaction-toggle" style="margin-top:0.35rem">${cb.reactionUsed ? 'Restore reaction' : 'Use reaction'}</button>
+        ${cb.lastReaction ? `<span class="muted small"> Last: ${escapeHtml(cb.lastReaction)}</span>` : ''}
       </section>
 
       ${cb.legendary ? `<section class="turn-stage turn-stage-anytime" data-stage="legendary">
@@ -6558,6 +6710,122 @@ function parseAttackLines(ch) {
     panel.querySelector('#cd-action-toggle')?.addEventListener('click', () => {
       cb.actionUsed = !cb.actionUsed; refreshCombatDetail();
     });
+
+    // Full Action menu
+    panel.querySelectorAll('.act-opt').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if ((cb.turnPhase || 'ready') !== 'active') { toast('Start turn first'); return; }
+        if (cb.actionUsed) { toast('Action already used'); return; }
+        const act = btn.getAttribute('data-act');
+        const labels = {
+          attack: 'Attack', cast: 'Cast a spell', dash: 'Dash', disengage: 'Disengage',
+          dodge: 'Dodge', help: 'Help', hide: 'Hide', ready: 'Ready', search: 'Search',
+          'use-object': 'Use an object', other: 'Other'
+        };
+        if (act === 'ready') {
+          const note = prompt('Ready what? (trigger → response)', cb.readyText || '');
+          if (note == null) return;
+          cb.readyText = note;
+        }
+        if (act === 'other') {
+          const note = prompt('Describe the action', cb.lastAction || '');
+          if (note == null) return;
+          cb.lastAction = note;
+        } else {
+          cb.lastAction = labels[act] || act;
+        }
+        cb.actionUsed = true;
+        if (act === 'dash') {
+          const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
+          cb.speed = sp;
+          // Dash: track bonus movement available this turn
+          cb.dashSpeed = sp;
+          cb.moveUsed = Math.max(0, (Number(cb.moveUsed) || 0)); // leave used as-is; left increases via dashSpeed in display optional
+          toast('Dash — +' + sp + ' ft movement this turn');
+        }
+        if (act === 'disengage') {
+          cb.conditions = mergeCondition(cb.conditions, 'Disengaging');
+          toast('Disengage');
+        }
+        if (act === 'dodge') {
+          cb.conditions = mergeCondition(cb.conditions, 'Dodging');
+          toast('Dodge');
+        }
+        if (act === 'cast') {
+          toast('Use Spellcasting panel to cast (1 Action)');
+        }
+        if (act === 'attack') {
+          toast('Use Attack budget + Roll Attack');
+        }
+        try { save(); } catch (e) {}
+        refreshCombatDetail();
+      });
+    });
+
+    // Reaction presets
+    panel.querySelectorAll('.reac-opt').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (cb.reactionUsed) { toast('Reaction already used'); return; }
+        const id = btn.getAttribute('data-reac');
+        const labels = {
+          'opportunity-attack': 'Opportunity Attack',
+          shield: 'Shield',
+          counterspell: 'Counterspell',
+          'uncanny-dodge': 'Uncanny Dodge',
+          absorb: 'Reaction'
+        };
+        cb.reactionUsed = true;
+        cb.lastReaction = labels[id] || id;
+        if (id === 'opportunity-attack') {
+          const mode = panel.querySelector('#cr-mode');
+          if (mode) mode.value = 'attack';
+          toast('Opportunity Attack — use Roll Attack (does not use your Action)');
+        } else if (id === 'shield' || id === 'counterspell') {
+          const mode = panel.querySelector('#cr-mode');
+          if (mode) mode.value = id === 'counterspell' ? 'save' : 'utility';
+          toast(labels[id] + ' — reaction spent');
+        } else {
+          toast(labels[id] + ' — reaction spent');
+        }
+        try { save(); } catch (e) {}
+        refreshCombatDetail();
+      });
+    });
+
+    function recoverCombatantRest(kind) {
+      // kind: 'short' | 'long'
+      if (cb.combatResources) {
+        Object.keys(cb.combatResources).forEach(k => {
+          const r = cb.combatResources[k];
+          if (!r) return;
+          const rec = String(r.recover || '').toLowerCase();
+          if (kind === 'long' || /short/.test(rec)) {
+            r.used = 0;
+          }
+        });
+      }
+      if (kind === 'long' && cb.combatSpellSlots) {
+        Object.keys(cb.combatSpellSlots).forEach(L => {
+          if (cb.combatSpellSlots[L]) cb.combatSpellSlots[L].used = 0;
+        });
+      }
+      // Warlock-style: often short rest — if pact slots present, short rest clears them
+      if (cb.pactSlotsMax != null) {
+        if (kind === 'short' || kind === 'long') cb.pactSlotsUsed = 0;
+      }
+      if (kind === 'long') {
+        cb.hp = cb.hpMax;
+        cb.tempHp = 0;
+        cb.concentrating = null;
+      }
+      appendLog && appendLog(`${cb.name}: ${kind === 'long' ? 'Long' : 'Short'} Rest`);
+      toast((kind === 'long' ? 'Long' : 'Short') + ' Rest recovered');
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
+    }
+    panel.querySelector('#cd-short-rest')?.addEventListener('click', () => recoverCombatantRest('short'));
+    panel.querySelector('#cd-long-rest')?.addEventListener('click', () => recoverCombatantRest('long'));
+
     panel.querySelector('#cd-bonus-toggle')?.addEventListener('click', () => {
       cb.bonusUsed = !cb.bonusUsed; refreshCombatDetail();
     });
@@ -7575,7 +7843,7 @@ function parseAttackLines(ch) {
     const next = combat.combatants[combat.turnIndex];
     if (next) {
       // Start of turn for next combatant
-      next.turnPhase = 'active';
+      next.turnPhase = 'ready';
       next.attacksUsed = 0;
       next.moveUsed = 0;
       next.actionUsed = false;

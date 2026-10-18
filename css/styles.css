@@ -3004,3 +3004,34 @@ body[data-app="combat-tracker"]:not(.sidebar-collapsed) #app {
 }
 .combat-spell-panel .cd-block .btn { margin-bottom: 0.15rem; }
 .spell-modal .detail-text { max-height: 50vh; overflow-y: auto; }
+
+.turn-phase-banner {
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+  border: 1px solid rgba(196,163,90,0.25);
+}
+.turn-phase-banner.warn {
+  background: rgba(180, 100, 40, 0.15);
+  color: #e8c090;
+  border-color: rgba(200, 140, 60, 0.4);
+}
+.turn-phase-banner.ok {
+  background: rgba(60, 120, 80, 0.12);
+  color: #a8d4b0;
+}
+button.turn-locked, select.turn-locked, input.turn-locked {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+}
+
+.action-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+.action-menu .btn {
+  font-size: 0.72rem;
+  padding: 0.2rem 0.4rem;
+}
