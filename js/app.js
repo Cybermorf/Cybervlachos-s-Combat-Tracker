@@ -834,7 +834,11 @@
       }
     }
     if (viewName === 'map') {
-      try { refreshMapTokenSelect(); renderBattleMap(); } catch (e) {}
+      try {
+        if (typeof initBattleMapUi === 'function') initBattleMapUi();
+        refreshMapTokenSelect();
+        renderBattleMap();
+      } catch (e) { console.warn(e); }
     }
 
     $$('.view').forEach(v => v.classList.remove('active'));
@@ -848,8 +852,16 @@
     const sidebar = $('#sidebar');
     if (sidebar) sidebar.classList.remove('open');
 
-    if (viewName === 'combat') renderCombat();
-    else if (viewName === 'tools') { try { renderCompendiumTools(); } catch (e) {} renderTools(); }
+    if (viewName === 'combat') {
+      renderCombat();
+      try { applyAoeTargetsToRoller(); } catch (e) {}
+    } else if (viewName === 'map') {
+      try {
+        if (typeof initBattleMapUi === 'function') initBattleMapUi();
+        refreshMapTokenSelect();
+        renderBattleMap();
+      } catch (e) {}
+    } else if (viewName === 'tools') { try { renderCompendiumTools(); } catch (e) {} renderTools(); }
     else if (viewName === 'campaigns') {
       if (document.body && document.body.dataset && document.body.dataset.app === 'combat-tracker') {
         renderCombat();
@@ -2551,7 +2563,23 @@
           <button type="button" class="btn secondary btn-tiny" id="cd-la-inc">+</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-spend-la">Spend</button>
         </div>
+        <div class="combat-res-row" style="margin-top:0.35rem">
+          <span class="muted small">Legendary Resistance</span>
+          <button type="button" class="btn secondary btn-tiny" id="cd-lr-dec">−</button>
+          <span class="combat-res-val"><strong>${cb.legendaryResistLeft != null ? cb.legendaryResistLeft : (cb.legendaryResistMax != null ? cb.legendaryResistMax : 0)}</strong>/${cb.legendaryResistMax != null ? cb.legendaryResistMax : 0}</span>
+          <button type="button" class="btn secondary btn-tiny" id="cd-lr-use" title="Succeed on a save">Use LR</button>
+        </div>
       </section>` : ''}
+      ${(() => {
+        const surge = cb.combatResources && cb.combatResources['action-surge'];
+        if (!surge) return '';
+        const left = Math.max(0, (surge.max||0) - (surge.used||0));
+        return `<section class="turn-stage" data-stage="action-surge">
+          <div class="turn-stage-head"><span class="turn-stage-num">⚡</span><strong>Action Surge</strong>
+            <span class="stage-badge open">${left}/${surge.max||0}</span></div>
+          <button type="button" class="btn secondary btn-tiny" id="cd-action-surge" ${left<=0?'disabled':''}>Use Action Surge (extra Action)</button>
+        </section>`;
+      })()}
     </div>`;
   }
 
@@ -8567,6 +8595,7 @@ function escapeHtml(str) {
 
   // ─── Init ────────────────────────────────────────────────────────────────
   function init() {
+    try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) { console.warn('map ui', e); }
     loadUserCompendiumAsync().then(() => {
       try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
       if (typeof renderCompendiumTools === 'function' && $('#compendium-tools')) renderCompendiumTools();
@@ -8651,6 +8680,26 @@ function escapeHtml(str) {
   // ═══════════════════════════════════════════════════════════
   // Battle Map — image / UVTT + tokens + AoE
   // ═══════════════════════════════════════════════════════════
+  
+  function applyAoeTargetsToRoller() {
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    if (!combat || !combat.aoeTargetIds || !combat.aoeTargetIds.length) return;
+    const ids = combat.aoeTargetIds;
+    const sel = document.getElementById('cr-target');
+    if (!sel) return;
+    const opts = Array.from(sel.options);
+    opts.forEach(o => { o.selected = false; });
+    let n = 0;
+    combat.combatants.forEach((cb, i) => {
+      const id = cb.id || String(i);
+      if (!ids.includes(id)) return;
+      const opt = opts.find(o => o.value === String(i) || o.value === id || (o.textContent || '').indexOf(cb.name) !== -1);
+      if (opt) { opt.selected = true; n++; }
+    });
+    if (n) toast('AoE targets selected in roller: ' + n);
+  }
+
   function getCombatMap() {
     const c = getActive();
     if (!c) return null;
@@ -8861,6 +8910,23 @@ function escapeHtml(str) {
     return { x, y };
   }
 
+  function segmentIntersects(ax, ay, bx, by, cx, cy, dx, dy) {
+    function cross(x1,y1,x2,y2) { return x1*y2 - y1*x2; }
+    const d1 = cross(bx-ax, by-ay, cx-ax, cy-ay);
+    const d2 = cross(bx-ax, by-ay, dx-ax, dy-ay);
+    const d3 = cross(dx-cx, dy-cy, ax-cx, ay-cy);
+    const d4 = cross(dx-cx, dy-cy, bx-cx, by-cy);
+    return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+  }
+  function lineBlockedByWalls(map, x1, y1, x2, y2) {
+    const walls = map.walls || [];
+    for (let i = 0; i < walls.length; i++) {
+      const w = walls[i];
+      if (w.door) continue; // open doors don't block v1
+      if (segmentIntersects(x1, y1, x2, y2, w.x1, w.y1, w.x2, w.y2)) return true;
+    }
+    return false;
+  }
   function tokenIdsInAoe(map) {
     if (!map.aoe) return [];
     const a = map.aoe;
@@ -8891,37 +8957,73 @@ function escapeHtml(str) {
         const width = g * 0.35;
         inside = Math.hypot(p.x - projx, p.y - projy) <= width;
       }
+      if (inside && map.walls && map.walls.length) {
+        if (lineBlockedByWalls(map, a.x, a.y, p.x, p.y)) inside = false;
+      }
       if (inside) hits.push(id);
     });
     return hits;
   }
 
   function initBattleMapUi() {
-    if (window.__mapUiReady) return;
+    // Always ensure workspace exists
+    try { ensureCombatWorkspace(); } catch (e) {}
+    if (window.__mapUiReady) {
+      refreshMapTokenSelect();
+      return;
+    }
     window.__mapUiReady = true;
 
-    document.getElementById('map-import-image-btn')?.addEventListener('click', () => {
-      document.getElementById('map-file-image')?.click();
+    function triggerImageImport() {
+      const inp = document.getElementById('map-file-image');
+      if (!inp) { toast('Map file input missing — hard refresh'); return; }
+      inp.click();
+    }
+    function triggerUvttImport() {
+      const inp = document.getElementById('map-file-uvtt');
+      if (!inp) { toast('UVTT file input missing — hard refresh'); return; }
+      inp.click();
+    }
+
+    document.getElementById('map-import-image-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerImageImport();
     });
-    document.getElementById('map-import-uvtt-btn')?.addEventListener('click', () => {
-      document.getElementById('map-file-uvtt')?.click();
+    document.getElementById('map-import-uvtt-btn')?.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      triggerUvttImport();
+    });
+    // Event delegation backup (works even if buttons re-rendered)
+    document.body.addEventListener('click', (e) => {
+      const t = e.target && e.target.closest && e.target.closest('#map-import-image-btn, #map-import-uvtt-btn, #map-clear-btn, #map-apply-aoe-targets, #map-clear-aoe');
+      if (!t) return;
+      if (t.id === 'map-import-image-btn') { e.preventDefault(); triggerImageImport(); }
+      if (t.id === 'map-import-uvtt-btn') { e.preventDefault(); triggerUvttImport(); }
     });
     document.getElementById('map-file-image')?.addEventListener('change', (e) => {
       const f = e.target.files && e.target.files[0];
       if (!f) return;
       const reader = new FileReader();
       reader.onload = () => {
+        try { ensureCombatWorkspace(); } catch (err) {}
         const map = getCombatMap();
-        if (!map) { toast('No workspace'); return; }
+        if (!map) { toast('No workspace — open Combat once first'); return; }
         map.imageDataUrl = reader.result;
-        map.walls = [];
+        map.walls = map.walls || [];
+        map.tokens = map.tokens || {};
         map.aoe = null;
         const gs = document.getElementById('map-grid-size');
         if (gs) map.gridSize = Number(gs.value) || 70;
-        try { save(); } catch (err) {}
+        try { save(); } catch (err) {
+          console.warn(err);
+          toast('Map loaded in memory (save failed — image may be large)');
+        }
         renderBattleMap();
         toast('Map image loaded');
       };
+      reader.onerror = () => toast('Failed to read image file');
       reader.readAsDataURL(f);
       e.target.value = '';
     });
@@ -8931,8 +9033,9 @@ function escapeHtml(str) {
       try {
         const text = await f.text();
         const parsed = parseUvttFile(text);
+        try { ensureCombatWorkspace(); } catch (err) {}
         const map = getCombatMap();
-        if (!map) { toast('No workspace'); return; }
+        if (!map) { toast('No workspace — open Combat once first'); return; }
         if (!parsed.imageDataUrl) {
           toast('UVTT had no embedded image — import image separately');
         } else {
@@ -8940,10 +9043,14 @@ function escapeHtml(str) {
         }
         map.gridSize = parsed.gridSize || 70;
         map.walls = parsed.walls || [];
+        map.tokens = map.tokens || {};
         map.aoe = null;
         const gs = document.getElementById('map-grid-size');
         if (gs) gs.value = String(map.gridSize);
-        try { save(); } catch (err) {}
+        try { save(); } catch (err) {
+          console.warn(err);
+          toast('UVTT loaded (save failed — file may be large)');
+        }
         renderBattleMap();
         toast('UVTT imported (' + map.walls.length + ' wall segments)');
       } catch (err) {
@@ -8992,25 +9099,45 @@ function escapeHtml(str) {
       });
       try { save(); } catch (err) {}
       toast(names.length ? ('AoE targets: ' + names.join(', ')) : 'No tokens in AoE');
-      // Switch to combat view
       try {
-        document.querySelector('.nav-item[data-view="combat"]')?.click();
+        if (typeof setView === 'function') setView('combat');
+        else document.querySelector('.nav-item[data-view="combat"]')?.click();
+        setTimeout(() => { try { applyAoeTargetsToRoller(); } catch (e) {} }, 100);
       } catch (e) {}
     });
 
     const canvas = document.getElementById('map-canvas');
-    if (canvas) {
-      let dragging = null;
-      canvas.addEventListener('click', (ev) => {
+    if (canvas && !canvas.dataset.mapBound) {
+      canvas.dataset.mapBound = '1';
+      let dragId = null;
+      canvas.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 0) return;
         const map = getCombatMap();
         if (!map || !map.imageDataUrl) return;
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        if (tool === 'token' || tool === 'pan') {
+          // hit-test existing token
+          const g = Number(map.gridSize) || 70;
+          const hitR = g * 0.45;
+          let found = null;
+          Object.keys(map.tokens || {}).forEach(id => {
+            const p = map.tokens[id];
+            if (Math.hypot(p.x - x, p.y - y) <= hitR) found = id;
+          });
+          if (found) {
+            dragId = found;
+            const sel = document.getElementById('map-token-combatant');
+            if (sel) sel.value = found;
+            return;
+          }
+        }
         if (tool === 'token') {
           const sel = document.getElementById('map-token-combatant');
           const id = sel && sel.value;
           if (!id) { toast('Pick a combatant'); return; }
-          map.tokens[id] = { x, y };
+          const g = Number(map.gridSize) || 70;
+          map.tokens[id] = { x: Math.floor(x / g) * g + g / 2, y: Math.floor(y / g) * g + g / 2 };
           try { save(); } catch (err) {}
           renderBattleMap();
         } else if (tool.startsWith('aoe-')) {
@@ -9021,6 +9148,22 @@ function escapeHtml(str) {
           renderBattleMap();
         }
       });
+      canvas.addEventListener('mousemove', (ev) => {
+        if (!dragId) return;
+        const map = getCombatMap();
+        if (!map) return;
+        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        const g = Number(map.gridSize) || 70;
+        map.tokens[dragId] = { x: Math.floor(x / g) * g + g / 2, y: Math.floor(y / g) * g + g / 2 };
+        renderBattleMap();
+      });
+      canvas.addEventListener('mouseup', () => {
+        if (dragId) {
+          try { save(); } catch (err) {}
+          dragId = null;
+        }
+      });
+      canvas.addEventListener('mouseleave', () => { dragId = null; });
       canvas.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();
         const map = getCombatMap();
