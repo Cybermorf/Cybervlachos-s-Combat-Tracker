@@ -9,6 +9,117 @@
   'use strict';
 
   const STORAGE_KEY = 'cybervlachos_combat_v1';
+
+  const MAP_IDB_NAME = 'dsc_combat_map_v1';
+  const MAP_IDB_STORE = 'maps';
+  const ROSTER_BACKUP_KEY = 'cybervlachos_combat_roster_v1';
+
+  function openMapDb() {
+    return new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB unavailable'));
+        return;
+      }
+      const req = indexedDB.open(MAP_IDB_NAME, 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(MAP_IDB_STORE)) {
+          db.createObjectStore(MAP_IDB_STORE);
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('Map IDB open failed'));
+    });
+  }
+
+  async function idbSetMapImage(workspaceId, imageDataUrl) {
+    if (!workspaceId) return;
+    try {
+      const db = await openMapDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(MAP_IDB_STORE, 'readwrite');
+        tx.objectStore(MAP_IDB_STORE).put(imageDataUrl || null, 'map:' + workspaceId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('Map IDB save failed', e);
+    }
+  }
+
+  async function idbGetMapImage(workspaceId) {
+    if (!workspaceId) return null;
+    try {
+      const db = await openMapDb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(MAP_IDB_STORE, 'readonly');
+        const req = tx.objectStore(MAP_IDB_STORE).get('map:' + workspaceId);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) {
+      console.warn('Map IDB load failed', e);
+      return null;
+    }
+  }
+
+  function cloneStateForLocalStorage() {
+    // Deep-ish clone campaigns but strip huge map image data URLs
+    const campaigns = (state.campaigns || []).map(c => {
+      const copy = JSON.parse(JSON.stringify(c));
+      if (copy.combatMap && copy.combatMap.imageDataUrl) {
+        copy.combatMap = Object.assign({}, copy.combatMap, {
+          imageDataUrl: null,
+          hasImageInIdb: true
+        });
+      }
+      return copy;
+    });
+    return {
+      campaigns,
+      activeCampaignId: state.activeCampaignId,
+      diceHistory: (state.diceHistory || []).slice(0, 50)
+    };
+  }
+
+  function backupRosterLite() {
+    try {
+      const c = getActive();
+      if (!c) return;
+      const combat = c.combat || {};
+      const payload = {
+        activeCampaignId: state.activeCampaignId,
+        party: c.party || [],
+        villains: c.villains || [],
+        combatants: (combat.combatants || []).map(cb => ({
+          id: cb.id,
+          name: cb.name,
+          side: cb.side,
+          hp: cb.hp,
+          hpMax: cb.hpMax,
+          ac: cb.ac,
+          initiative: cb.initiative,
+          hideHp: cb.hideHp,
+          class: cb.class,
+          level: cb.level
+        })),
+        combatMapMeta: c.combatMap ? {
+          gridSize: c.combatMap.gridSize,
+          gridOffsetX: c.combatMap.gridOffsetX,
+          gridOffsetY: c.combatMap.gridOffsetY,
+          tokens: c.combatMap.tokens,
+          walls: c.combatMap.walls,
+          hasImageInIdb: true
+        } : null,
+        t: Date.now()
+      };
+      localStorage.setItem(ROSTER_BACKUP_KEY, JSON.stringify(payload));
+    } catch (e) {
+      console.warn('roster backup failed', e);
+    }
+  }
+
+
   const WORLDS = ['Luminaris', 'Umbraria', 'Eternum', 'Solara', 'Aetheria', 'Harmonia', 'Celestia'];
 
     function getBestiaryList() {
@@ -613,17 +724,76 @@
     }
   }
 
+  
+  async function restoreMapImagesAfterLoad() {
+    try {
+      for (const c of (state.campaigns || [])) {
+        if (!c.combatMap) continue;
+        if (c.combatMap.imageDataUrl) continue;
+        if (c.combatMap.hasImageInIdb || !c.combatMap.imageDataUrl) {
+          const img = await idbGetMapImage(c.id);
+          if (img) {
+            c.combatMap.imageDataUrl = img;
+            c.combatMap.hasImageInIdb = true;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('restore map images', e);
+    }
+  }
+
+  function tryRestoreRosterBackupIfEmpty() {
+    try {
+      if ((state.campaigns || []).length && (getCombat(getActive()) || {}).combatants?.length) return;
+      const raw = localStorage.getItem(ROSTER_BACKUP_KEY);
+      if (!raw) return;
+      const b = JSON.parse(raw);
+      if (!b || !b.combatants || !b.combatants.length) return;
+      ensureCombatWorkspace();
+      const c = getActive();
+      if (!c) return;
+      if (!c.combat) c.combat = { round: 1, turnIndex: 0, combatants: [], selectedIndex: 0 };
+      if (!(c.combat.combatants || []).length && b.combatants.length) {
+        c.combat.combatants = b.combatants;
+        if (b.party) c.party = b.party;
+        if (b.villains) c.villains = b.villains;
+        if (b.combatMapMeta) {
+          c.combatMap = Object.assign({ tokens: {}, walls: [], gridSize: 70 }, b.combatMapMeta, { imageDataUrl: null });
+        }
+        toast('Restored roster from backup');
+        try { save(); } catch (e) {}
+      }
+    } catch (e) {
+      console.warn('roster backup restore', e);
+    }
+  }
+
   function save() {
     try { if (typeof notifyMapWindows === "function") setTimeout(notifyMapWindows, 0); } catch (e) {}
 
+    // Persist large map image outside localStorage (quota)
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        campaigns: state.campaigns,
-        activeCampaignId: state.activeCampaignId,
-        diceHistory: state.diceHistory.slice(0, 50),
-      }));
+      const c = (state.campaigns || []).find(x => x.id === state.activeCampaignId);
+      if (c && c.combatMap && c.combatMap.imageDataUrl) {
+        idbSetMapImage(c.id, c.combatMap.imageDataUrl);
+      }
+    } catch (e) {}
+
+    try {
+      const payload = typeof cloneStateForLocalStorage === 'function'
+        ? cloneStateForLocalStorage()
+        : {
+            campaigns: state.campaigns,
+            activeCampaignId: state.activeCampaignId,
+            diceHistory: (state.diceHistory || []).slice(0, 50)
+          };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      try { backupRosterLite(); } catch (e) {}
     } catch (e) {
-      toast('Storage full or unavailable');
+      console.warn('save failed', e);
+      try { backupRosterLite(); } catch (e2) {}
+      toast('Storage full — roster backed up; map image uses IndexedDB');
     }
   }
 
@@ -8645,6 +8815,19 @@ function escapeHtml(str) {
     }).catch(e => console.warn(e));
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
     load();
+    try { tryRestoreRosterBackupIfEmpty(); } catch (e) {}
+    try {
+      restoreMapImagesAfterLoad().then(() => {
+        try {
+          if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
+          if (document.getElementById('view-map')?.classList.contains('active')) {
+            renderBattleMap();
+            renderMapRoster();
+          }
+          if (document.getElementById('view-combat')?.classList.contains('active')) renderCombat();
+        } catch (e) {}
+      });
+    } catch (e) {}
     if (document.body?.dataset?.app === 'combat-tracker') {
       ensureCombatWorkspace();
       updateNavEnabled();
