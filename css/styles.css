@@ -2994,3 +2994,13 @@ body[data-app="combat-tracker"]:not(.sidebar-collapsed) #app {
   background: rgba(196, 163, 90, 0.08);
   white-space: nowrap;
 }
+
+.combat-spell-panel select#cr-spell-pick {
+  background: #1a1510;
+  color: #e8dcc8;
+  border: 1px solid rgba(196,163,90,0.3);
+  border-radius: 6px;
+  padding: 0.25rem;
+}
+.combat-spell-panel .cd-block .btn { margin-bottom: 0.15rem; }
+.spell-modal .detail-text { max-height: 50vh; overflow-y: auto; }

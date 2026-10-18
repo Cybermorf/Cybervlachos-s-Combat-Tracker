@@ -1983,6 +1983,239 @@
     </div>`;
   }
 
+  
+  function abilityModFromScore(score) {
+    const n = Number(score);
+    if (isNaN(n)) return 0;
+    return Math.floor((n - 10) / 2);
+  }
+
+  function getCharacterCastingAbility(ch) {
+    if (!ch) return 'WIS';
+    if (ch.spellcastingAbility) return String(ch.spellcastingAbility).toUpperCase().slice(0, 3);
+    const list = (typeof normalizeClassLevels === 'function') ? normalizeClassLevels(ch) : [];
+    const priority = ['Wizard','Sorcerer','Bard','Warlock','Cleric','Druid','Paladin','Ranger','Artificer','Moon Guardian'];
+    for (const p of priority) {
+      if (list.some(c => c.name === p) || ch.class === p) {
+        if (p === 'Wizard' || p === 'Artificer') return 'INT';
+        if (p === 'Sorcerer' || p === 'Bard' || p === 'Warlock' || p === 'Moon Guardian') return 'CHA';
+        if (p === 'Cleric' || p === 'Druid' || p === 'Ranger') return 'WIS';
+        if (p === 'Paladin') return 'CHA';
+      }
+    }
+    return 'WIS';
+  }
+
+  function getSpellAttackAndDC(ch) {
+    const ab = getCharacterCastingAbility(ch);
+    const key = ab.toLowerCase();
+    const score = ch ? (ch[key] != null ? ch[key] : ch[ab]) : 10;
+    const mod = abilityModFromScore(score);
+    const pb = ch && ch.profBonus != null ? Number(ch.profBonus) : (typeof proficiencyBonusForLevel === 'function' ? proficiencyBonusForLevel(ch && ch.level) : 2);
+    return {
+      ability: ab,
+      mod: mod,
+      attack: pb + mod,
+      dc: 8 + pb + mod,
+      pb: pb
+    };
+  }
+
+  function lookupSpellByName(name) {
+    if (!name) return null;
+    const bare = String(name).replace(/\s*\(\d+\w*\)\s*$/, '').trim().toLowerCase();
+    const list = window.SPELLS || window.SPELLS_BASE || [];
+    let hit = list.find(s => String(s.name || '').toLowerCase() === bare || String(s.id || '').toLowerCase() === bare);
+    if (hit) return hit;
+    hit = list.find(s => String(s.name || '').toLowerCase().replace(/\s+/g, ' ') === bare);
+    if (hit) return hit;
+    return list.find(s => String(s.name || '').toLowerCase().includes(bare) || bare.includes(String(s.name || '').toLowerCase())) || null;
+  }
+
+  function parseSpellLevelFromLabel(label) {
+    const m = String(label || '').match(/\((\d+)(?:st|nd|rd|th)?\)/i);
+    if (m) return Number(m[1]);
+    const sp = lookupSpellByName(label);
+    return sp && sp.level != null ? Number(sp.level) : 0;
+  }
+
+  function listCharacterSpellsForCombat(ch) {
+    if (!ch) return [];
+    const out = [];
+    const seen = new Set();
+    function add(label, kind) {
+      const name = String(label || '').trim();
+      if (!name || seen.has(name.toLowerCase())) return;
+      seen.add(name.toLowerCase());
+      const sp = lookupSpellByName(name);
+      const level = sp ? Number(sp.level) || 0 : parseSpellLevelFromLabel(name);
+      const time = sp ? String(sp.time || sp.casting_time || 'Action') : 'Action';
+      out.push({
+        name: sp ? sp.name : name.replace(/\s*\(\d+\w*\)\s*$/, '').trim(),
+        label: name,
+        level: level,
+        kind: kind || (level === 0 ? 'cantrip' : 'spell'),
+        time: time,
+        concentration: !!(sp && (sp.concentration || /concentration/i.test(String(sp.duration || '')))),
+        ritual: !!(sp && sp.ritual),
+        school: sp ? (sp.school || '') : '',
+        range: sp ? (sp.range || '') : '',
+        components: sp ? (sp.components || '') : '',
+        duration: sp ? (sp.duration || '') : '',
+        description: sp ? (sp.description || sp.summary || '') : '',
+        higher: sp ? (sp.higher_level || sp.higherLevel || '') : '',
+        raw: sp
+      });
+    }
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : String(ch.cantrips || '').split(/[,;\n]+/)).forEach(s => add(s, 'cantrip'));
+    const prepared = ch.spellPrepMode === 'prepared' && ch.preparedSpells
+      ? ch.preparedSpells
+      : ch.spells;
+    (typeof splitSpellNames === 'function' ? splitSpellNames(prepared) : String(prepared || '').split(/[,;\n]+/)).forEach(s => add(s, 'spell'));
+    (ch.spellIds || []).forEach(id => {
+      const sp = (window.SPELLS || []).find(x => x.id === id);
+      if (sp) add(sp.name, sp.level === 0 ? 'cantrip' : 'spell');
+    });
+    out.sort((a, b) => (a.level - b.level) || a.name.localeCompare(b.name));
+    return out;
+  }
+
+  function getChannelDivinityMax(ch) {
+    if (!ch) return 0;
+    let max = 0;
+    const list = (typeof normalizeClassLevels === 'function') ? normalizeClassLevels(ch) : [];
+    list.forEach(c => {
+      const n = c.name || '';
+      const lvl = Number(c.level) || 1;
+      if (n === 'Cleric' && lvl >= 2) max = Math.max(max, lvl >= 18 ? 3 : lvl >= 6 ? 2 : 1);
+      if (n === 'Paladin' && lvl >= 3) max = Math.max(max, lvl >= 11 ? 2 : 1);
+    });
+    if (!list.length && (ch.class === 'Cleric' || ch.class === 'Paladin')) {
+      const lvl = Number(ch.level) || 1;
+      if (ch.class === 'Cleric' && lvl >= 2) max = lvl >= 18 ? 3 : lvl >= 6 ? 2 : 1;
+      if (ch.class === 'Paladin' && lvl >= 3) max = lvl >= 11 ? 2 : 1;
+    }
+    return max;
+  }
+
+  function getChannelDivinityOptions(ch) {
+    const opts = [];
+    if (!ch || getChannelDivinityMax(ch) <= 0) return opts;
+    opts.push({
+      id: 'turn-undead',
+      name: 'Turn Undead',
+      actionType: 'action',
+      range: 30,
+      save: 'WIS',
+      text: 'Each undead that can see or hear you within 30 ft must make a Wisdom saving throw. On a failed save, it is Turned for 1 minute or until it takes any damage.'
+    });
+    const sub = String(ch.subclass || '').toLowerCase();
+    if (/immortality/i.test(sub)) {
+      opts.push({
+        id: 'immortality-domain',
+        name: 'Channel Divinity: Immortality Domain',
+        actionType: 'action',
+        range: 30,
+        save: '',
+        text: 'Domain Channel Divinity — resolve per Immortality Domain feature text in the class description.'
+      });
+    }
+    return opts;
+  }
+
+  function castingTimeBucket(timeStr) {
+    const t = String(timeStr || 'Action').toLowerCase();
+    if (/bonus/.test(t)) return 'bonus';
+    if (/reaction/.test(t)) return 'reaction';
+    return 'action';
+  }
+
+  function combatSpellcastingPanelHtml(cb, ch) {
+    if (!ch && !cb) return '';
+    const src = ch || cb;
+    const spells = listCharacterSpellsForCombat(src);
+    const stats = getSpellAttackAndDC(src);
+    const slots = (cb && cb.combatSpellSlots) || {};
+    const levels = Object.keys(slots).map(Number).sort((a,b)=>a-b);
+    const slotSummary = levels.length
+      ? levels.map(L => {
+          const left = Math.max(0, (slots[L].max || 0) - (slots[L].used || 0));
+          return left > 0 ? `${L}:${left}` : null;
+        }).filter(Boolean).join(' · ') || 'No slots left'
+      : '—';
+    const cdMax = getChannelDivinityMax(src);
+    const cdUsed = (cb.combatResources && cb.combatResources['channel-divinity'])
+      ? (cb.combatResources['channel-divinity'].used || 0)
+      : ((src.resourceUsed && src.resourceUsed['channel-divinity']) || 0);
+    const cdLeft = Math.max(0, cdMax - cdUsed);
+    const cdOpts = getChannelDivinityOptions(src);
+
+    const spellOpts = spells.map((s, i) =>
+      `<option value="${i}" data-level="${s.level}" data-time="${escapeAttr(s.time)}" data-conc="${s.concentration ? '1' : '0'}">${s.level === 0 ? 'C' : s.level} · ${escapeHtml(s.name)}${s.concentration ? ' ◎' : ''}</option>`
+    ).join('');
+
+    const upcastOpts = levels.filter(L => ((slots[L].max || 0) - (slots[L].used || 0)) > 0)
+      .map(L => `<option value="${L}">${L}${L===1?'st':L===2?'nd':L===3?'rd':'th'} (${(slots[L].max||0)-(slots[L].used||0)} left)</option>`)
+      .join('');
+
+    return `<div class="detail-block combat-spell-panel" id="combat-spell-panel">
+      <div class="detail-label">Spellcasting</div>
+      <p class="muted small">Spell atk +${stats.attack} · Save DC ${stats.dc} (${stats.ability}) · Slots ${escapeHtml(slotSummary)}</p>
+      <div class="field">
+        <label>Spell</label>
+        <select id="cr-spell-pick" size="6" style="width:100%;min-height:6rem">
+          <option value="">— Select a spell —</option>
+          ${spellOpts || '<option value="" disabled>No spells on sheet</option>'}
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="field"><label>Cast with slot</label>
+          <select id="cr-spell-slot"><option value="0">Cantrip / at-will</option>${upcastOpts}</select>
+        </div>
+        <div class="field"><label>Casting time</label>
+          <input id="cr-spell-time" type="text" readonly value="—" />
+        </div>
+      </div>
+      <div class="tool-btns" style="flex-wrap:wrap;gap:0.35rem;margin-top:0.35rem">
+        <button type="button" class="btn secondary btn-tiny" id="cr-spell-info">Spell info</button>
+        <button type="button" class="btn primary btn-tiny" id="cr-spell-cast">Cast spell</button>
+      </div>
+      <p class="muted small" id="cr-spell-hint">Casting marks Action, Bonus, or Reaction from the spell’s casting time. Upcast spends a higher slot.</p>
+      ${cdMax > 0 ? `<div class="cd-block" style="margin-top:0.5rem;padding-top:0.4rem;border-top:1px solid rgba(196,163,90,0.2)">
+        <div class="detail-label">Channel Divinity <span class="muted small">${cdLeft}/${cdMax}</span></div>
+        ${cdOpts.map(o => `<button type="button" class="btn secondary btn-tiny cd-option-btn" data-cd="${escapeAttr(o.id)}" style="margin:0.2rem 0.2rem 0 0">${escapeHtml(o.name)}</button>`).join('')}
+      </div>` : ''}
+    </div>`;
+  }
+
+  async function openSpellDetailModal(spellEntry, ctx) {
+    ctx = ctx || {};
+    const sp = spellEntry || {};
+    const body = `
+      <div class="spell-modal">
+        <p class="muted small">${sp.level === 0 ? 'Cantrip' : (sp.level + (sp.level===1?'st':sp.level===2?'nd':sp.level===3?'rd':'th') + '-level')} ${escapeHtml(sp.school || '')}</p>
+        <p><strong>Time:</strong> ${escapeHtml(sp.time || 'Action')} · <strong>Range:</strong> ${escapeHtml(sp.range || '—')} · <strong>Duration:</strong> ${escapeHtml(sp.duration || '—')}</p>
+        <p><strong>Components:</strong> ${escapeHtml(sp.components || '—')}${sp.concentration ? ' · <strong>Concentration</strong>' : ''}${sp.ritual ? ' · Ritual' : ''}</p>
+        <div class="detail-text" style="margin-top:0.5rem">${formatRichText(sp.description || 'No full text in catalog.')}</div>
+        ${sp.higher ? `<div class="detail-block" style="margin-top:0.5rem"><div class="detail-label">At higher levels</div><div class="detail-text">${formatRichText(sp.higher)}</div></div>` : ''}
+        ${ctx.slotOptionsHtml ? `<div class="field" style="margin-top:0.75rem"><label>Cast at level</label><select id="modal-spell-slot">${ctx.slotOptionsHtml}</select></div>` : ''}
+      </div>`;
+    return openModal({
+      title: sp.name || 'Spell',
+      bodyHtml: body,
+      confirmText: ctx.allowCast ? 'Cast' : 'Close',
+      wide: true,
+      onConfirm: () => {
+        if (!ctx.allowCast) return true;
+        const sel = document.getElementById('modal-spell-slot');
+        const slot = sel ? Number(sel.value) || 0 : 0;
+        if (typeof ctx.onCast === 'function') ctx.onCast(slot);
+        return true;
+      }
+    });
+  }
+
+
   function combatSpellSlotsHtml(cb) {
     const slots = cb.combatSpellSlots || {};
     const levels = Object.keys(slots).map(Number).sort((a,b)=>a-b);
@@ -5824,6 +6057,7 @@ function parseAttackLines(ch) {
               ${attacks.map((a, i) => `<option value="${i}">${escapeHtml(a.name)}${a.toHit != null ? ' (+' + a.toHit + ')' : ''}${a.damage ? ' · ' + escapeHtml(a.damage) : ''}</option>`).join('')}
             </select>
           </div>
+          ${typeof combatSpellcastingPanelHtml === 'function' ? combatSpellcastingPanelHtml(cb, typeof partyChar !== 'undefined' ? partyChar : null) : ''}
           <div class="field">
             <label>Or pick listed action</label>
             <select id="cr-action-pick">
@@ -6404,6 +6638,214 @@ function parseAttackLines(ch) {
       cb.reactionUsed = false;
       refreshCombatDetail();
     });
+
+    
+    // ── Spellcasting panel ──
+    (function wireSpellcastingPanel() {
+      const spellList = (typeof listCharacterSpellsForCombat === 'function')
+        ? listCharacterSpellsForCombat(partyChar || null)
+        : [];
+      const stats = (typeof getSpellAttackAndDC === 'function')
+        ? getSpellAttackAndDC(partyChar || cb)
+        : { attack: 0, dc: 10, ability: 'WIS' };
+      const pick = panel.querySelector('#cr-spell-pick');
+      const slotSel = panel.querySelector('#cr-spell-slot');
+      const timeIn = panel.querySelector('#cr-spell-time');
+      const hint = panel.querySelector('#cr-spell-hint');
+
+      function currentSpell() {
+        if (!pick || pick.value === '') return null;
+        return spellList[Number(pick.value)] || null;
+      }
+
+      function syncSpellUi() {
+        const sp = currentSpell();
+        if (!sp) {
+          if (timeIn) timeIn.value = '—';
+          return;
+        }
+        if (timeIn) timeIn.value = sp.time || 'Action';
+        if (slotSel) {
+          if (sp.level === 0) {
+            slotSel.value = '0';
+          } else {
+            // default to minimum available slot >= spell level
+            const opts = Array.from(slotSel.options).map(o => Number(o.value)).filter(v => v >= sp.level);
+            if (opts.length) slotSel.value = String(Math.min(...opts));
+          }
+        }
+        if (hint) {
+          const bucket = castingTimeBucket(sp.time);
+          hint.textContent = (sp.concentration ? 'Concentration ◎ · ' : '') +
+            'Uses your ' + (bucket === 'bonus' ? 'Bonus Action' : bucket === 'reaction' ? 'Reaction' : 'Action') +
+            (sp.level > 0 ? ' · spends a slot on Cast' : ' · cantrip (no slot)');
+        }
+      }
+      pick?.addEventListener('change', syncSpellUi);
+      syncSpellUi();
+
+      function spendSlot(level) {
+        level = Number(level) || 0;
+        if (level <= 0) return true;
+        if (!cb.combatSpellSlots) cb.combatSpellSlots = {};
+        const row = cb.combatSpellSlots[level] || cb.combatSpellSlots[String(level)];
+        if (!row || ((row.max || 0) - (row.used || 0)) <= 0) {
+          toast('No spell slots of that level left');
+          return false;
+        }
+        row.used = (row.used || 0) + 1;
+        return true;
+      }
+
+      function applyCastEconomy(sp, slotLevel) {
+        const bucket = castingTimeBucket(sp.time);
+        if (bucket === 'bonus') {
+          if (cb.bonusUsed) {
+            toast('Bonus action already used this turn');
+            return false;
+          }
+          cb.bonusUsed = true;
+          if (!cb.bonusActionsUsed) cb.bonusActionsUsed = {};
+          cb.bonusActionsUsed['cast-spell'] = true;
+        } else if (bucket === 'reaction') {
+          if (cb.reactionUsed) {
+            toast('Reaction already used');
+            return false;
+          }
+          cb.reactionUsed = true;
+        } else {
+          cb.actionUsed = true;
+        }
+        if (sp.level > 0) {
+          const need = Math.max(sp.level, Number(slotLevel) || sp.level);
+          if (!spendSlot(need)) return false;
+        }
+        // Concentration warn + set
+        if (sp.concentration) {
+          if (cb.concentrating && cb.concentrating !== sp.name) {
+            // warn already handled by caller sometimes
+          }
+          cb.concentrating = sp.name;
+        }
+        return true;
+      }
+
+      async function doCast(sp, slotLevel) {
+        if (!sp) { toast('Select a spell'); return; }
+        if (sp.concentration && cb.concentrating && cb.concentrating !== sp.name) {
+          const ok = await openModal({
+            title: 'Concentration',
+            bodyHtml: `<p>Already concentrating on <strong>${escapeHtml(String(cb.concentrating))}</strong>.</p>
+              <p>Cast <strong>${escapeHtml(sp.name)}</strong> and drop the previous spell?</p>`,
+            confirmText: 'Drop & Cast',
+            onConfirm: () => true
+          });
+          if (!ok) return;
+        }
+        // Bonus-action leveled spell soft warning
+        const bucket = castingTimeBucket(sp.time);
+        if (bucket === 'bonus' && sp.level > 0 && cb.actionUsed) {
+          toast('Reminder: after a bonus-action spell, only a cantrip (action) that turn (2014)');
+        }
+        if (!applyCastEconomy(sp, slotLevel)) return;
+
+        // Prefill roller
+        const mode = panel.querySelector('#cr-mode');
+        const toHit = panel.querySelector('#cr-tohit') || panel.querySelector('input[id*="tohit"]') || panel.querySelector('#cr-bonus');
+        // find inputs by common ids
+        const hitIn = panel.querySelector('#cr-hit-bonus') || panel.querySelector('#cr-to-hit') || panel.querySelector('#cr-tohit');
+        const dmgIn = panel.querySelector('#cr-dmg') || panel.querySelector('#cr-damage') || panel.querySelector('#cr-damage-dice');
+        const dcIn = panel.querySelector('#cr-dc') || panel.querySelector('#cr-save-dc');
+        const cls = typeof classifySpellAction === 'function' ? classifySpellAction(sp.name, sp.description || '') : { kind: 'utility' };
+        if (mode) {
+          if (cls.kind === 'attack') mode.value = 'attack';
+          else if (cls.kind === 'save') mode.value = 'save';
+          else if (/missile|magic missile/i.test(sp.name)) mode.value = 'auto';
+          else mode.value = cls.kind === 'utility' ? 'utility' : 'save';
+        }
+        if (hitIn && (mode && mode.value === 'attack')) hitIn.value = String(stats.attack);
+        if (dcIn) dcIn.value = String(stats.dc);
+        const resEl = panel.querySelector('#combat-roll-result');
+        if (resEl) {
+          resEl.innerHTML = `<strong>${escapeHtml(sp.name)}</strong> cast` +
+            (sp.level > 0 ? ` at ${Math.max(sp.level, Number(slotLevel)||sp.level)} level` : ' (cantrip)') +
+            ` · ${escapeHtml(sp.time || 'Action')}` +
+            (sp.concentration ? ' · Concentrating ◎' : '') +
+            `<br><span class="muted small">Spell atk +${stats.attack} · DC ${stats.dc}. Use Roll / Apply for effect.</span>`;
+        }
+        try { save(); } catch (e) {}
+        toast('Cast ' + sp.name);
+        refreshCombatDetail();
+      }
+
+      panel.querySelector('#cr-spell-info')?.addEventListener('click', async () => {
+        const sp = currentSpell();
+        if (!sp) { toast('Select a spell'); return; }
+        const levels = Object.keys(cb.combatSpellSlots || {}).map(Number).sort((a,b)=>a-b);
+        const slotOptionsHtml = ['<option value="0">Cantrip / at-will</option>'].concat(
+          levels.filter(L => {
+            const row = cb.combatSpellSlots[L];
+            return row && ((row.max||0)-(row.used||0)) > 0 && L >= (sp.level || 0);
+          }).map(L => `<option value="${L}">${L}${L===1?'st':L===2?'nd':L===3?'rd':'th'}</option>`)
+        ).join('');
+        await openSpellDetailModal(sp, {
+          allowCast: true,
+          slotOptionsHtml,
+          onCast: (slot) => { doCast(sp, slot); }
+        });
+      });
+
+      panel.querySelector('#cr-spell-cast')?.addEventListener('click', () => {
+        const sp = currentSpell();
+        const slot = slotSel ? Number(slotSel.value) || 0 : 0;
+        doCast(sp, slot);
+      });
+
+      // Channel Divinity
+      panel.querySelectorAll('.cd-option-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.getAttribute('data-cd');
+          const opts = getChannelDivinityOptions(partyChar || cb);
+          const opt = opts.find(o => o.id === id);
+          if (!opt) return;
+          const max = getChannelDivinityMax(partyChar || cb);
+          if (!cb.combatResources) cb.combatResources = {};
+          if (!cb.combatResources['channel-divinity']) {
+            cb.combatResources['channel-divinity'] = { label: 'Channel Divinity', max: max, used: 0, recover: 'Short Rest' };
+          }
+          const row = cb.combatResources['channel-divinity'];
+          row.max = max;
+          if ((row.used || 0) >= max) { toast('No Channel Divinity uses left'); return; }
+          if (opt.actionType === 'action' && cb.actionUsed) {
+            toast('Action already used');
+            return;
+          }
+          const ok = await openModal({
+            title: opt.name,
+            bodyHtml: `<div class="detail-text">${formatRichText(opt.text)}</div>
+              <p class="muted small" style="margin-top:0.5rem">Spend 1 Channel Divinity${opt.save ? ' · Save ' + opt.save + ' vs DC ' + stats.dc : ''}.</p>`,
+            confirmText: 'Use',
+            onConfirm: () => true
+          });
+          if (!ok) return;
+          row.used = (row.used || 0) + 1;
+          if (opt.actionType === 'action') cb.actionUsed = true;
+          if (opt.id === 'turn-undead') {
+            const mode = panel.querySelector('#cr-mode');
+            const dcIn = panel.querySelector('#cr-dc') || panel.querySelector('#cr-save-dc');
+            if (mode) mode.value = 'save';
+            if (dcIn) dcIn.value = String(stats.dc);
+            const resEl = panel.querySelector('#combat-roll-result');
+            if (resEl) resEl.innerHTML = `<strong>Turn Undead</strong> · WIS save DC ${stats.dc}, 30 ft. On fail: Turned 1 minute or until damaged.`;
+            toast('Channel Divinity: Turn Undead');
+          } else {
+            toast('Channel Divinity used');
+          }
+          try { save(); } catch (e) {}
+          refreshCombatDetail();
+        });
+      });
+    })();
 
     panel.querySelector('#cr-apply-dmg')?.addEventListener('click', () => applyToTarget('damage'));
     panel.querySelector('#cr-apply-heal')?.addEventListener('click', () => applyToTarget('heal'));
