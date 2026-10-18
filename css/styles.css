@@ -3103,3 +3103,43 @@ button.turn-locked, select.turn-locked, input.turn-locked {
 .map-roster-card.enemy { border-left: 3px solid #a33; }
 .map-roster-card.ally { border-left: 3px solid #3a6ea3; }
 .map-roster-card.pc { border-left: 3px solid #3a8f5a; }
+
+/* Map-only pop-out window (Discord / player screen share) */
+body.map-popout #sidebar,
+body.map-popout .sidebar,
+body.map-popout #menu-toggle,
+body.map-popout .menu-toggle,
+body.map-popout .nav-item,
+body.map-popout .app-nav,
+body.map-popout .view-desc,
+body.map-popout #view-combat,
+body.map-popout #view-tools {
+  display: none !important;
+}
+body.map-popout #view-map {
+  display: flex !important;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0.5rem;
+  min-height: 100dvh;
+}
+body.map-popout .map-layout {
+  grid-template-columns: 1fr minmax(220px, 280px);
+  flex: 1;
+  min-height: 0;
+}
+body.map-popout .map-canvas-wrap {
+  flex: 1;
+  min-height: 60vh;
+}
+body.map-popout .map-roster {
+  max-height: calc(100dvh - 8rem);
+}
+body.map-popout .view-header h1::after {
+  content: " (shared window)";
+  font-size: 0.7em;
+  opacity: 0.7;
+  font-weight: 400;
+}

@@ -80,6 +80,7 @@
           <h1>Combat Tracker</h1>
           <div class="header-actions">
             <button id="combat-clear-btn" class="btn danger ghost">Clear</button>
+            <button type="button" class="btn secondary" id="combat-map-popout-btn" title="Open map window for players / Discord">Pop out map</button>
             <button id="combat-next-btn" class="btn primary">Next Turn</button>
           </div>
         </div>
@@ -146,6 +147,7 @@
             <label class="btn secondary" for="map-file-image" id="map-import-image-btn" style="cursor:pointer;margin:0">Import Image</label>
             <label class="btn secondary" for="map-file-uvtt" id="map-import-uvtt-btn" style="cursor:pointer;margin:0">Import UVTT / DD2VTT</label>
             <button type="button" class="btn secondary" id="map-clear-btn">Clear Map</button>
+            <button type="button" class="btn primary" id="map-popout-btn" title="Open map in a separate window for screen share">Pop out map</button>
           </div>
         </div>
         <p class="view-desc">Import a map (image or Dungeon Alchemist / Dungeondraft <strong>UVTT</strong>). Place combatants, set grid, and paint AoE to select targets for the combat roller.</p>

@@ -614,6 +614,8 @@
   }
 
   function save() {
+    try { if (typeof notifyMapWindows === "function") setTimeout(notifyMapWindows, 0); } catch (e) {}
+
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         campaigns: state.campaigns,
@@ -8628,6 +8630,10 @@ function escapeHtml(str) {
   // ─── Init ────────────────────────────────────────────────────────────────
   function init() {
     try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) { console.warn('map ui', e); }
+    try { bindMapCrossWindowSync(); } catch (e) {}
+    try { applyMapPopoutMode(); } catch (e) {}
+    document.getElementById('combat-map-popout-btn')?.addEventListener('click', () => openMapPopout());
+    document.getElementById('map-popout-btn')?.addEventListener('click', () => openMapPopout());
     loadUserCompendiumAsync().then(() => {
       try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
       if (typeof renderCompendiumTools === 'function' && $('#compendium-tools')) renderCompendiumTools();
@@ -8812,6 +8818,92 @@ function escapeHtml(str) {
       map.tokens[id] = snapWorldToGrid(map, p.x, p.y);
     });
   }
+
+  
+  function openMapPopout() {
+    try { ensureCombatWorkspace(); } catch (e) {}
+    try { save(); } catch (e) {}
+    const url = new URL(window.location.href);
+    url.searchParams.set('mapPopout', '1');
+    // drop hash noise
+    const w = window.open(url.toString(), 'dsc_map_popout', 'noopener,noreferrer,width=1280,height=800');
+    if (!w) {
+      toast('Pop-up blocked — allow pop-ups for this site');
+      return;
+    }
+    toast('Map window opened — share that window on Discord');
+  }
+
+  function isMapPopoutMode() {
+    try {
+      return new URLSearchParams(window.location.search).get('mapPopout') === '1';
+    } catch (e) { return false; }
+  }
+
+  function applyMapPopoutMode() {
+    if (!isMapPopoutMode()) return;
+    document.body.classList.add('map-popout');
+    document.title = (document.title || 'Combat Tracker') + ' — Map';
+    try {
+      if (typeof setView === 'function') setView('map');
+    } catch (e) {}
+    // Hide chrome that setView might not cover
+    const side = document.getElementById('sidebar');
+    if (side) side.style.display = 'none';
+    try {
+      initBattleMapUi();
+      refreshMapTokenSelect();
+      renderBattleMap();
+      renderMapRoster();
+    } catch (e) { console.warn(e); }
+  }
+
+  function bindMapCrossWindowSync() {
+    if (window.__mapSyncBound) return;
+    window.__mapSyncBound = true;
+    // localStorage from other window (same origin)
+    window.addEventListener('storage', (e) => {
+      if (!e.key) return;
+      // reload state when combat workspace changes
+      try {
+        if (typeof load === 'function') load();
+      } catch (err) {}
+      if (isMapPopoutMode() || (document.getElementById('view-map') || {}).classList?.contains('active')) {
+        try { refreshMapTokenSelect(); renderBattleMap(); renderMapRoster(); } catch (err) {}
+      }
+      if (!isMapPopoutMode() && (document.getElementById('view-combat') || {}).classList?.contains('active')) {
+        try { renderCombat(); } catch (err) {}
+      }
+    });
+    // BroadcastChannel for same-browser live updates
+    try {
+      const bc = new BroadcastChannel('dsc_combat_map_sync');
+      window.__mapBc = bc;
+      bc.onmessage = (ev) => {
+        if (!ev.data || ev.data.type !== 'state') return;
+        try {
+          if (typeof load === 'function') load();
+        } catch (err) {}
+        try {
+          if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
+            refreshMapTokenSelect();
+            renderBattleMap();
+            renderMapRoster();
+          }
+          if (!isMapPopoutMode() && document.getElementById('view-combat')?.classList.contains('active')) {
+            renderCombat();
+          }
+        } catch (err) {}
+      };
+    } catch (e) {}
+  }
+
+  function notifyMapWindows() {
+    try {
+      if (window.__mapBc) window.__mapBc.postMessage({ type: 'state', t: Date.now() });
+    } catch (e) {}
+  }
+
 
   function getCombatMap() {
     const c = getActive();
@@ -9213,6 +9305,7 @@ function escapeHtml(str) {
       triggerUvttImport();
     });
 
+    document.getElementById('map-popout-btn')?.addEventListener('click', () => openMapPopout());
     document.getElementById('map-clear-btn')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
