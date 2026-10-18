@@ -8672,11 +8672,8 @@ function escapeHtml(str) {
     });
   }
 
-  if (document.readyState === 'loading') {
-    
   document.body.dataset.app = 'combat-tracker';
 
-  
   // ═══════════════════════════════════════════════════════════
   // Battle Map — image / UVTT + tokens + AoE
   // ═══════════════════════════════════════════════════════════
@@ -8985,80 +8982,16 @@ function escapeHtml(str) {
       inp.click();
     }
 
+    // Labels use for="map-file-*" — native open. Also allow programmatic click.
     document.getElementById('map-import-image-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      if (e.target && e.target.tagName === 'LABEL') return; // native for=
       triggerImageImport();
     });
     document.getElementById('map-import-uvtt-btn')?.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      if (e.target && e.target.tagName === 'LABEL') return;
       triggerUvttImport();
     });
-    // Event delegation backup (works even if buttons re-rendered)
-    document.body.addEventListener('click', (e) => {
-      const t = e.target && e.target.closest && e.target.closest('#map-import-image-btn, #map-import-uvtt-btn, #map-clear-btn, #map-apply-aoe-targets, #map-clear-aoe');
-      if (!t) return;
-      if (t.id === 'map-import-image-btn') { e.preventDefault(); triggerImageImport(); }
-      if (t.id === 'map-import-uvtt-btn') { e.preventDefault(); triggerUvttImport(); }
-    });
-    document.getElementById('map-file-image')?.addEventListener('change', (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        try { ensureCombatWorkspace(); } catch (err) {}
-        const map = getCombatMap();
-        if (!map) { toast('No workspace — open Combat once first'); return; }
-        map.imageDataUrl = reader.result;
-        map.walls = map.walls || [];
-        map.tokens = map.tokens || {};
-        map.aoe = null;
-        const gs = document.getElementById('map-grid-size');
-        if (gs) map.gridSize = Number(gs.value) || 70;
-        try { save(); } catch (err) {
-          console.warn(err);
-          toast('Map loaded in memory (save failed — image may be large)');
-        }
-        renderBattleMap();
-        toast('Map image loaded');
-      };
-      reader.onerror = () => toast('Failed to read image file');
-      reader.readAsDataURL(f);
-      e.target.value = '';
-    });
-    document.getElementById('map-file-uvtt')?.addEventListener('change', async (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      try {
-        const text = await f.text();
-        const parsed = parseUvttFile(text);
-        try { ensureCombatWorkspace(); } catch (err) {}
-        const map = getCombatMap();
-        if (!map) { toast('No workspace — open Combat once first'); return; }
-        if (!parsed.imageDataUrl) {
-          toast('UVTT had no embedded image — import image separately');
-        } else {
-          map.imageDataUrl = parsed.imageDataUrl;
-        }
-        map.gridSize = parsed.gridSize || 70;
-        map.walls = parsed.walls || [];
-        map.tokens = map.tokens || {};
-        map.aoe = null;
-        const gs = document.getElementById('map-grid-size');
-        if (gs) gs.value = String(map.gridSize);
-        try { save(); } catch (err) {
-          console.warn(err);
-          toast('UVTT loaded (save failed — file may be large)');
-        }
-        renderBattleMap();
-        toast('UVTT imported (' + map.walls.length + ' wall segments)');
-      } catch (err) {
-        console.warn(err);
-        toast('Could not parse UVTT/JSON');
-      }
-      e.target.value = '';
-    });
+
     document.getElementById('map-clear-btn')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
@@ -9105,6 +9038,63 @@ function escapeHtml(str) {
         setTimeout(() => { try { applyAoeTargetsToRoller(); } catch (e) {} }, 100);
       } catch (e) {}
     });
+
+
+    if (!window.__mapFileChangeBound) {
+      window.__mapFileChangeBound = true;
+      document.addEventListener('change', async (e) => {
+        const el = e.target;
+        if (!el || !el.id) return;
+        if (el.id === 'map-file-image') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            try { ensureCombatWorkspace(); } catch (err) {}
+            const map = getCombatMap();
+            if (!map) { toast('No workspace — open Combat once first'); return; }
+            map.imageDataUrl = reader.result;
+            map.tokens = map.tokens || {};
+            map.walls = map.walls || [];
+            map.aoe = null;
+            const gs = document.getElementById('map-grid-size');
+            if (gs) map.gridSize = Number(gs.value) || 70;
+            try { save(); } catch (err) { console.warn(err); }
+            renderBattleMap();
+            toast('Map image loaded');
+          };
+          reader.onerror = () => toast('Failed to read image');
+          reader.readAsDataURL(f);
+          el.value = '';
+        }
+        if (el.id === 'map-file-uvtt') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          try {
+            const text = await f.text();
+            const parsed = parseUvttFile(text);
+            try { ensureCombatWorkspace(); } catch (err) {}
+            const map = getCombatMap();
+            if (!map) { toast('No workspace — open Combat once first'); return; }
+            if (parsed.imageDataUrl) map.imageDataUrl = parsed.imageDataUrl;
+            else toast('UVTT has no image — import image separately');
+            map.gridSize = parsed.gridSize || 70;
+            map.walls = parsed.walls || [];
+            map.tokens = map.tokens || {};
+            map.aoe = null;
+            const gs = document.getElementById('map-grid-size');
+            if (gs) gs.value = String(map.gridSize);
+            try { save(); } catch (err) { console.warn(err); }
+            renderBattleMap();
+            toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+          } catch (err) {
+            console.warn(err);
+            toast('Could not parse UVTT: ' + (err.message || err));
+          }
+          el.value = '';
+        }
+      });
+    }
 
     const canvas = document.getElementById('map-canvas');
     if (canvas && !canvas.dataset.mapBound) {
@@ -9176,10 +9166,8 @@ function escapeHtml(str) {
     }
   }
 
-  // Hook navigation to render map
-  const _origSetViewMap = typeof setView === 'function' ? setView : null;
-
-  document.addEventListener('DOMContentLoaded', init);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
