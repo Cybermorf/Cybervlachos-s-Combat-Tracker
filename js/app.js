@@ -885,7 +885,7 @@
           btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
           btn.title = collapsed ? 'Show menu' : 'Hide menu';
         });
-        try { localStorage.setItem('cv_combat_sidebar_v3', collapsed ? '1' : '0'); } catch (e) {}
+        try { localStorage.setItem('cv_combat_sidebar_v4', collapsed ? '1' : '0'); } catch (e) {}
       }
       function toggle() {
         const collapsed = !document.body.classList.contains('sidebar-collapsed');
@@ -896,13 +896,13 @@
           setCollapsed(open); // if open -> collapse; if closed -> show
           if (!open) { if (sb) sb.classList.add('open'); document.body.classList.remove('sidebar-collapsed'); }
           else { if (sb) sb.classList.remove('open'); }
-          try { localStorage.setItem('cv_combat_sidebar_v3', open ? '1' : '0'); } catch (e) {}
+          try { localStorage.setItem('cv_combat_sidebar_v4', open ? '1' : '0'); } catch (e) {}
           return;
         }
         setCollapsed(!document.body.classList.contains('sidebar-collapsed') ? true : false);
         setCollapsed(document.body.classList.contains('sidebar-collapsed'));
         document.body.classList.toggle('sidebar-collapsed');
-        try { localStorage.setItem('cv_combat_sidebar_v3', document.body.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch (e) {}
+        try { localStorage.setItem('cv_combat_sidebar_v4', document.body.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch (e) {}
         document.querySelectorAll('#sidebar-collapse-btn, #menu-toggle').forEach(function(btn) {
           if (!btn) return;
           const col = document.body.classList.contains('sidebar-collapsed');
@@ -926,7 +926,7 @@
             document.body.classList.toggle('sidebar-collapsed');
           }
           const col = document.body.classList.contains('sidebar-collapsed');
-          try { localStorage.setItem('cv_combat_sidebar_v3', col ? '1' : '0'); } catch (err) {}
+          try { localStorage.setItem('cv_combat_sidebar_v4', col ? '1' : '0'); } catch (err) {}
           document.querySelectorAll('#sidebar-collapse-btn, #menu-toggle').forEach(function(b) {
             if (!b) return;
             b.setAttribute('aria-expanded', col ? 'false' : 'true');
@@ -936,12 +936,11 @@
       });
       // Restore preference (default: menu visible)
       try {
-        if (localStorage.getItem('cv_combat_sidebar_v3') === '1') {
+        // Default menu OPEN — only collapse if user explicitly set v4
+        if (localStorage.getItem('cv_combat_sidebar_v4') === '1') {
           document.body.classList.add('sidebar-collapsed');
         } else {
           document.body.classList.remove('sidebar-collapsed');
-          const sb = document.getElementById('sidebar');
-          if (sb && isMobile()) sb.classList.remove('open');
         }
       } catch (e) {}
     })();
@@ -1701,6 +1700,78 @@
   }
 
 
+  
+  function bonusActionOptionsForCharacter(ch) {
+    if (!ch) return [];
+    const opts = [];
+    const push = (id, label, limit, note) => {
+      opts.push({ id: id, label: label, limit: limit || '', note: note || '' });
+    };
+    let list = [];
+    try {
+      if (typeof normalizeClassLevels === 'function') list = normalizeClassLevels(ch) || [];
+    } catch (e) {}
+    if (!list.length && (ch.className || ch.class)) {
+      list = [{ name: ch.className || ch.class, level: Number(ch.level) || 1, subclass: ch.subclass || '' }];
+    }
+    if (Array.isArray(ch.classes) && !list.length) {
+      list = ch.classes.map(function(c) {
+        return typeof c === 'string' ? { name: c, level: Number(ch.level) || 1 } : { name: c.name || c.className || '', level: Number(c.level) || 1, subclass: c.subclass || '' };
+      });
+    }
+    list.forEach(function(cl) {
+      const name = String(cl.name || '');
+      const lvl = Number(cl.level) || 1;
+      const sub = String(cl.subclass || ch.subclass || '').toLowerCase();
+      const low = name.toLowerCase();
+      if (low === 'barbarian') {
+        const rageMax = lvl < 3 ? 2 : lvl < 6 ? 3 : lvl < 12 ? 4 : lvl < 17 ? 5 : lvl < 20 ? 6 : 99;
+        push('rage', 'Rage', rageMax >= 99 ? 'Unlimited (20)' : rageMax + '/LR', 'Bonus action; while raging: advantage on STR checks/saves, bonus rage damage, resistance to B/P/S');
+      }
+      if (low === 'fighter' && lvl >= 1) {
+        push('second-wind', 'Second Wind', '1/SR', 'Bonus action; regain 1d10 + fighter level HP');
+      }
+      if (low === 'rogue' && lvl >= 2) {
+        push('cunning-action', 'Cunning Action', 'Each turn', 'Bonus action: Dash, Disengage, or Hide');
+      }
+      if (low === 'monk' && lvl >= 2) {
+        push('patient-defense', 'Patient Defense', '1 Ki', 'Bonus action: Dodge');
+        push('step-of-the-wind', 'Step of the Wind', '1 Ki', 'Bonus action: Dash or Disengage; jump distance doubled on Dash');
+        push('flurry-of-blows', 'Flurry of Blows', '1 Ki', 'Bonus action after Attack action: two unarmed strikes');
+        if (lvl >= 1) push('martial-arts-ba', 'Martial Arts (bonus unarmed/weapon)', 'After Attack action', 'One unarmed strike or monk weapon attack as bonus action');
+      }
+      if (low === 'moon guardian' && lvl >= 2) {
+        push('lunar-ba', 'Lunar feature (bonus)', 'Uses Lunar Charges', 'Path-dependent Moon Guardian bonus options');
+      }
+      if (low === 'paladin' && lvl >= 2) {
+        push('divine-smite', 'Divine Smite', 'Spell slot', 'On hit (not a BA itself — listed for reference); Lay on Hands is Action');
+      }
+      if (low === 'ranger' && lvl >= 3 && /hunter|beast|gloom|horizon|monster|fey|swarm/i.test(sub)) {
+        push('ranger-ba', 'Ranger subclass option', 'Per feature', 'Many ranger features use bonus action (Hunter’s Mark is BA to cast)');
+      }
+      if (low === 'bard' && lvl >= 1) {
+        push('bardic-inspiration', 'Bardic Inspiration', 'CHA mod/LR (or SR at 5+)', 'Bonus action; inspire one creature within 60 ft');
+      }
+      if (low === 'cleric' && /trickery|life|war/i.test(sub)) {
+        push('cleric-channel-ba', 'Channel Divinity / domain BA', 'Per feature', 'Some domains use bonus action');
+      }
+      if (low === 'sorcerer' && lvl >= 2) {
+        push('quickened-spell', 'Quickened Spell', '2 sorcery points', 'Cast a 1-action spell as a bonus action');
+      }
+      if (low === 'warlock' && /hexblade|fiend|archfey/i.test(sub)) {
+        push('hex', 'Hex (cast)', 'Spell slot', 'Bonus action to cast Hex; BA to move Hex after target dies');
+      }
+      if (low === 'druid' && lvl >= 2) {
+        push('wild-shape', 'Wild Shape', '2/SR (improved later)', 'Usually Action; Circle of Moon combat forms still Action');
+      }
+    });
+    // Generic / weapon
+    push('two-weapon', 'Two-Weapon Fighting', 'If dual wielding', 'Bonus action attack with off-hand light weapon (after Attack action)');
+    push('other-ba', 'Other bonus action', '—', 'Spell or feature not listed (e.g. Healing Word, Misty Step, Spiritual Weapon)');
+    return opts;
+  }
+
+
   function attacksPerAction(ch) {
     if (!ch) return 1;
     let n = 1;
@@ -1913,7 +1984,7 @@
     </div>`;
   }
 
-  function combatAttacksBudgetHtml(cb) {
+  function combatAttacksBudgetHtml(cb, ch) {
     const max = cb.attacksMax != null ? cb.attacksMax : 1;
     const used = cb.attacksUsed || 0;
     const left = Math.max(0, max - used);
@@ -1922,56 +1993,73 @@
     const moveLeft = Math.max(0, speed - moveUsed);
     const phase = cb.turnPhase || 'ready';
     const phaseLabel = phase === 'active' ? 'Your turn' : phase === 'ended' ? 'Turn ended' : 'Waiting';
-    const done = (flag) => flag ? 'stage-done' : 'stage-open';
     const badge = (flag, openLabel) => flag
       ? '<span class="stage-badge used">Used</span>'
       : `<span class="stage-badge open">${openLabel || 'Available'}</span>`;
 
+    // Independent trackers — move / action / bonus may be used in any order or split
+    const baOpts = (typeof bonusActionOptionsForCharacter === 'function')
+      ? bonusActionOptionsForCharacter(ch || null)
+      : [];
+    const baUsedMap = cb.bonusActionsUsed || {};
+    const baListHtml = baOpts.length
+      ? `<ul class="ba-options-list">${baOpts.map(function(o) {
+          const spent = !!baUsedMap[o.id];
+          return `<li class="ba-option ${spent ? 'spent' : ''}" data-ba-id="${escapeAttr(o.id)}">
+            <button type="button" class="btn secondary btn-tiny ba-toggle" data-ba-id="${escapeAttr(o.id)}">${spent ? '✓' : '○'}</button>
+            <span class="ba-label"><strong>${escapeHtml(o.label)}</strong>
+              <span class="muted small">${escapeHtml(o.limit || '')}</span>
+              ${o.note ? `<span class="ba-note muted small">${escapeHtml(o.note)}</span>` : ''}
+            </span>
+          </li>`;
+        }).join('')}</ul>`
+      : '<p class="muted small">No class bonus actions detected — use “Mark used” or Other.</p>';
+
     return `<div class="combat-turn-board">
       <div class="turn-board-header">
-        <span class="detail-label">Turn stages</span>
+        <span class="detail-label">Turn economy</span>
         <span class="turn-phase-pill phase-${escapeHtml(phase)}">${escapeHtml(phaseLabel)}</span>
       </div>
+      <p class="muted small turn-econ-hint">Move, Action, and Bonus action are <strong>independent</strong> — you may split movement before/after actions, or not move at all.</p>
 
-      <section class="turn-stage ${phase === 'active' || phase === 'ended' ? 'stage-current' : ''} ${done(false)}" data-stage="start">
+      <section class="turn-stage" data-stage="start">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">1</span>
+          <span class="turn-stage-num">⏱</span>
           <strong>Start of turn</strong>
           ${phase === 'active' || phase === 'ended' ? '<span class="stage-badge open">Begun</span>' : '<span class="stage-badge muted">Pending</span>'}
         </div>
-        <p class="muted small">Effects that end “at the start of your turn” resolve here. Reaction refreshes. Death saves if at 0 HP.</p>
-        <div class="tool-btns">
-          <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
-        </div>
+        <p class="muted small">Start-of-turn effects · reaction refreshes · death saves at 0 HP.</p>
+        <button type="button" class="btn primary btn-tiny" id="cd-start-turn">Start turn</button>
       </section>
 
-      <section class="turn-stage ${done(moveUsed > 0)}" data-stage="move">
+      <section class="turn-stage ${moveUsed > 0 ? 'stage-partial' : ''}" data-stage="move">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">2</span>
+          <span class="turn-stage-num">M</span>
           <strong>Movement</strong>
-          ${moveUsed > 0 ? `<span class="stage-badge used">${moveUsed} ft used</span>` : '<span class="stage-badge open">Not moved</span>'}
+          ${moveUsed <= 0 ? '<span class="stage-badge open">Full speed</span>' : (moveLeft <= 0 ? '<span class="stage-badge used">All used</span>' : `<span class="stage-badge open">${moveLeft} ft left</span>`)}
         </div>
+        <p class="muted small">Can be split anytime during your turn — not a prerequisite for Action.</p>
         <div class="combat-res-row">
           <span class="combat-res-val"><strong>${moveLeft}</strong> / ${speed} ft left</span>
-          <button type="button" class="btn secondary btn-tiny" id="cd-move-dec" title="Restore 5 ft">−5</button>
-          <button type="button" class="btn secondary btn-tiny" id="cd-move-inc" title="Spend 5 ft">+5</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-dec">−5</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-move-inc">+5</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-move-all">All</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-move-reset">Reset</button>
         </div>
       </section>
 
-      <section class="turn-stage ${done(cb.actionUsed)}" data-stage="action">
+      <section class="turn-stage ${cb.actionUsed || used > 0 ? 'stage-partial' : ''}" data-stage="action">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">3</span>
+          <span class="turn-stage-num">A</span>
           <strong>Action</strong>
-          ${badge(cb.actionUsed)}
+          ${badge(!!cb.actionUsed || used >= max, used > 0 && !cb.actionUsed ? 'Attacks spent' : 'Available')}
         </div>
-        <p class="muted small">Attack · Cast a Spell · Dash · Disengage · Dodge · Help · Hide · Ready · Search · Use object…</p>
+        <p class="muted small">Attack · Cast · Dash · Disengage · Dodge · Help · Hide · Ready · … — independent of movement.</p>
         <div class="combat-res-row">
           <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Mark available' : 'Mark used'}</button>
         </div>
         <div class="turn-stage-sub">
-          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack · level/multiclass)</span></div>
+          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack · multiclass = best progression)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
@@ -1981,46 +2069,46 @@
         </div>
       </section>
 
-      <section class="turn-stage ${done(cb.bonusUsed)}" data-stage="bonus">
+      <section class="turn-stage ${cb.bonusUsed ? 'stage-partial' : ''}" data-stage="bonus">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">4</span>
+          <span class="turn-stage-num">B</span>
           <strong>Bonus action</strong>
-          ${badge(cb.bonusUsed)}
+          ${badge(!!cb.bonusUsed)}
         </div>
-        <p class="muted small">Only if a feature or spell grants one.</p>
-        <button type="button" class="btn secondary btn-tiny" id="cd-bonus-toggle">${cb.bonusUsed ? 'Mark available' : 'Mark used'}</button>
+        <p class="muted small">One bonus action per turn if a feature grants it. Track options below:</p>
+        ${baListHtml}
+        <button type="button" class="btn secondary btn-tiny" id="cd-bonus-toggle" style="margin-top:0.35rem">${cb.bonusUsed ? 'Clear bonus used' : 'Mark bonus used'}</button>
       </section>
 
-      <section class="turn-stage ${done(cb.objectInteractUsed)}" data-stage="object">
+      <section class="turn-stage" data-stage="object">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">5</span>
+          <span class="turn-stage-num">O</span>
           <strong>Object interaction</strong>
-          ${badge(cb.objectInteractUsed)}
+          ${badge(!!cb.objectInteractUsed)}
         </div>
-        <p class="muted small">Draw/stow a weapon, open a door, pick up an item…</p>
+        <p class="muted small">Draw/stow weapon, open door… (free once per turn).</p>
         <button type="button" class="btn secondary btn-tiny" id="cd-object-toggle">${cb.objectInteractUsed ? 'Mark available' : 'Mark used'}</button>
       </section>
 
-      <section class="turn-stage ${done(phase === 'ended')}" data-stage="end">
+      <section class="turn-stage" data-stage="end">
         <div class="turn-stage-head">
-          <span class="turn-stage-num">6</span>
+          <span class="turn-stage-num">E</span>
           <strong>End of turn</strong>
           ${phase === 'ended' ? '<span class="stage-badge used">Ended</span>' : '<span class="stage-badge open">Not yet</span>'}
         </div>
-        <p class="muted small">Effects that end “at the end of your turn” resolve here.</p>
         <div class="tool-btns">
           <button type="button" class="btn secondary btn-tiny" id="cd-end-turn-local">Mark turn ended</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-reset-turn">Reset turn economy</button>
         </div>
       </section>
 
-      <section class="turn-stage turn-stage-anytime ${cb.reactionUsed ? 'stage-done' : 'stage-open'}" data-stage="reaction">
+      <section class="turn-stage turn-stage-anytime ${cb.reactionUsed ? 'stage-partial' : ''}" data-stage="reaction">
         <div class="turn-stage-head">
           <span class="turn-stage-num">⟳</span>
           <strong>Reaction</strong>
-          ${badge(cb.reactionUsed, 'Ready anytime')}
+          ${badge(!!cb.reactionUsed, 'Ready anytime')}
         </div>
-        <p class="muted small">Available <em>any time</em> until the start of your next turn (not only on your turn).</p>
+        <p class="muted small">Available any time until the start of your next turn.</p>
         <button type="button" class="btn secondary btn-tiny" id="cd-reaction-toggle">${cb.reactionUsed ? 'Restore reaction' : 'Use reaction'}</button>
       </section>
 
@@ -2030,7 +2118,6 @@
           <strong>Legendary actions</strong>
           <span class="stage-badge open">${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3} left</span>
         </div>
-        <p class="muted small">At the end of another creature’s turn.</p>
         <div class="combat-res-row">
           <button type="button" class="btn secondary btn-tiny" id="cd-la-dec">−</button>
           <span class="combat-res-val"><strong>${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3}</strong> / ${cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3}</span>
@@ -5624,7 +5711,7 @@ function parseAttackLines(ch) {
             <div class="muted small" style="margin-top:0.25rem">Temp HP: <strong id="cd-temphp-val">${cb.tempHp || 0}</strong>
               ${cb.concentrating ? ' · <span style="color:#c4a35a">Concentrating</span>' : ''}</div>
           </div>
-          ${typeof combatAttacksBudgetHtml === 'function' ? combatAttacksBudgetHtml(cb) : ''}
+          ${typeof combatAttacksBudgetHtml === 'function' ? combatAttacksBudgetHtml(cb, (typeof partyChar !== 'undefined' && partyChar) ? partyChar : (typeof _ch !== 'undefined' ? _ch : null)) : ''}
           ${typeof combatResourcesHtml === 'function' ? combatResourcesHtml(cb) : ''}
           ${typeof combatSpellSlotsHtml === 'function' ? combatSpellSlotsHtml(cb) : ''}
           <div class="detail-block">
@@ -5867,6 +5954,7 @@ function parseAttackLines(ch) {
           if (!confirm('Attack budget for this turn is used (' + maxAtk + '). Roll anyway?')) return;
         } else {
           cb.attacksUsed = (cb.attacksUsed || 0) + 1;
+          cb.actionUsed = true; // Attack action (independent of movement)
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
@@ -6200,6 +6288,21 @@ function parseAttackLines(ch) {
     panel.querySelector('#cd-bonus-toggle')?.addEventListener('click', () => {
       cb.bonusUsed = !cb.bonusUsed; refreshCombatDetail();
     });
+
+    panel.querySelectorAll('.ba-toggle').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const id = btn.getAttribute('data-ba-id');
+        if (!id) return;
+        if (!cb.bonusActionsUsed) cb.bonusActionsUsed = {};
+        cb.bonusActionsUsed[id] = !cb.bonusActionsUsed[id];
+        // If any BA option spent, mark bonus used
+        const any = Object.keys(cb.bonusActionsUsed).some(function(k) { return cb.bonusActionsUsed[k]; });
+        cb.bonusUsed = any;
+        try { save(); } catch (e) {}
+        refreshCombatDetail();
+      });
+    });
+
     panel.querySelector('#cd-object-toggle')?.addEventListener('click', () => {
       cb.objectInteractUsed = !cb.objectInteractUsed; refreshCombatDetail();
     });

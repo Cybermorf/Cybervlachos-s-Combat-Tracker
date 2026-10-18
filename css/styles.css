@@ -2937,3 +2937,44 @@ body[data-app="combat-tracker"]:not(.sidebar-collapsed) .sidebar {
   min-width: var(--sidebar-w, 220px) !important;
   max-width: var(--sidebar-w, 220px) !important;
 }
+
+/* menu force visible */
+body[data-app="combat-tracker"]:not(.sidebar-collapsed) {
+  --sidebar-w: 220px !important;
+}
+body[data-app="combat-tracker"]:not(.sidebar-collapsed) .sidebar {
+  display: flex !important;
+  opacity: 1 !important;
+  width: 220px !important;
+  min-width: 220px !important;
+  max-width: 220px !important;
+  pointer-events: auto !important;
+  transform: none !important;
+  visibility: visible !important;
+}
+body[data-app="combat-tracker"]:not(.sidebar-collapsed) #app {
+  grid-template-columns: 220px 1fr !important;
+}
+.ba-options-list {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.ba-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.25rem 0.35rem;
+  border-radius: 6px;
+  background: rgba(0,0,0,0.2);
+}
+.ba-option.spent { opacity: 0.65; }
+.ba-label { display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.82rem; }
+.ba-note { display: block; }
+.turn-econ-hint { margin: 0 0 0.35rem; }
+.turn-stage.stage-partial {
+  border-color: rgba(196, 163, 90, 0.35);
+}
