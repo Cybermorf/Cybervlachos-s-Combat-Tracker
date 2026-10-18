@@ -1704,8 +1704,11 @@
   function bonusActionOptionsForCharacter(ch) {
     if (!ch) return [];
     const opts = [];
-    const push = (id, label, limit, note) => {
-      opts.push({ id: id, label: label, limit: limit || '', note: note || '' });
+    const seen = new Set();
+    const push = (id, label, limit, note, extraBA) => {
+      if (seen.has(id)) return;
+      seen.add(id);
+      opts.push({ id: id, label: label, limit: limit || '', note: note || '', grantsExtraBA: !!extraBA });
     };
     let list = [];
     try {
@@ -1726,7 +1729,7 @@
       const low = name.toLowerCase();
       if (low === 'barbarian') {
         const rageMax = lvl < 3 ? 2 : lvl < 6 ? 3 : lvl < 12 ? 4 : lvl < 17 ? 5 : lvl < 20 ? 6 : 99;
-        push('rage', 'Rage', rageMax >= 99 ? 'Unlimited (20)' : rageMax + '/LR', 'Bonus action; while raging: advantage on STR checks/saves, bonus rage damage, resistance to B/P/S');
+        push('rage', 'Rage', rageMax >= 99 ? 'Unlimited (20)' : rageMax + '/LR', 'Bonus action to enter rage');
       }
       if (low === 'fighter' && lvl >= 1) {
         push('second-wind', 'Second Wind', '1/SR', 'Bonus action; regain 1d10 + fighter level HP');
@@ -1734,40 +1737,62 @@
       if (low === 'rogue' && lvl >= 2) {
         push('cunning-action', 'Cunning Action', 'Each turn', 'Bonus action: Dash, Disengage, or Hide');
       }
-      if (low === 'monk' && lvl >= 2) {
-        push('patient-defense', 'Patient Defense', '1 Ki', 'Bonus action: Dodge');
-        push('step-of-the-wind', 'Step of the Wind', '1 Ki', 'Bonus action: Dash or Disengage; jump distance doubled on Dash');
-        push('flurry-of-blows', 'Flurry of Blows', '1 Ki', 'Bonus action after Attack action: two unarmed strikes');
-        if (lvl >= 1) push('martial-arts-ba', 'Martial Arts (bonus unarmed/weapon)', 'After Attack action', 'One unarmed strike or monk weapon attack as bonus action');
+      if (low === 'monk') {
+        if (lvl >= 1) push('martial-arts-ba', 'Martial Arts (bonus strike)', 'After Attack action', 'Bonus unarmed or monk weapon attack');
+        if (lvl >= 2) {
+          push('patient-defense', 'Patient Defense', '1 Ki', 'Bonus action: Dodge');
+          push('step-of-the-wind', 'Step of the Wind', '1 Ki', 'Bonus action: Dash or Disengage');
+          push('flurry-of-blows', 'Flurry of Blows', '1 Ki', 'Bonus action after Attack: two unarmed strikes');
+        }
       }
       if (low === 'moon guardian' && lvl >= 2) {
-        push('lunar-ba', 'Lunar feature (bonus)', 'Uses Lunar Charges', 'Path-dependent Moon Guardian bonus options');
-      }
-      if (low === 'paladin' && lvl >= 2) {
-        push('divine-smite', 'Divine Smite', 'Spell slot', 'On hit (not a BA itself — listed for reference); Lay on Hands is Action');
-      }
-      if (low === 'ranger' && lvl >= 3 && /hunter|beast|gloom|horizon|monster|fey|swarm/i.test(sub)) {
-        push('ranger-ba', 'Ranger subclass option', 'Per feature', 'Many ranger features use bonus action (Hunter’s Mark is BA to cast)');
+        push('lunar-ba', 'Lunar feature (bonus)', 'Lunar Charges', 'Path-dependent Moon Guardian bonus action');
       }
       if (low === 'bard' && lvl >= 1) {
-        push('bardic-inspiration', 'Bardic Inspiration', 'CHA mod/LR (or SR at 5+)', 'Bonus action; inspire one creature within 60 ft');
-      }
-      if (low === 'cleric' && /trickery|life|war/i.test(sub)) {
-        push('cleric-channel-ba', 'Channel Divinity / domain BA', 'Per feature', 'Some domains use bonus action');
+        push('bardic-inspiration', 'Bardic Inspiration', 'CHA mod / LR (SR at 5+)', 'Bonus action; inspire one creature within 60 ft');
       }
       if (low === 'sorcerer' && lvl >= 2) {
         push('quickened-spell', 'Quickened Spell', '2 sorcery points', 'Cast a 1-action spell as a bonus action');
       }
-      if (low === 'warlock' && /hexblade|fiend|archfey/i.test(sub)) {
-        push('hex', 'Hex (cast)', 'Spell slot', 'Bonus action to cast Hex; BA to move Hex after target dies');
+      if (low === 'warlock') {
+        push('hex-ba', 'Hex (cast / move)', 'Spell slot / free move', 'BA to cast Hex; BA to move after target drops');
       }
-      if (low === 'druid' && lvl >= 2) {
-        push('wild-shape', 'Wild Shape', '2/SR (improved later)', 'Usually Action; Circle of Moon combat forms still Action');
+      if (low === 'ranger') {
+        push('hunters-mark-ba', "Hunter's Mark", 'Spell slot', 'Bonus action to cast; BA to retarget');
+      }
+      if (low === 'paladin' && lvl >= 3) {
+        // many oath features
+        push('paladin-ba', 'Oath / channel option', 'Per feature', 'Some oath features use a bonus action');
+      }
+      if (low === 'cleric') {
+        push('spiritual-weapon', 'Spiritual Weapon', 'Spell slot', 'Bonus action to cast; BA to attack with it');
       }
     });
-    // Generic / weapon
-    push('two-weapon', 'Two-Weapon Fighting', 'If dual wielding', 'Bonus action attack with off-hand light weapon (after Attack action)');
-    push('other-ba', 'Other bonus action', '—', 'Spell or feature not listed (e.g. Healing Word, Misty Step, Spiritual Weapon)');
+
+    // Equipment / inventory scan for bonus-action items
+    const inv = [].concat(ch.inventory || [], ch.equipment || [], ch.items || [], ch.magicItems || []);
+    inv.forEach(function(item, idx) {
+      if (!item) return;
+      const name = String(item.name || item.label || item.id || (typeof item === 'string' ? item : '')).trim();
+      if (!name) return;
+      const desc = String(item.description || item.desc || item.notes || item.text || item.effect || '').toLowerCase();
+      const props = String(item.properties || item.activation || item.usage || '').toLowerCase();
+      const blob = (name + ' ' + desc + ' ' + props).toLowerCase();
+      const isBA = /bonus action|as a bonus action|bonus-action/.test(blob)
+        || item.bonusAction === true
+        || String(item.actionType || item.activationType || '').toLowerCase().indexOf('bonus') !== -1;
+      // Common BA gear patterns even without explicit text
+      const commonBA = /boots of speed|winged boots|cape of the mountebank|dagger of venom|flame tongue|sun blade|moonblade|luck blade|ring of spell storing|wand of|staff of|necklace of fireballs|heward|efficient quiver/i.test(name);
+      if (!isBA && !commonBA) return;
+      const charges = item.charges != null ? item.charges : (item.maxCharges != null ? item.maxCharges : null);
+      const limit = charges != null ? (charges + ' charges') : (item.attunement ? 'Attuned item' : 'Item');
+      const id = 'item-' + (item.id || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40) + '-' + idx);
+      push(id, name + (isBA || commonBA ? '' : ''), limit, (desc || 'Equipment — uses bonus action').slice(0, 160));
+    });
+
+    // Weapon TWF
+    push('two-weapon', 'Two-Weapon Fighting', 'If dual wielding', 'Bonus action off-hand attack after Attack action');
+    push('other-ba', 'Other bonus action', '—', 'Spell or feature not listed (Healing Word, Misty Step, …)');
     return opts;
   }
 
@@ -1852,14 +1877,28 @@
     if (cb.reactionUsed == null) cb.reactionUsed = false;
     if (cb.turnPhase == null) cb.turnPhase = 'ready'; // ready | active | ended
 
-    if (!cb.combatResources && ch) {
-      const pools = classResourcesForCharacter(ch);
-      const used = (ch.resourceUsed && typeof ch.resourceUsed === 'object') ? ch.resourceUsed : {};
-      cb.combatResources = {};
-      pools.forEach(r => {
-        const u = used[r.id] != null ? Number(used[r.id]) : 0;
-        cb.combatResources[r.id] = { label: r.label, max: r.max, used: u, recover: r.recover || '', className: r.className || '' };
+    if (ch && typeof classResourcesForCharacter === 'function') {
+      const pools = classResourcesForCharacter(ch) || [];
+      const prev = cb.combatResources || {};
+      const fromChar = (ch.resourceUsed && typeof ch.resourceUsed === 'object') ? ch.resourceUsed : {};
+      const next = {};
+      pools.forEach(function(r) {
+        const prevUsed = prev[r.id] && prev[r.id].used != null ? Number(prev[r.id].used) : null;
+        const charUsed = fromChar[r.id] != null ? Number(fromChar[r.id]) : null;
+        const u = prevUsed != null ? prevUsed : (charUsed != null ? charUsed : 0);
+        next[r.id] = {
+          label: r.label,
+          max: r.max,
+          used: Math.max(0, u),
+          recover: r.recover || '',
+          className: r.className || ''
+        };
       });
+      // keep any ad-hoc combat-only pools
+      Object.keys(prev).forEach(function(k) {
+        if (!next[k]) next[k] = prev[k];
+      });
+      cb.combatResources = next;
     }
     if (!cb.combatSpellSlots && ch) {
       try {
@@ -2075,7 +2114,7 @@
           <strong>Bonus action</strong>
           ${badge(!!cb.bonusUsed)}
         </div>
-        <p class="muted small">One bonus action per turn if a feature grants it. Track options below:</p>
+        <p class="muted small">One bonus action per turn (unless a feature grants an extra). Class features + equipment. Selecting one clears the previous.</p>
         ${baListHtml}
         <button type="button" class="btn secondary btn-tiny" id="cd-bonus-toggle" style="margin-top:0.35rem">${cb.bonusUsed ? 'Clear bonus used' : 'Mark bonus used'}</button>
       </section>
@@ -5715,7 +5754,7 @@ function parseAttackLines(ch) {
           ${typeof combatResourcesHtml === 'function' ? combatResourcesHtml(cb) : ''}
           ${typeof combatSpellSlotsHtml === 'function' ? combatSpellSlotsHtml(cb) : ''}
           <div class="detail-block">
-            <div class="detail-label">Conditions / Effects</div>
+            <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
             <label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP from summary</label>
@@ -6294,10 +6333,22 @@ function parseAttackLines(ch) {
         const id = btn.getAttribute('data-ba-id');
         if (!id) return;
         if (!cb.bonusActionsUsed) cb.bonusActionsUsed = {};
-        cb.bonusActionsUsed[id] = !cb.bonusActionsUsed[id];
-        // If any BA option spent, mark bonus used
-        const any = Object.keys(cb.bonusActionsUsed).some(function(k) { return cb.bonusActionsUsed[k]; });
-        cb.bonusUsed = any;
+        const turningOn = !cb.bonusActionsUsed[id];
+        // Only one bonus action per turn unless a feature grants an extra
+        const allowExtra = !!(cb.extraBonusAction || cb.bonusActionsPerTurn > 1);
+        if (turningOn && !allowExtra) {
+          Object.keys(cb.bonusActionsUsed).forEach(function(k) { cb.bonusActionsUsed[k] = false; });
+        }
+        if (turningOn && allowExtra) {
+          const spent = Object.keys(cb.bonusActionsUsed).filter(function(k) { return cb.bonusActionsUsed[k]; }).length;
+          const maxBA = cb.bonusActionsPerTurn || 2;
+          if (spent >= maxBA) {
+            toast('No more bonus actions this turn');
+            return;
+          }
+        }
+        cb.bonusActionsUsed[id] = turningOn;
+        cb.bonusUsed = Object.keys(cb.bonusActionsUsed).some(function(k) { return cb.bonusActionsUsed[k]; });
         try { save(); } catch (e) {}
         refreshCombatDetail();
       });
@@ -6913,6 +6964,15 @@ function parseAttackLines(ch) {
         <div class="combat-name-block">
           <div class="combat-name">${escapeHtml(cb.name)}${cb.concentrating ? ' <span class="muted small" title="Concentrating">◎</span>' : ''}${cb.legendary ? ' <span class="muted small">★</span>' : ''}${cb.hp <= 0 ? ' <span class="muted small">☠</span>' : ''}</div>
           <div class="combat-sub">AC ${cb.ac}${cb.tempHp ? ' · THP ' + cb.tempHp : ''}${cb.actionUsed ? ' · Act' : ''}${cb.bonusUsed ? ' · BA' : ''}${cb.reactionUsed ? ' · Reac' : ''}${(cb.attacksMax != null) ? ' · Atk ' + Math.max(0, (cb.attacksMax||1)-(cb.attacksUsed||0)) + '/' + (cb.attacksMax||1) : ''}${cb.turnPhase === 'active' ? ' · ▶' : ''}</div>
+          <div class="combat-res-chips">${(function(){
+            const res = cb.combatResources || {};
+            return Object.keys(res).map(function(k){
+              const r = res[k];
+              const left = r.max >= 99 ? '∞' : Math.max(0, (r.max||0) - (r.used||0));
+              const maxL = r.max >= 99 ? '∞' : r.max;
+              return '<span class="res-chip" title="' + escapeAttr(r.label||k) + '">' + escapeHtml(r.label||k) + ' ' + left + '/' + maxL + '</span>';
+            }).join('');
+          })()}</div>
           <div class="hp-bar"><span style="width:${Math.max(0, Math.min(100, hpPct * 100))}%"></span></div>
         </div>
         <div class="combat-hp-controls">
@@ -6926,7 +6986,7 @@ function parseAttackLines(ch) {
           <button type="button" class="icon-btn combat-remove" data-idx="${idx}" title="Remove">✕</button>
         </div>
         <div class="combat-conditions">
-          <input type="text" class="cond-input" data-idx="${idx}" value="${escapeAttr(cb.conditions || '')}" placeholder="Conditions (poisoned, prone…)" />
+          <input type="text" class="cond-input" data-idx="${idx}" value="${escapeAttr(cb.conditions || '')}" placeholder="Conditions & effects (poisoned, prone, Blessed, Hasted, Invisible…)" />
         </div>
       `;
       row.addEventListener('click', (e) => {

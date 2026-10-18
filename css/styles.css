@@ -2978,3 +2978,19 @@ body[data-app="combat-tracker"]:not(.sidebar-collapsed) #app {
 .turn-stage.stage-partial {
   border-color: rgba(196, 163, 90, 0.35);
 }
+
+.combat-res-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.2rem;
+}
+.res-chip {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(196, 163, 90, 0.35);
+  color: #c4a35a;
+  background: rgba(196, 163, 90, 0.08);
+  white-space: nowrap;
+}
