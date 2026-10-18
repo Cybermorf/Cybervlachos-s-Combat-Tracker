@@ -1029,7 +1029,7 @@
       </div>
       <div class="field">
         <label>Description / Premise</label>
-        <textarea id="m-desc" rows="3" placeholder="Short premise or starting situation...">${escapeHtml(existing?.description || '')}</textarea>
+        <textarea id="m-desc" rows="3" placeholder="Short premise or starting situation...">${formatRichText(existing?.description || '')}</textarea>
       </div>
       <div class="form-row">
         <div class="field">
@@ -5577,7 +5577,7 @@ function parseAttackLines(ch) {
       bonusActions: n.bonusActions || [],
       reactions: n.reactions || [],
       legendaryActions: n.legendaryActions || [],
-      legendary: !!n.legendary,
+      legendary: !!(n.legendary && (side === 'enemy' || side === 'villain' || n.type === 'enemy' || n.type === 'villain')),
       legendaryResist: n.legendaryResist,
       legendaryResistMax: n.legendaryResistMax,
       resistances: n.resistances || '',
@@ -5795,8 +5795,8 @@ function parseAttackLines(ch) {
           ${renderActionSection('Special Abilities', actions.ability)}
           ${renderActionSection('Spells', actions.spell)}
           ${cb.notes ? `<div class="detail-block"><div class="detail-label">Notes</div><div class="detail-text">${escapeHtml(cb.notes)}</div></div>` : ''}
-          ${best && best.desc ? `<div class="detail-block"><div class="detail-label">Description</div><div class="detail-text">${escapeHtml(best.desc)}</div></div>` : ''}
-          ${best && best.run ? `<div class="detail-block"><div class="detail-label">Running the Creature</div><div class="detail-text">${escapeHtml(best.run)}</div></div>` : ''}
+          ${best && best.desc ? `<div class="detail-block"><div class="detail-label">Description</div><div class="detail-text">${formatRichText(best.desc)}</div></div>` : ''}
+          ${best && best.run ? `<div class="detail-block"><div class="detail-label">Running the Creature</div><div class="detail-text">${formatRichText(best.run)}</div></div>` : ''}
         </div>
         <div class="combat-detail-roller">
           <div class="detail-label">Attack / Check Roller</div>
@@ -6755,6 +6755,7 @@ function parseAttackLines(ch) {
 
   function collectCombatActions(cb, best, ch) {
     const out = { action: [], bonus: [], reaction: [], legendary: [], spell: [], ability: [] };
+    const _pcSide = cb && (cb.side === 'party' || cb.side === 'ally');
     function push(section, name, toHit, damage, text, extra) {
       const cleanName = String(name || '').replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
       if (!cleanName) return;
@@ -6782,7 +6783,7 @@ function parseAttackLines(ch) {
     (cb.actions || []).forEach(a => push(a.kind || 'action', a.name, a.toHit, a.damage, a.text, a));
     (cb.bonusActions || []).forEach(a => push('bonus', a.name, a.toHit, a.damage, a.text, a));
     (cb.reactions || []).forEach(a => push('reaction', a.name, a.toHit, a.damage, a.text, a));
-    (cb.legendaryActions || []).forEach(a => push('legendary', a.name, a.toHit, a.damage, a.text, a));
+    if (!_pcSide) (cb.legendaryActions || []).forEach(a => push('legendary', a.name, a.toHit, a.damage, a.text, a));
     parseCombatAttacks(cb, best).forEach(a => {
       if (a.name === 'Custom…') return;
       push('action', a.name, a.toHit, a.damage, a.notes, { rollKind: 'attack', targetType: 'enemy', effect: 'damage' });
@@ -6858,8 +6859,9 @@ function parseAttackLines(ch) {
           arr.forEach(feat => {
             if ((feat.lvl || 1) > lvl) return;
             const nm = feat.name || '';
-            // Skip pure passive / ASI
-            if (/ability score|asi\b|proficiency|expertise|jack of all|spellcasting\b|pact magic|divine domain|primal path|martial archetype/i.test(nm) && !/attack|strike|surge|rage|ki |channel|smite|inspiration|wild shape|second wind|action surge|indomitable|lunar|moonlight|blood |spirit |shadow /i.test(nm)) return;
+            // Skip passives, progressions, and non-action labels that clutter combat
+            if (/^(extra attack|ability score|asi\b|hit points|proficiency|expertise|spellcasting|pact magic|divine domain|primal path|martial archetype|monastic tradition|otherworldly patron|sacred oath|ranger archetype|rogueish archetype|bard college|sorcerous origin|druid circle|arcane tradition|fighter archetype|elite progress|lunar charges|ki points?|channel divinity features)$/i.test(nm.trim())) return;
+            if (/ability score|asi\b|proficiency bonus|expertise|jack of all|spellcasting\b|pact magic|divine domain|primal path|martial archetype|monastic tradition|arcane recovery|unarmored defense|unarmored movement|timeless body|empty body|diamond soul|pure body|tongue of the sun|elusive|slippery mind|reliable talent|blindsense|stroke of luck|indomitable might|primal champion|survivor|superior critical|fighter weapon|fighting style\b/i.test(nm) && !/attack action|strike|surge|rage\b|smite|inspiration|wild shape|second wind|action surge|stunning strike|flurry|patient defense|step of the wind|cunning action|reckless attack|weapon master/i.test(nm)) return;
             const combatish = /attack|strike|surge|rage|ki |channel divinity|smite|inspiration|wild shape|second wind|action surge|indomitable|lunar|moonlight|blood maledict|blood rite|spirit step|shadow |flurry|patient defense|step of the wind|uncanny|evasion|deflect|stunning|reckless|danger sense|lay on hands|divine sense|cunning action|sneak attack|font of magic|metamagic|eldritch|arcane recovery|brand of|phase strike|ghostwalk|umbral|resonant/i.test(nm + ' ' + (feat.text||''));
             if (!combatish && (feat.lvl || 1) > 1) return; // keep level 1 staples
             const section = /bonus action|as a bonus/i.test(feat.text||'') ? 'bonus'
@@ -6905,7 +6907,10 @@ function parseAttackLines(ch) {
         });
       } catch (e) {}
 
-    if (cb.legendary || cb.legendaryActions) {
+    // Legendary actions: NPC/villain only — never player characters / party
+    const isPcOrAlly = (cb.side === 'party' || cb.side === 'ally' || (ch && (ch.type === 'pc' || ch.type === 'ally')))
+      && !(cb.side === 'enemy' || cb.side === 'villain');
+    if (!isPcOrAlly && (cb.legendary || (cb.legendaryActions && cb.legendaryActions.length))) {
       if (!out.legendary.length) {
         push('legendary', 'Detect', null, '', '1 LA', { targetType: 'any', range: 30, effect: 'sense' });
         push('legendary', 'Move', null, '', '1 LA — self', { targetType: 'self', range: 0, effect: 'utility' });
@@ -7306,7 +7311,7 @@ function parseAttackLines(ch) {
       bonusActions: ch.bonusActions || [],
       reactions: ch.reactions || [],
       legendaryActions: ch.legendaryActions || [],
-      legendary: !!ch.legendary,
+      legendary: !!(ch.legendary && (side === 'enemy' || side === 'villain' || ch.type === 'enemy' || ch.type === 'villain')),
       legendaryResist: ch.legendaryResist,
       legendaryResistMax: ch.legendaryResistMax,
       resistances: ch.resistances || '',
@@ -7818,7 +7823,27 @@ function renderUmbrarians() { /* stripped */ }
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
-  function escapeHtml(str) {
+  
+  /** Safe rich text: newlines + **bold** + *italic* without full HTML inject */
+  function formatRichText(str) {
+    if (str == null || str === '') return '';
+    let s = String(str);
+    // literal backslash-n from JSON dumps
+    s = s.replace(/\\n/g, '\n').replace(/\\r/g, '');
+    s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    // escape HTML
+    s = s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // bold **text**
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // italic *text* (single)
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    // bullets starting with -
+    s = s.replace(/(^|\n)\s*-\s+/g, '$1• ');
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  }
+
+function escapeHtml(str) {
     if (!str) return '';
     return String(str)
       .replace(/&/g, '&amp;')
