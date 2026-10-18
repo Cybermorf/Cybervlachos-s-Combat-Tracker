@@ -6223,6 +6223,8 @@ function parseAttackLines(ch) {
             <div class="tool-btns" style="margin-top:0.35rem">
               <button type="button" class="btn secondary btn-tiny" id="cr-select-all-targets">Select all valid</button>
               <button type="button" class="btn secondary btn-tiny" id="cr-select-none-targets">Clear</button>
+              <button type="button" class="btn secondary btn-tiny" id="cr-open-map" title="Open battle map">Open Map</button>
+              <button type="button" class="btn secondary btn-tiny" id="cr-open-map-aoe" title="Open map with AoE tool">Map AoE</button>
             </div>
           </div>
           <div class="field" style="margin-top:0.35rem">
@@ -6336,6 +6338,8 @@ function parseAttackLines(ch) {
       if (enemy >= 0 && sel.options[enemy]) sel.options[enemy].selected = true;
       else if (sel.options[0]) sel.options[0].selected = true;
     })();
+    try { applyAoeTargetsToRoller(panel); } catch (e) {}
+
     window.__lastCombatRoll = window.__lastCombatRoll || { damage: 0, heal: 0, hit: null };
 
     // Wire roller
@@ -7196,6 +7200,28 @@ function parseAttackLines(ch) {
       const sel = panel.querySelector('#cr-target');
       if (!sel) return;
       [...sel.options].forEach(o => { o.selected = false; });
+
+    panel.querySelector('#cr-open-map')?.addEventListener('click', () => {
+      openMapForCombat({ combatantId: cb && (cb.id != null ? cb.id : null) });
+    });
+    panel.querySelector('#cr-open-map-aoe')?.addEventListener('click', () => {
+      let ft = 20;
+      let shape = 'sphere';
+      const sp = panel.querySelector('#cr-spell-pick');
+      if (sp && sp.value !== '' && typeof listCharacterSpellsForCombat === 'function') {
+        const list = listCharacterSpellsForCombat(partyChar || null);
+        const entry = list[Number(sp.value)];
+        if (entry && entry.range) {
+          const m = String(entry.range).match(/(\\d+)\\s*(foot|feet|ft)/i);
+          if (m) ft = Number(m[1]);
+          if (/cone/i.test(entry.range + entry.name)) shape = 'cone';
+          if (/line/i.test(entry.range + entry.name)) shape = 'line';
+          if (/cube|square/i.test(entry.description || '')) shape = 'cube';
+        }
+      }
+      openMapForCombat({ combatantId: cb.id, aoeFt: ft, aoeShape: shape });
+    });
+
     });
     panel.querySelector('#cr-apply-effect')?.addEventListener('click', () => {
       const act = window.__activeCombatAction;
@@ -8678,23 +8704,82 @@ function escapeHtml(str) {
   // Battle Map — image / UVTT + tokens + AoE
   // ═══════════════════════════════════════════════════════════
   
-  function applyAoeTargetsToRoller() {
+  function applyAoeTargetsToRoller(panelEl) {
     const c = getActive();
     const combat = c ? getCombat(c) : null;
-    if (!combat || !combat.aoeTargetIds || !combat.aoeTargetIds.length) return;
-    const ids = combat.aoeTargetIds;
-    const sel = document.getElementById('cr-target');
-    if (!sel) return;
-    const opts = Array.from(sel.options);
-    opts.forEach(o => { o.selected = false; });
+    if (!combat || !combat.aoeTargetIds || !combat.aoeTargetIds.length) return 0;
+    const ids = new Set(combat.aoeTargetIds.map(String));
+    const root = panelEl || document;
+    const sel = root.querySelector ? root.querySelector('#cr-target') : document.getElementById('cr-target');
+    if (!sel) return 0;
     let n = 0;
-    combat.combatants.forEach((cb, i) => {
-      const id = cb.id || String(i);
-      if (!ids.includes(id)) return;
-      const opt = opts.find(o => o.value === String(i) || o.value === id || (o.textContent || '').indexOf(cb.name) !== -1);
-      if (opt) { opt.selected = true; n++; }
+    Array.from(sel.options).forEach(o => {
+      const idx = parseInt(o.value, 10);
+      const cb = !isNaN(idx) ? combat.combatants[idx] : null;
+      const id = cb ? String(cb.id || idx) : String(o.value);
+      const hit = ids.has(id) || ids.has(String(idx)) || (cb && ids.has(String(cb.name)));
+      o.selected = !!hit;
+      if (hit) n++;
     });
+    const hint = root.querySelector ? root.querySelector('#cr-target-hint') : document.getElementById('cr-target-hint');
+    if (hint && n) hint.textContent = 'AoE map targets selected (' + n + '). Adjust if needed.';
     if (n) toast('AoE targets selected in roller: ' + n);
+    return n;
+  }
+
+  function openMapForCombat(opts) {
+    opts = opts || {};
+    try { ensureCombatWorkspace(); } catch (e) {}
+    const map = getCombatMap();
+    if (map && opts.aoeFt) {
+      map.pendingAoeFt = Number(opts.aoeFt) || 20;
+      map.pendingAoeShape = opts.aoeShape || 'sphere';
+    }
+    if (opts.combatantId) {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (combat) combat.mapFocusId = opts.combatantId;
+    }
+    if (typeof setView === 'function') setView('map');
+    else document.querySelector('.nav-item[data-view="map"]')?.click();
+    setTimeout(() => {
+      try {
+        const ft = document.getElementById('map-aoe-ft');
+        if (ft && opts.aoeFt) ft.value = String(opts.aoeFt);
+        const tool = document.getElementById('map-tool');
+        if (tool && opts.aoeShape) {
+          const shape = opts.aoeShape;
+          const val = shape === 'sphere' ? 'aoe-sphere' : ('aoe-' + shape);
+          if ([...tool.options].some(o => o.value === val)) tool.value = val;
+        }
+        if (opts.combatantId) {
+          const sel = document.getElementById('map-token-combatant');
+          if (sel) sel.value = String(opts.combatantId);
+        }
+        refreshMapTokenSelect();
+        renderBattleMap();
+      } catch (e) {}
+    }, 50);
+  }
+
+  function listNameForToken(id) {
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const cb = ((combat && combat.combatants) || []).find((x, i) => String(x.id || i) === String(id));
+      return cb ? cb.name : '';
+    } catch (e) { return ''; }
+  }
+
+  function selectCombatantById(id) {
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    if (!combat) return;
+    const idx = combat.combatants.findIndex((cb, i) => String(cb.id || i) === String(id));
+    if (idx < 0) return;
+    combat.selectedIndex = idx;
+    try { save(); } catch (e) {}
+    try { renderCombat(); } catch (e) {}
   }
 
   function getCombatMap() {
@@ -8829,23 +8914,47 @@ function escapeHtml(str) {
       const c = getActive();
       const combat = c ? getCombat(c) : null;
       const list = (combat && combat.combatants) || [];
+      const selectedId = combat && combat.selectedIndex != null && combat.combatants[combat.selectedIndex]
+        ? String(combat.combatants[combat.selectedIndex].id || combat.selectedIndex)
+        : (combat && combat.mapFocusId) || null;
       list.forEach((cb, idx) => {
-        const id = cb.id || String(idx);
+        const id = String(cb.id || idx);
         const pos = map.tokens[id];
         if (!pos) return;
         const x = pos.x * scale, y = pos.y * scale;
         const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+        const side = String(cb.side || '').toLowerCase();
+        const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+        const isAlly = side === 'ally' || side === 'allies';
+        let fill = isEnemy ? 'rgba(180,40,40,0.9)' : (isAlly ? 'rgba(50,100,180,0.9)' : 'rgba(40,120,80,0.9)');
+        const hp = Number(cb.hp) || 0;
+        const hpMax = Math.max(1, Number(cb.hpMax) || 1);
+        const ratio = Math.max(0, Math.min(1, hp / hpMax));
+        if (hp <= 0) fill = 'rgba(60,60,60,0.85)';
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fillStyle = cb.side === 'enemy' || cb.side === 'villain' ? 'rgba(180,40,40,0.85)' : 'rgba(40,120,80,0.85)';
+        ctx.fillStyle = fill;
         ctx.fill();
-        ctx.strokeStyle = '#e8dcc8';
-        ctx.lineWidth = 2;
+        // HP arc
+        if (hp > 0) {
+          ctx.beginPath();
+          ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
+          ctx.lineWidth = 3;
+          ctx.arc(x, y, r + 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+          ctx.stroke();
+        }
+        ctx.strokeStyle = String(id) === String(selectedId) ? '#ffd24a' : '#e8dcc8';
+        ctx.lineWidth = String(id) === String(selectedId) ? 3 : 2;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.stroke();
         ctx.fillStyle = '#fff';
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
+        ctx.fillStyle = '#c4a35a';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(hp + '/' + hpMax, x, y + 3);
       });
 
       // AoE
@@ -9119,6 +9228,12 @@ function escapeHtml(str) {
             dragId = found;
             const sel = document.getElementById('map-token-combatant');
             if (sel) sel.value = found;
+            try { selectCombatantById(found); } catch (e) {}
+            // double-purpose: select in tracker; drag to move if token tool
+            if (tool === 'pan') {
+              dragId = null;
+              toast('Selected ' + (listNameForToken(found) || found));
+            }
             return;
           }
         }
