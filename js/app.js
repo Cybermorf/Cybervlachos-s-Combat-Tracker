@@ -6132,7 +6132,7 @@ function parseAttackLines(ch) {
         return [...(c.party||[]), ...(c.villains||[])].find(x => x.id === id || x.name === cb.name) || null;
       } catch (e) { return null; }
     })();
-    const hpPct = cb.hpMax > 0 ? cb.hp / cb.hpMax : 1;
+    const hpPct = cb.hideHp ? 1 : (cb.hpMax > 0 ? cb.hp / cb.hpMax : 1);
     let status = 'Healthy';
     if (cb.hp <= 0) status = 'Defeated';
     else if (hpPct <= 0.25) status = 'Critical';
@@ -6329,7 +6329,7 @@ function parseAttackLines(ch) {
         combatants = (getCombat(c).combatants || []);
       } catch (e) {}
       const opts = combatants.map((x, i) => {
-        const label = `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
+        const label = `${x.name} (${x.hideHp ? '??/??' : (x.hp + '/' + x.hpMax)} HP)${x.side ? ' · ' + x.side : ''}`;
         return `<option value="${i}">${escapeHtml(label)}</option>`;
       });
       sel.innerHTML = opts.join('') || '<option value="" disabled>No combatants</option>';
@@ -6602,7 +6602,13 @@ function parseAttackLines(ch) {
         if (text && navigator.clipboard) navigator.clipboard.writeText(text).then(() => toast('Copied')).catch(() => toast(text));
         else toast(text || 'Nothing');
       });
-      panel.querySelector('#cd-hidden-hp')?.addEventListener('change', (e) => { cb.hideHp = !!e.target.checked; try { save(); } catch (err) {} });
+      panel.querySelector('#cd-hidden-hp')?.addEventListener('change', (e) => {
+        cb.hideHp = !!e.target.checked;
+        try { save(); } catch (err) {}
+        try { renderCombat(); } catch (err) {}
+        try { renderBattleMap(); } catch (err) {}
+        try { renderMapRoster(); } catch (err) {}
+      });
       panel.querySelector('#cd-ds-roll')?.addEventListener('click', () => {
         cb.deathSaves = cb.deathSaves || { successes: 0, failures: 0 };
         const r = 1 + Math.floor(Math.random() * 20);
@@ -7725,7 +7731,7 @@ function parseAttackLines(ch) {
       const selected = idx === combat.selectedIndex;
       row.className = `combatant-row side-${cb.side || 'neutral'}${idx === combat.turnIndex ? ' active-turn' : ''}${dead ? ' dead' : ''}${selected ? ' selected' : ''}`;
       row.dataset.idx = String(idx);
-      const hpPct = cb.hpMax > 0 ? cb.hp / cb.hpMax : 1;
+      const hpPct = cb.hideHp ? 1 : (cb.hpMax > 0 ? cb.hp / cb.hpMax : 1);
       let hpClass = '';
       if (dead) hpClass = 'dead-hp';
       else if (hpPct <= 0.25) hpClass = 'critical';
@@ -7750,7 +7756,7 @@ function parseAttackLines(ch) {
         <div class="combat-hp-controls">
           <button type="button" class="hp-minus" data-idx="${idx}" title="-1 HP">−</button>
           <button type="button" class="hp-minus5" data-idx="${idx}" title="-5 HP">−5</button>
-          <span class="combat-hp-val ${hpClass}" data-idx="${idx}" title="Click to set HP">${cb.hp}/${cb.hpMax}</span>
+          <span class="combat-hp-val ${hpClass}" data-idx="${idx}" title="${cb.hideHp ? 'HP hidden' : 'Click to set HP'}">${cb.hideHp ? '??/??' : (cb.hp + '/' + cb.hpMax)}</span>
           <button type="button" class="hp-plus" data-idx="${idx}" title="+1 HP">+</button>
           <button type="button" class="hp-plus5" data-idx="${idx}" title="+5 HP">+5</button>
         </div>
@@ -8901,14 +8907,15 @@ function escapeHtml(str) {
       const sideClass = (side === 'enemy' || side === 'villain') ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
       const hp = Number(cb.hp) || 0;
       const hpMax = Math.max(1, Number(cb.hpMax) || 1);
-      const pct = Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
+      const hide = !!cb.hideHp;
+      const pct = hide ? 0 : Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
       const init = cb.initiative != null ? cb.initiative : '—';
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
         <div class="mr-meta">Init ${escapeHtml(String(init))} · AC ${cb.ac != null ? cb.ac : '—'} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
-        <div class="mr-hp${hp < hpMax * 0.5 ? ' hurt' : ''}">${hp}/${hpMax} HP</div>
+        <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '??/?? HP' : (hp + '/' + hpMax + ' HP')}</div>
         <div class="mr-bar"><span style="width:${pct}%"></span></div>
         <div class="tool-btns" style="margin-top:0.3rem">
           <button type="button" class="btn secondary btn-tiny mr-place" data-id="${escapeAttr(id)}">${placed ? 'Re-place' : 'Place'}</button>
@@ -9035,8 +9042,8 @@ function escapeHtml(str) {
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = fill;
         ctx.fill();
-        // HP arc
-        if (hp > 0) {
+        // HP arc (hidden when hideHp)
+        if (!cb.hideHp && hp > 0) {
           ctx.beginPath();
           ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
           ctx.lineWidth = 3;
@@ -9052,9 +9059,12 @@ function escapeHtml(str) {
         ctx.font = '11px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
-        ctx.fillStyle = '#c4a35a';
-        ctx.font = '10px sans-serif';
-        ctx.fillText(hp + '/' + hpMax, x, y + 3);
+        if (!cb.hideHp) {
+          ctx.fillStyle = '#c4a35a';
+          ctx.font = '10px sans-serif';
+          ctx.fillText(hp + '/' + hpMax, x, y + 3);
+        }
+        // still draw HP arc only if not hidden
       });
 
       // AoE
