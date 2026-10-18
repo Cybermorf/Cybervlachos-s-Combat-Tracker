@@ -745,6 +745,7 @@
 
   function tryRestoreRosterBackupIfEmpty() {
     try {
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) return;
       if ((state.campaigns || []).length && (getCombat(getActive()) || {}).combatants?.length) return;
       const raw = localStorage.getItem(ROSTER_BACKUP_KEY);
       if (!raw) return;
@@ -770,6 +771,14 @@
   }
 
   function save() {
+    // Pop-out window is view-only — never write state (prevents wiping main workspace)
+    try {
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+        try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
+        return;
+      }
+    } catch (e) {}
+
     try { if (typeof notifyMapWindows === "function") setTimeout(notifyMapWindows, 0); } catch (e) {}
 
     // Persist large map image outside localStorage (quota)
@@ -870,6 +879,10 @@
   function ensureCombatWorkspace() {
     try {
       if (!state.campaigns) state.campaigns = [];
+      // Never create a blank workspace from the map pop-out (would desync / wipe on bad save)
+      if (!state.campaigns.length && typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+        return null;
+      }
       if (!state.campaigns.length) {
         const id = typeof uid === 'function' ? uid() : ('c' + Date.now());
         state.campaigns = [{
@@ -6304,7 +6317,7 @@ function parseAttackLines(ch) {
         return [...(c.party||[]), ...(c.villains||[])].find(x => x.id === id || x.name === cb.name) || null;
       } catch (e) { return null; }
     })();
-    const hpPct = cb.hideHp ? 1 : (cb.hpMax > 0 ? cb.hp / cb.hpMax : 1);
+    const hpPct = cb.hpMax > 0 ? cb.hp / cb.hpMax : 1;
     let status = 'Healthy';
     if (cb.hp <= 0) status = 'Defeated';
     else if (hpPct <= 0.25) status = 'Critical';
@@ -6323,7 +6336,7 @@ function parseAttackLines(ch) {
             <div class="detail-label">Combat Stats</div>
             <div class="bestiary-stats">
               <span class="stat-chip">AC ${cb.ac}</span>
-              <span class="stat-chip">HP ${cb.hideHp ? "??/??" : (cb.hp + "/" + cb.hpMax)}</span>
+              <span class="stat-chip">HP ${cb.hp}/${cb.hpMax}</span>
               <span class="stat-chip">Init ${cb.init}</span>
               ${cb.speed ? `<span class="stat-chip">${escapeHtml(cb.speed)}</span>` : ''}
             </div>
@@ -6345,7 +6358,7 @@ function parseAttackLines(ch) {
             <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
-            <label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP from summary</label>
+            <label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>
           </div>
           ${(cb.hp <= 0 || (cb.deathSaves && (cb.deathSaves.successes || cb.deathSaves.failures))) ? `
           <div class="detail-block">
@@ -6501,7 +6514,7 @@ function parseAttackLines(ch) {
         combatants = (getCombat(c).combatants || []);
       } catch (e) {}
       const opts = combatants.map((x, i) => {
-        const label = `${x.name} (${x.hideHp ? '??/??' : (x.hp + '/' + x.hpMax)} HP)${x.side ? ' · ' + x.side : ''}`;
+        const label = `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
         return `<option value="${i}">${escapeHtml(label)}</option>`;
       });
       sel.innerHTML = opts.join('') || '<option value="" disabled>No combatants</option>';
@@ -7903,7 +7916,7 @@ function parseAttackLines(ch) {
       const selected = idx === combat.selectedIndex;
       row.className = `combatant-row side-${cb.side || 'neutral'}${idx === combat.turnIndex ? ' active-turn' : ''}${dead ? ' dead' : ''}${selected ? ' selected' : ''}`;
       row.dataset.idx = String(idx);
-      const hpPct = cb.hideHp ? 1 : (cb.hpMax > 0 ? cb.hp / cb.hpMax : 1);
+      const hpPct = cb.hpMax > 0 ? cb.hp / cb.hpMax : 1;
       let hpClass = '';
       if (dead) hpClass = 'dead-hp';
       else if (hpPct <= 0.25) hpClass = 'critical';
@@ -7928,7 +7941,7 @@ function parseAttackLines(ch) {
         <div class="combat-hp-controls">
           <button type="button" class="hp-minus" data-idx="${idx}" title="-1 HP">−</button>
           <button type="button" class="hp-minus5" data-idx="${idx}" title="-5 HP">−5</button>
-          <span class="combat-hp-val ${hpClass}" data-idx="${idx}" title="${cb.hideHp ? 'HP hidden' : 'Click to set HP'}">${cb.hideHp ? '??/??' : (cb.hp + '/' + cb.hpMax)}</span>
+          <span class="combat-hp-val ${hpClass}" data-idx="${idx}" title="Click to set HP">${cb.hp}/${cb.hpMax}</span>
           <button type="button" class="hp-plus" data-idx="${idx}" title="+1 HP">+</button>
           <button type="button" class="hp-plus5" data-idx="${idx}" title="+5 HP">+5</button>
         </div>
@@ -9004,11 +9017,15 @@ function escapeHtml(str) {
 
   
   function openMapPopout() {
-    try { ensureCombatWorkspace(); } catch (e) {}
-    try { save(); } catch (e) {}
+    // Persist main window state before opening viewer
+    try {
+      if (!(typeof isMapPopoutMode === 'function' && isMapPopoutMode())) {
+        ensureCombatWorkspace();
+        save();
+      }
+    } catch (e) {}
     const url = new URL(window.location.href);
     url.searchParams.set('mapPopout', '1');
-    // drop hash noise
     const w = window.open(url.toString(), 'dsc_map_popout', 'noopener,noreferrer,width=1280,height=800');
     if (!w) {
       toast('Pop-up blocked — allow pop-ups for this site');
@@ -9027,18 +9044,29 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = (document.title || 'Combat Tracker') + ' — Map';
+    // Load existing state only — do not create a blank workspace
+    try { if (typeof load === 'function') load(); } catch (e) {}
     try {
-      if (typeof setView === 'function') setView('map');
-    } catch (e) {}
-    // Hide chrome that setView might not cover
+      if (typeof restoreMapImagesAfterLoad === 'function') {
+        restoreMapImagesAfterLoad().then(() => {
+          try {
+            if (typeof setView === 'function') setView('map');
+            initBattleMapUi();
+            refreshMapTokenSelect();
+            renderBattleMap();
+            renderMapRoster();
+          } catch (err) { console.warn(err); }
+        });
+      } else {
+        if (typeof setView === 'function') setView('map');
+        initBattleMapUi();
+        refreshMapTokenSelect();
+        renderBattleMap();
+        renderMapRoster();
+      }
+    } catch (e) { console.warn(e); }
     const side = document.getElementById('sidebar');
     if (side) side.style.display = 'none';
-    try {
-      initBattleMapUi();
-      refreshMapTokenSelect();
-      renderBattleMap();
-      renderMapRoster();
-    } catch (e) { console.warn(e); }
   }
 
   function bindMapCrossWindowSync() {
@@ -9190,8 +9218,8 @@ function escapeHtml(str) {
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
         <div class="mr-meta">Init ${escapeHtml(String(init))} · AC ${cb.ac != null ? cb.ac : '—'} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
-        <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '??/?? HP' : (hp + '/' + hpMax + ' HP')}</div>
-        <div class="mr-bar"><span style="width:${pct}%"></span></div>
+        <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '' : (hp + '/' + hpMax + ' HP')}</div>
+        <div class="mr-bar">${hide ? '' : `<span style="width:${pct}%"></span>`}</div>
         <div class="tool-btns" style="margin-top:0.3rem">
           <button type="button" class="btn secondary btn-tiny mr-place" data-id="${escapeAttr(id)}">${placed ? 'Re-place' : 'Place'}</button>
           <button type="button" class="btn secondary btn-tiny mr-focus" data-id="${escapeAttr(id)}">Select</button>
