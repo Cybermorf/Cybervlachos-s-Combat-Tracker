@@ -153,6 +153,12 @@
           <div class="field" style="margin:0"><label>Grid px / square</label>
             <input type="number" id="map-grid-size" min="10" max="256" value="70" style="width:5rem" />
           </div>
+          <div class="field" style="margin:0"><label>Grid offset X</label>
+            <input type="number" id="map-grid-ox" value="0" style="width:4rem" title="Shift grid to match map lines" />
+          </div>
+          <div class="field" style="margin:0"><label>Grid offset Y</label>
+            <input type="number" id="map-grid-oy" value="0" style="width:4rem" />
+          </div>
           <div class="field" style="margin:0"><label>Tool</label>
             <select id="map-tool">
               <option value="pan">Select token (click)</option>
@@ -173,8 +179,19 @@
           <button type="button" class="btn secondary" id="map-clear-aoe">Clear AoE</button>
           <span class="muted small" id="map-status">No map loaded</span>
         </div>
-        <div class="map-canvas-wrap">
-          <canvas id="map-canvas" width="900" height="600"></canvas>
+        <div class="map-layout">
+          <div class="map-canvas-wrap">
+            <canvas id="map-canvas" width="900" height="600"></canvas>
+          </div>
+          <aside class="map-roster card" id="map-roster">
+            <div class="map-roster-head">
+              <strong>Combatants</strong>
+              <button type="button" class="btn secondary btn-tiny" id="map-snap-all" title="Snap all tokens to grid centers">Snap all</button>
+            </div>
+            <div class="map-roster-list" id="map-roster-list">
+              <p class="muted small">Add combatants in Combat, then place them here.</p>
+            </div>
+          </aside>
         </div>
       </section>
 

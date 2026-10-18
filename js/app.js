@@ -8782,6 +8782,31 @@ function escapeHtml(str) {
     try { renderCombat(); } catch (e) {}
   }
 
+  
+  function mapGridMetrics(map) {
+    const g = Math.max(4, Number(map.gridSize) || 70);
+    const ox = Number(map.gridOffsetX) || 0;
+    const oy = Number(map.gridOffsetY) || 0;
+    return { g, ox, oy };
+  }
+
+  function snapWorldToGrid(map, x, y) {
+    const { g, ox, oy } = mapGridMetrics(map);
+    // Snap to cell center relative to grid origin (offset)
+    const cx = Math.floor((x - ox) / g) * g + g / 2 + ox;
+    const cy = Math.floor((y - oy) / g) * g + g / 2 + oy;
+    return { x: cx, y: cy };
+  }
+
+  function snapAllMapTokens(map) {
+    if (!map || !map.tokens) return;
+    Object.keys(map.tokens).forEach(id => {
+      const p = map.tokens[id];
+      if (!p) return;
+      map.tokens[id] = snapWorldToGrid(map, p.x, p.y);
+    });
+  }
+
   function getCombatMap() {
     const c = getActive();
     if (!c) return null;
@@ -8789,13 +8814,13 @@ function escapeHtml(str) {
       c.combatMap = {
         imageDataUrl: null,
         gridSize: 70,
+        gridOffsetX: 0,
+        gridOffsetY: 0,
         width: 0,
         height: 0,
         walls: [],
-        tokens: {}, // combatantId -> {x, y} pixel coords center
+        tokens: {},
         aoe: null,
-        offsetX: 0,
-        offsetY: 0,
         scale: 1
       };
     }
@@ -8857,6 +8882,74 @@ function escapeHtml(str) {
     ).join('') || '<option value="">No combatants</option>';
   }
 
+  
+  function renderMapRoster() {
+    const listEl = document.getElementById('map-roster-list');
+    if (!listEl) return;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    const map = getCombatMap();
+    const selectedIdx = combat ? combat.selectedIndex : -1;
+    if (!list.length) {
+      listEl.innerHTML = '<p class="muted small">No combatants. Add them in Combat, then place tokens here.</p>';
+      return;
+    }
+    listEl.innerHTML = list.map((cb, idx) => {
+      const id = String(cb.id != null ? cb.id : idx);
+      const side = String(cb.side || '').toLowerCase();
+      const sideClass = (side === 'enemy' || side === 'villain') ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
+      const hp = Number(cb.hp) || 0;
+      const hpMax = Math.max(1, Number(cb.hpMax) || 1);
+      const pct = Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
+      const placed = map && map.tokens && map.tokens[id];
+      const sel = idx === selectedIdx ? ' selected' : '';
+      const init = cb.initiative != null ? cb.initiative : '—';
+      return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
+        <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
+        <div class="mr-meta">Init ${escapeHtml(String(init))} · AC ${cb.ac != null ? cb.ac : '—'} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
+        <div class="mr-hp${hp < hpMax * 0.5 ? ' hurt' : ''}">${hp}/${hpMax} HP</div>
+        <div class="mr-bar"><span style="width:${pct}%"></span></div>
+        <div class="tool-btns" style="margin-top:0.3rem">
+          <button type="button" class="btn secondary btn-tiny mr-place" data-id="${escapeAttr(id)}">${placed ? 'Re-place' : 'Place'}</button>
+          <button type="button" class="btn secondary btn-tiny mr-focus" data-id="${escapeAttr(id)}">Select</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.map-roster-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return;
+        const id = card.getAttribute('data-id');
+        selectCombatantById(id);
+        const sel = document.getElementById('map-token-combatant');
+        if (sel) sel.value = id;
+        renderMapRoster();
+        renderBattleMap();
+      });
+    });
+    listEl.querySelectorAll('.mr-place').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        const sel = document.getElementById('map-token-combatant');
+        if (sel) sel.value = id;
+        const tool = document.getElementById('map-tool');
+        if (tool) tool.value = 'token';
+        toast('Click the map to place ' + (listNameForToken(id) || id));
+        selectCombatantById(id);
+      });
+    });
+    listEl.querySelectorAll('.mr-focus').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectCombatantById(btn.getAttribute('data-id'));
+        renderMapRoster();
+        renderBattleMap();
+      });
+    });
+  }
+
   function renderBattleMap() {
     const canvas = document.getElementById('map-canvas');
     if (!canvas) return;
@@ -8871,6 +8964,7 @@ function escapeHtml(str) {
       ctx.font = '16px sans-serif';
       ctx.fillText('Import an image or UVTT file to begin.', 24, 40);
       if (status) status.textContent = 'No map loaded';
+      try { renderMapRoster(); } catch (e) {}
       return;
     }
     const img = new Image();
@@ -8887,13 +8981,19 @@ function escapeHtml(str) {
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
       const g = (Number(map.gridSize) || 70) * scale;
+      const gox = (Number(map.gridOffsetX) || 0) * scale;
+      const goy = (Number(map.gridOffsetY) || 0) * scale;
       if (g >= 8) {
-        ctx.strokeStyle = 'rgba(196,163,90,0.25)';
+        ctx.strokeStyle = 'rgba(196,163,90,0.28)';
         ctx.lineWidth = 1;
-        for (let x = 0; x <= canvas.width; x += g) {
+        let x0 = gox % g;
+        if (x0 > 0) x0 -= g;
+        for (let x = x0; x <= canvas.width + g; x += g) {
           ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
         }
-        for (let y = 0; y <= canvas.height; y += g) {
+        let y0 = goy % g;
+        if (y0 > 0) y0 -= g;
+        for (let y = y0; y <= canvas.height + g; y += g) {
           ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
         }
       }
@@ -8998,13 +9098,15 @@ function escapeHtml(str) {
       }
 
       if (status) {
-        status.textContent = `${img.width}×${img.height}px · grid ${map.gridSize}px · ${map.walls.length} wall segs · ${Object.keys(map.tokens).length} tokens`;
+        status.textContent = `${img.width}×${img.height}px · grid ${map.gridSize}px · offset ${map.gridOffsetX||0},${map.gridOffsetY||0} · ${map.walls.length} walls · ${Object.keys(map.tokens||{}).length} tokens`;
       }
+      try { renderMapRoster(); } catch (e) {}
     };
     img.onerror = () => {
       if (status) status.textContent = 'Failed to load map image';
     };
     img.src = map.imageDataUrl;
+    try { renderMapRoster(); } catch (e) {}
   }
 
   function mapCanvasToWorld(canvas, clientX, clientY) {
@@ -9118,6 +9220,42 @@ function escapeHtml(str) {
       try { save(); } catch (err) {}
       renderBattleMap();
     });
+
+    document.getElementById('map-grid-ox')?.addEventListener('change', (e) => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.gridOffsetX = Number(e.target.value) || 0;
+      try { save(); } catch (err) {}
+      renderBattleMap();
+    });
+    document.getElementById('map-grid-oy')?.addEventListener('change', (e) => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.gridOffsetY = Number(e.target.value) || 0;
+      try { save(); } catch (err) {}
+      renderBattleMap();
+    });
+    document.getElementById('map-snap-all')?.addEventListener('click', () => {
+      const map = getCombatMap();
+      if (!map) return;
+      snapAllMapTokens(map);
+      try { save(); } catch (err) {}
+      renderBattleMap();
+      toast('All tokens snapped to grid centers');
+    });
+    // sync offset fields from map
+    try {
+      const map = getCombatMap();
+      if (map) {
+        const ox = document.getElementById('map-grid-ox');
+        const oy = document.getElementById('map-grid-oy');
+        if (ox) ox.value = String(map.gridOffsetX || 0);
+        if (oy) oy.value = String(map.gridOffsetY || 0);
+        const gs = document.getElementById('map-grid-size');
+        if (gs && map.gridSize) gs.value = String(map.gridSize);
+      }
+    } catch (e) {}
+
     document.getElementById('map-clear-aoe')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
@@ -9241,8 +9379,7 @@ function escapeHtml(str) {
           const sel = document.getElementById('map-token-combatant');
           const id = sel && sel.value;
           if (!id) { toast('Pick a combatant'); return; }
-          const g = Number(map.gridSize) || 70;
-          map.tokens[id] = { x: Math.floor(x / g) * g + g / 2, y: Math.floor(y / g) * g + g / 2 };
+          map.tokens[id] = snapWorldToGrid(map, x, y);
           try { save(); } catch (err) {}
           renderBattleMap();
         } else if (tool.startsWith('aoe-')) {
@@ -9258,8 +9395,7 @@ function escapeHtml(str) {
         const map = getCombatMap();
         if (!map) return;
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
-        const g = Number(map.gridSize) || 70;
-        map.tokens[dragId] = { x: Math.floor(x / g) * g + g / 2, y: Math.floor(y / g) * g + g / 2 };
+        map.tokens[dragId] = snapWorldToGrid(map, x, y);
         renderBattleMap();
       });
       canvas.addEventListener('mouseup', () => {

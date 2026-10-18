@@ -3049,3 +3049,57 @@ button.turn-locked, select.turn-locked, input.turn-locked {
   cursor: crosshair;
   max-width: none;
 }
+
+.map-layout {
+  display: grid;
+  grid-template-columns: 1fr minmax(240px, 300px);
+  gap: 0.75rem;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .map-layout { grid-template-columns: 1fr; }
+}
+.map-roster {
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  padding: 0.6rem;
+}
+.map-roster-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  gap: 0.35rem;
+}
+.map-roster-card {
+  border: 1px solid rgba(196,163,90,0.25);
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  margin-bottom: 0.4rem;
+  cursor: pointer;
+  background: rgba(20,16,12,0.6);
+}
+.map-roster-card:hover { border-color: rgba(196,163,90,0.55); }
+.map-roster-card.selected {
+  border-color: #c4a35a;
+  box-shadow: 0 0 0 1px rgba(196,163,90,0.35);
+}
+.map-roster-card .mr-name { font-weight: 600; color: #e8dcc8; }
+.map-roster-card .mr-meta { font-size: 0.75rem; color: #a89880; }
+.map-roster-card .mr-hp { font-size: 0.8rem; }
+.map-roster-card .mr-hp.hurt { color: #e07070; }
+.map-roster-card .mr-bar {
+  height: 4px;
+  background: rgba(0,0,0,0.35);
+  border-radius: 2px;
+  margin-top: 0.25rem;
+  overflow: hidden;
+}
+.map-roster-card .mr-bar > span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #8b3a3a, #c4a35a);
+}
+.map-roster-card.enemy { border-left: 3px solid #a33; }
+.map-roster-card.ally { border-left: 3px solid #3a6ea3; }
+.map-roster-card.pc { border-left: 3px solid #3a8f5a; }
