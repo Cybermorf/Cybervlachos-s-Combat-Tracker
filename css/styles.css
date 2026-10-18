@@ -3035,3 +3035,17 @@ button.turn-locked, select.turn-locked, input.turn-locked {
   font-size: 0.72rem;
   padding: 0.2rem 0.4rem;
 }
+
+.map-canvas-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow: auto;
+  border: 1px solid rgba(196,163,90,0.3);
+  border-radius: 8px;
+  background: #0d0b09;
+}
+#map-canvas {
+  display: block;
+  cursor: crosshair;
+  max-width: none;
+}

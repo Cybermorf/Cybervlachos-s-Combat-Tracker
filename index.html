@@ -44,6 +44,10 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2"/><path d="M14.5 6.5L18 3h3v3l-3.5 3.5"/></svg>
           Combat
         </button>
+        <button class="nav-item" data-view="map">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+          Map
+        </button>
         <button class="nav-item" data-view="tools">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           Tools
@@ -134,6 +138,48 @@
 
       <!-- Tools View -->
         <!-- class tables injected -->
+      
+      <section id="view-map" class="view">
+        <div class="view-header">
+          <h1>Battle Map</h1>
+          <div class="header-actions">
+            <button type="button" class="btn secondary" id="map-import-image-btn">Import Image</button>
+            <button type="button" class="btn secondary" id="map-import-uvtt-btn">Import UVTT / DD2VTT</button>
+            <button type="button" class="btn secondary" id="map-clear-btn">Clear Map</button>
+            <input type="file" id="map-file-image" accept="image/*" hidden />
+            <input type="file" id="map-file-uvtt" accept=".dd2vtt,.uvtt,.json,application/json" hidden />
+          </div>
+        </div>
+        <p class="view-desc">Import a map (image or Dungeon Alchemist / Dungeondraft <strong>UVTT</strong>). Place combatants, set grid, and paint AoE to select targets for the combat roller.</p>
+        <div class="map-toolbar card" style="margin-bottom:0.75rem;padding:0.75rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end">
+          <div class="field" style="margin:0"><label>Grid px / square</label>
+            <input type="number" id="map-grid-size" min="10" max="256" value="70" style="width:5rem" />
+          </div>
+          <div class="field" style="margin:0"><label>Tool</label>
+            <select id="map-tool">
+              <option value="pan">Pan / select</option>
+              <option value="token">Place / move token</option>
+              <option value="aoe-sphere">AoE: Sphere / circle</option>
+              <option value="aoe-cone">AoE: Cone</option>
+              <option value="aoe-line">AoE: Line</option>
+              <option value="aoe-cube">AoE: Cube / square</option>
+            </select>
+          </div>
+          <div class="field" style="margin:0"><label>AoE size (ft)</label>
+            <input type="number" id="map-aoe-ft" min="5" max="300" step="5" value="20" style="width:5rem" />
+          </div>
+          <div class="field" style="margin:0"><label>Token for</label>
+            <select id="map-token-combatant" style="min-width:10rem"></select>
+          </div>
+          <button type="button" class="btn primary" id="map-apply-aoe-targets">Select targets in AoE</button>
+          <button type="button" class="btn secondary" id="map-clear-aoe">Clear AoE</button>
+          <span class="muted small" id="map-status">No map loaded</span>
+        </div>
+        <div class="map-canvas-wrap">
+          <canvas id="map-canvas" width="900" height="600"></canvas>
+        </div>
+      </section>
+
       <section id="view-tools" class="view">
         <div class="view-header">
           <h1>Tools</h1>

@@ -829,9 +829,12 @@
   function setView(viewName) {
     // Combat Tracker app: only combat + tools are valid top-level views
     if (document.body && document.body.dataset && document.body.dataset.app === 'combat-tracker') {
-      if (viewName !== 'combat' && viewName !== 'tools') {
+      if (viewName !== 'combat' && viewName !== 'tools' && viewName !== 'map') {
         viewName = 'combat';
       }
+    }
+    if (viewName === 'map') {
+      try { refreshMapTokenSelect(); renderBattleMap(); } catch (e) {}
     }
 
     $$('.view').forEach(v => v.classList.remove('active'));
@@ -8643,6 +8646,395 @@ function escapeHtml(str) {
   if (document.readyState === 'loading') {
     
   document.body.dataset.app = 'combat-tracker';
+
+  
+  // ═══════════════════════════════════════════════════════════
+  // Battle Map — image / UVTT + tokens + AoE
+  // ═══════════════════════════════════════════════════════════
+  function getCombatMap() {
+    const c = getActive();
+    if (!c) return null;
+    if (!c.combatMap) {
+      c.combatMap = {
+        imageDataUrl: null,
+        gridSize: 70,
+        width: 0,
+        height: 0,
+        walls: [],
+        tokens: {}, // combatantId -> {x, y} pixel coords center
+        aoe: null,
+        offsetX: 0,
+        offsetY: 0,
+        scale: 1
+      };
+    }
+    return c.combatMap;
+  }
+
+  function parseUvttFile(text) {
+    const data = JSON.parse(text);
+    // Universal VTT / dd2vtt shapes vary slightly
+    const img = data.image || data.map_image || (data.resolution && data.resolution.map_origin) || null;
+    let dataUrl = null;
+    if (typeof img === 'string') {
+      if (img.startsWith('data:')) dataUrl = img;
+      else dataUrl = 'data:image/png;base64,' + img.replace(/^base64,/, '');
+    }
+    const pixels = data.resolution
+      ? (data.resolution.pixels_per_grid || data.resolution.pixels_per_square || 70)
+      : (data.pixels_per_grid || data.gridSize || 70);
+    const walls = [];
+    const los = data.line_of_sight || data.walls || data.los || [];
+    (Array.isArray(los) ? los : []).forEach(poly => {
+      if (Array.isArray(poly)) {
+        for (let i = 0; i < poly.length - 1; i++) {
+          const a = poly[i], b = poly[i + 1];
+          if (a && b && a.length >= 2 && b.length >= 2) {
+            walls.push({ x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
+          }
+        }
+      } else if (poly && poly.c != null) {
+        // some formats
+      }
+    });
+    // portals sometimes as wall segments
+    const portals = data.portals || [];
+    (Array.isArray(portals) ? portals : []).forEach(p => {
+      if (p.bounds && p.bounds.length >= 2) {
+        const a = p.bounds[0], b = p.bounds[1];
+        walls.push({ x1: a.x || a[0], y1: a.y || a[1], x2: b.x || b[0], y2: b.y || b[1], door: true });
+      }
+    });
+    return {
+      imageDataUrl: dataUrl,
+      gridSize: Number(pixels) || 70,
+      walls,
+      width: data.resolution ? (data.resolution.map_size && data.resolution.map_size.x) : 0,
+      height: data.resolution ? (data.resolution.map_size && data.resolution.map_size.y) : 0,
+      raw: data
+    };
+  }
+
+  function refreshMapTokenSelect() {
+    const sel = document.getElementById('map-token-combatant');
+    if (!sel) return;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    sel.innerHTML = list.map((cb, i) =>
+      `<option value="${escapeAttr(cb.id || String(i))}">${escapeHtml(cb.name || ('#' + i))}</option>`
+    ).join('') || '<option value="">No combatants</option>';
+  }
+
+  function renderBattleMap() {
+    const canvas = document.getElementById('map-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const map = getCombatMap();
+    const status = document.getElementById('map-status');
+    if (!map || !map.imageDataUrl) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#1a1510';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#c4a35a';
+      ctx.font = '16px sans-serif';
+      ctx.fillText('Import an image or UVTT file to begin.', 24, 40);
+      if (status) status.textContent = 'No map loaded';
+      return;
+    }
+    const img = new Image();
+    img.onload = () => {
+      map.width = img.width;
+      map.height = img.height;
+      const maxW = Math.min(1200, window.innerWidth - 80);
+      const scale = Math.min(1, maxW / img.width);
+      map.scale = scale;
+      canvas.width = Math.floor(img.width * scale);
+      canvas.height = Math.floor(img.height * scale);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      const g = (Number(map.gridSize) || 70) * scale;
+      if (g >= 8) {
+        ctx.strokeStyle = 'rgba(196,163,90,0.25)';
+        ctx.lineWidth = 1;
+        for (let x = 0; x <= canvas.width; x += g) {
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+        }
+        for (let y = 0; y <= canvas.height; y += g) {
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+        }
+      }
+
+      // walls
+      if (map.walls && map.walls.length) {
+        ctx.strokeStyle = 'rgba(255,80,80,0.55)';
+        ctx.lineWidth = 2;
+        map.walls.forEach(w => {
+          ctx.beginPath();
+          ctx.moveTo(w.x1 * scale, w.y1 * scale);
+          ctx.lineTo(w.x2 * scale, w.y2 * scale);
+          ctx.stroke();
+        });
+      }
+
+      // tokens
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const list = (combat && combat.combatants) || [];
+      list.forEach((cb, idx) => {
+        const id = cb.id || String(idx);
+        const pos = map.tokens[id];
+        if (!pos) return;
+        const x = pos.x * scale, y = pos.y * scale;
+        const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = cb.side === 'enemy' || cb.side === 'villain' ? 'rgba(180,40,40,0.85)' : 'rgba(40,120,80,0.85)';
+        ctx.fill();
+        ctx.strokeStyle = '#e8dcc8';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = '#fff';
+        ctx.font = '11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
+      });
+
+      // AoE
+      if (map.aoe) {
+        const a = map.aoe;
+        const ox = a.x * scale, oy = a.y * scale;
+        const ft = a.ft || 20;
+        const pxPerFt = ((Number(map.gridSize) || 70) * scale) / 5; // 5 ft square
+        const rad = (ft) * pxPerFt;
+        ctx.fillStyle = 'rgba(100,160,255,0.25)';
+        ctx.strokeStyle = 'rgba(100,180,255,0.9)';
+        ctx.lineWidth = 2;
+        if (a.shape === 'sphere' || a.shape === 'cube') {
+          if (a.shape === 'sphere') {
+            ctx.beginPath();
+            ctx.arc(ox, oy, rad, 0, Math.PI * 2);
+            ctx.fill(); ctx.stroke();
+          } else {
+            ctx.fillRect(ox - rad, oy - rad, rad * 2, rad * 2);
+            ctx.strokeRect(ox - rad, oy - rad, rad * 2, rad * 2);
+          }
+        } else if (a.shape === 'cone') {
+          const ang = a.angle != null ? a.angle : -Math.PI / 2;
+          const spread = Math.PI / 3;
+          ctx.beginPath();
+          ctx.moveTo(ox, oy);
+          ctx.arc(ox, oy, rad, ang - spread / 2, ang + spread / 2);
+          ctx.closePath();
+          ctx.fill(); ctx.stroke();
+        } else if (a.shape === 'line') {
+          const ang = a.angle != null ? a.angle : 0;
+          const ex = ox + Math.cos(ang) * rad;
+          const ey = oy + Math.sin(ang) * rad;
+          ctx.strokeStyle = 'rgba(100,180,255,0.9)';
+          ctx.lineWidth = Math.max(6, ((Number(map.gridSize) || 70) * scale) * 0.2);
+          ctx.beginPath();
+          ctx.moveTo(ox, oy);
+          ctx.lineTo(ex, ey);
+          ctx.stroke();
+        }
+      }
+
+      if (status) {
+        status.textContent = `${img.width}×${img.height}px · grid ${map.gridSize}px · ${map.walls.length} wall segs · ${Object.keys(map.tokens).length} tokens`;
+      }
+    };
+    img.onerror = () => {
+      if (status) status.textContent = 'Failed to load map image';
+    };
+    img.src = map.imageDataUrl;
+  }
+
+  function mapCanvasToWorld(canvas, clientX, clientY) {
+    const rect = canvas.getBoundingClientRect();
+    const map = getCombatMap();
+    const scale = map.scale || 1;
+    const x = (clientX - rect.left) * (canvas.width / rect.width) / scale;
+    const y = (clientY - rect.top) * (canvas.height / rect.height) / scale;
+    return { x, y };
+  }
+
+  function tokenIdsInAoe(map) {
+    if (!map.aoe) return [];
+    const a = map.aoe;
+    const ft = a.ft || 20;
+    const g = Number(map.gridSize) || 70;
+    const pxPerFt = g / 5;
+    const rad = ft * pxPerFt;
+    const hits = [];
+    Object.keys(map.tokens).forEach(id => {
+      const p = map.tokens[id];
+      const dx = p.x - a.x, dy = p.y - a.y;
+      const dist = Math.hypot(dx, dy);
+      let inside = false;
+      if (a.shape === 'sphere') inside = dist <= rad;
+      else if (a.shape === 'cube') inside = Math.abs(dx) <= rad && Math.abs(dy) <= rad;
+      else if (a.shape === 'cone') {
+        const ang = a.angle != null ? a.angle : -Math.PI / 2;
+        const bearing = Math.atan2(dy, dx);
+        let d = Math.abs(bearing - ang);
+        while (d > Math.PI) d = Math.abs(d - 2 * Math.PI);
+        inside = dist <= rad && d <= Math.PI / 6;
+      } else if (a.shape === 'line') {
+        const ang = a.angle != null ? a.angle : 0;
+        const ex = a.x + Math.cos(ang) * rad, ey = a.y + Math.sin(ang) * rad;
+        // distance to segment
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * (ex - a.x) + (p.y - a.y) * (ey - a.y)) / (rad * rad || 1)));
+        const projx = a.x + t * (ex - a.x), projy = a.y + t * (ey - a.y);
+        const width = g * 0.35;
+        inside = Math.hypot(p.x - projx, p.y - projy) <= width;
+      }
+      if (inside) hits.push(id);
+    });
+    return hits;
+  }
+
+  function initBattleMapUi() {
+    if (window.__mapUiReady) return;
+    window.__mapUiReady = true;
+
+    document.getElementById('map-import-image-btn')?.addEventListener('click', () => {
+      document.getElementById('map-file-image')?.click();
+    });
+    document.getElementById('map-import-uvtt-btn')?.addEventListener('click', () => {
+      document.getElementById('map-file-uvtt')?.click();
+    });
+    document.getElementById('map-file-image')?.addEventListener('change', (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const map = getCombatMap();
+        if (!map) { toast('No workspace'); return; }
+        map.imageDataUrl = reader.result;
+        map.walls = [];
+        map.aoe = null;
+        const gs = document.getElementById('map-grid-size');
+        if (gs) map.gridSize = Number(gs.value) || 70;
+        try { save(); } catch (err) {}
+        renderBattleMap();
+        toast('Map image loaded');
+      };
+      reader.readAsDataURL(f);
+      e.target.value = '';
+    });
+    document.getElementById('map-file-uvtt')?.addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        const parsed = parseUvttFile(text);
+        const map = getCombatMap();
+        if (!map) { toast('No workspace'); return; }
+        if (!parsed.imageDataUrl) {
+          toast('UVTT had no embedded image — import image separately');
+        } else {
+          map.imageDataUrl = parsed.imageDataUrl;
+        }
+        map.gridSize = parsed.gridSize || 70;
+        map.walls = parsed.walls || [];
+        map.aoe = null;
+        const gs = document.getElementById('map-grid-size');
+        if (gs) gs.value = String(map.gridSize);
+        try { save(); } catch (err) {}
+        renderBattleMap();
+        toast('UVTT imported (' + map.walls.length + ' wall segments)');
+      } catch (err) {
+        console.warn(err);
+        toast('Could not parse UVTT/JSON');
+      }
+      e.target.value = '';
+    });
+    document.getElementById('map-clear-btn')?.addEventListener('click', () => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.imageDataUrl = null;
+      map.walls = [];
+      map.tokens = {};
+      map.aoe = null;
+      try { save(); } catch (err) {}
+      renderBattleMap();
+    });
+    document.getElementById('map-grid-size')?.addEventListener('change', (e) => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.gridSize = Number(e.target.value) || 70;
+      try { save(); } catch (err) {}
+      renderBattleMap();
+    });
+    document.getElementById('map-clear-aoe')?.addEventListener('click', () => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.aoe = null;
+      try { save(); } catch (err) {}
+      renderBattleMap();
+    });
+    document.getElementById('map-apply-aoe-targets')?.addEventListener('click', () => {
+      const map = getCombatMap();
+      if (!map || !map.aoe) { toast('Draw an AoE first'); return; }
+      const ids = tokenIdsInAoe(map);
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (!combat) return;
+      // Select matching combatants in combat list / store for roller
+      combat.aoeTargetIds = ids;
+      const names = [];
+      combat.combatants.forEach((cb, i) => {
+        const id = cb.id || String(i);
+        if (ids.includes(id)) names.push(cb.name);
+      });
+      try { save(); } catch (err) {}
+      toast(names.length ? ('AoE targets: ' + names.join(', ')) : 'No tokens in AoE');
+      // Switch to combat view
+      try {
+        document.querySelector('.nav-item[data-view="combat"]')?.click();
+      } catch (e) {}
+    });
+
+    const canvas = document.getElementById('map-canvas');
+    if (canvas) {
+      let dragging = null;
+      canvas.addEventListener('click', (ev) => {
+        const map = getCombatMap();
+        if (!map || !map.imageDataUrl) return;
+        const tool = document.getElementById('map-tool')?.value || 'token';
+        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        if (tool === 'token') {
+          const sel = document.getElementById('map-token-combatant');
+          const id = sel && sel.value;
+          if (!id) { toast('Pick a combatant'); return; }
+          map.tokens[id] = { x, y };
+          try { save(); } catch (err) {}
+          renderBattleMap();
+        } else if (tool.startsWith('aoe-')) {
+          const shape = tool.replace('aoe-', '');
+          const ft = Number(document.getElementById('map-aoe-ft')?.value) || 20;
+          map.aoe = { shape: shape === 'sphere' ? 'sphere' : shape, x, y, ft, angle: -Math.PI / 2 };
+          try { save(); } catch (err) {}
+          renderBattleMap();
+        }
+      });
+      canvas.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        const map = getCombatMap();
+        if (!map || !map.aoe) return;
+        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        map.aoe.angle = Math.atan2(y - map.aoe.y, x - map.aoe.x);
+        try { save(); } catch (err) {}
+        renderBattleMap();
+      });
+    }
+  }
+
+  // Hook navigation to render map
+  const _origSetViewMap = typeof setView === 'function' ? setView : null;
 
   document.addEventListener('DOMContentLoaded', init);
   } else {
