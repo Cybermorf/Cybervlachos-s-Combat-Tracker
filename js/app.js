@@ -9166,9 +9166,11 @@ function escapeHtml(str) {
   function applyMapPopoutMode() {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
-    document.querySelectorAll('.app-header, header').forEach(el => { el.style.display = 'none'; });
-    const mt = document.getElementById('menu-toggle'); if (mt) mt.style.display = 'none';
-    const sb = document.getElementById('sidebar'); if (sb) sb.style.display = 'none';
+    document.querySelectorAll('.app-header, header, #menu-toggle, .header-left, .header-right, #sidebar, .sidebar').forEach(el => {
+      if (!el) return;
+      el.style.setProperty('display', 'none', 'important');
+      el.style.setProperty('visibility', 'hidden', 'important');
+    });
     document.title = (document.title || 'Combat Tracker') + ' — Map';
     // Load existing state only — do not create a blank workspace
     try { if (typeof load === 'function') load(); } catch (e) {}
@@ -9872,6 +9874,7 @@ function escapeHtml(str) {
       const map = getCombatMap();
       if (!map) return;
       map.gridOffsetX = Number(e.target.value) || 0;
+      snapAllMapTokens(map);
       try { save(); } catch (err) {}
       renderBattleMap();
     });
@@ -9879,9 +9882,31 @@ function escapeHtml(str) {
       const map = getCombatMap();
       if (!map) return;
       map.gridOffsetY = Number(e.target.value) || 0;
+      snapAllMapTokens(map);
       try { save(); } catch (err) {}
       renderBattleMap();
     });
+
+    document.getElementById('map-grid-adjust-toggle')?.addEventListener('click', () => {
+      const tool = document.getElementById('map-tool');
+      const btn = document.getElementById('map-grid-adjust-toggle');
+      if (!tool) return;
+      if (tool.value === 'grid-offset') {
+        tool.value = 'token';
+        if (btn) btn.classList.remove('primary');
+        toast('Grid adjust off');
+      } else {
+        tool.value = 'grid-offset';
+        if (btn) btn.classList.add('primary');
+        toast('Grid adjust on — drag the map to move the grid');
+      }
+    });
+    document.getElementById('map-tool')?.addEventListener('change', () => {
+      const tool = document.getElementById('map-tool');
+      const btn = document.getElementById('map-grid-adjust-toggle');
+      if (btn) btn.classList.toggle('primary', tool && tool.value === 'grid-offset');
+    });
+
     document.getElementById('map-snap-all')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
@@ -10086,7 +10111,12 @@ function escapeHtml(str) {
           const oy = document.getElementById('map-grid-oy');
           if (ox) ox.value = String(Math.round(map.gridOffsetX));
           if (oy) oy.value = String(Math.round(map.gridOffsetY));
-          renderBattleMap();
+          // Only redraw overlays if video (avoid restarting stream every move)
+          if (map.mediaType === 'video' && window.__mapRaf) {
+            // next video frame will pick up offset via drawMapOverlays
+          } else {
+            renderBattleMap();
+          }
           return;
         }
         if (!dragId) return;
@@ -10096,8 +10126,11 @@ function escapeHtml(str) {
       canvas.addEventListener('mouseup', () => {
         if (window.__gridDrag) {
           window.__gridDrag = null;
+          const map2 = getCombatMap();
+          if (map2) snapAllMapTokens(map2);
           try { save(); } catch (err) {}
-          toast('Grid offset updated');
+          renderBattleMap();
+          toast('Grid offset updated — tokens re-centered');
         }
         if (dragId) {
           try { save(); } catch (err) {}
