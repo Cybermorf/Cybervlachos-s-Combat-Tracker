@@ -3179,3 +3179,88 @@ body.map-popout #view-map .view-header,
 body.map-popout #view-map > .view-desc {
   display: none !important;
 }
+
+
+/* Map-only pop-out — map + combatants only */
+body.map-popout .app-header,
+body.map-popout header.app-header,
+body.map-popout #sidebar,
+body.map-popout .sidebar,
+body.map-popout #menu-toggle,
+body.map-popout .menu-toggle,
+body.map-popout .nav-item,
+body.map-popout .app-nav,
+body.map-popout .view-desc,
+body.map-popout #view-combat,
+body.map-popout #view-tools,
+body.map-popout #view-map .view-header,
+body.map-popout #view-map .map-toolbar,
+body.map-popout #view-map .header-actions,
+body.map-popout #map-popout-btn,
+body.map-popout #map-import-image-btn,
+body.map-popout #map-import-uvtt-btn,
+body.map-popout #map-import-video-btn,
+body.map-popout #map-clear-btn,
+body.map-popout #map-snap-all,
+body.map-popout #map-status,
+body.map-popout .map-roster-head .btn,
+body.map-popout .map-roster-card .tool-btns,
+body.map-popout .brand,
+body.map-popout .header-right,
+body.map-popout .header-left {
+  display: none !important;
+}
+body.map-popout {
+  overflow: hidden;
+}
+body.map-popout .app-shell,
+body.map-popout .main-content,
+body.map-popout #main,
+body.map-popout .content {
+  margin: 0 !important;
+  padding: 0 !important;
+  max-width: none !important;
+  width: 100% !important;
+}
+body.map-popout #view-map {
+  display: flex !important;
+  flex-direction: column;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0.25rem;
+  min-height: 100dvh;
+  height: 100dvh;
+}
+body.map-popout .map-layout {
+  grid-template-columns: 1fr minmax(220px, 280px);
+  flex: 1;
+  min-height: 0;
+  height: calc(100dvh - 0.5rem);
+  overflow: hidden;
+}
+body.map-popout .map-canvas-wrap {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+body.map-popout .map-roster {
+  max-height: 100%;
+  height: 100%;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  overflow-y: auto;
+}
+/* Sticky combatants while scrolling map (main window too) */
+.map-layout {
+  align-items: start;
+}
+.map-roster {
+  position: sticky;
+  top: 0.5rem;
+  align-self: start;
+  max-height: calc(100dvh - 6rem);
+  overflow-y: auto;
+}

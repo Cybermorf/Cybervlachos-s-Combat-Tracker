@@ -9166,6 +9166,9 @@ function escapeHtml(str) {
   function applyMapPopoutMode() {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
+    document.querySelectorAll('.app-header, header').forEach(el => { el.style.display = 'none'; });
+    const mt = document.getElementById('menu-toggle'); if (mt) mt.style.display = 'none';
+    const sb = document.getElementById('sidebar'); if (sb) sb.style.display = 'none';
     document.title = (document.title || 'Combat Tracker') + ' — Map';
     // Load existing state only — do not create a blank workspace
     try { if (typeof load === 'function') load(); } catch (e) {}
@@ -9190,6 +9193,10 @@ function escapeHtml(str) {
     } catch (e) { console.warn(e); }
     const side = document.getElementById('sidebar');
     if (side) side.style.display = 'none';
+    document.querySelectorAll('.app-header, header.app-header').forEach(el => {
+      el.style.display = 'none';
+    });
+    document.getElementById('menu-toggle') && (document.getElementById('menu-toggle').style.display = 'none');
   }
 
   function bindMapCrossWindowSync() {
@@ -9545,38 +9552,52 @@ function escapeHtml(str) {
 
     // Live video map: draw frames to canvas under tokens/grid
     if (hasVideo && videoEl) {
-      videoEl.style.display = 'none'; // we draw to canvas
-      if (videoEl.src !== map.videoObjectUrl) {
-        videoEl.src = map.videoObjectUrl;
+      videoEl.style.display = 'none';
+      const want = map.videoObjectUrl;
+      if (videoEl.getAttribute('data-src') !== want) {
+        videoEl.setAttribute('data-src', want);
+        videoEl.src = want;
       }
       videoEl.muted = true;
       videoEl.loop = true;
+      videoEl.playsInline = true;
       const startVideoDraw = () => {
         const srcW = videoEl.videoWidth || 1280;
         const srcH = videoEl.videoHeight || 720;
+        if (!videoEl.videoWidth) {
+          // still decoding
+          window.__mapRaf = requestAnimationFrame(() => startVideoDraw());
+          return;
+        }
         map.width = srcW;
         map.height = srcH;
-        const maxW = Math.min(1200, window.innerWidth - 80);
+        const maxW = Math.min(1400, window.innerWidth - 100);
         const scale = Math.min(1, maxW / srcW);
         map.scale = scale;
         canvas.width = Math.floor(srcW * scale);
         canvas.height = Math.floor(srcH * scale);
         const tick = () => {
-          if (!getCombatMap() || getCombatMap().mediaType !== 'video') return;
+          const m = getCombatMap();
+          if (!m || m.mediaType !== 'video') return;
           ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
-          // grid + tokens drawn via helper below
-          try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, map, scale); } catch (e) {}
+          try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || scale); } catch (e) {}
           window.__mapRaf = requestAnimationFrame(tick);
         };
-        videoEl.play().catch(() => {});
+        videoEl.play().catch((e) => {
+          console.warn('video play', e);
+          toast('Click the map once if video is paused (browser autoplay)');
+        });
         tick();
         if (status) status.textContent = `Video ${srcW}×${srcH} · grid ${map.gridSize}px`;
         try { renderMapRoster(); } catch (e) {}
       };
-      if (videoEl.readyState >= 2) startVideoDraw();
-      else videoEl.onloadeddata = startVideoDraw;
+      if (videoEl.readyState >= 2 && videoEl.videoWidth) startVideoDraw();
+      else {
+        videoEl.onloadeddata = startVideoDraw;
+        videoEl.onerror = () => toast('Video failed to decode — try WebM or another MP4');
+      }
       return;
     }
 
@@ -10005,9 +10026,17 @@ function escapeHtml(str) {
       canvas.addEventListener('mousedown', (ev) => {
         if (ev.button !== 0) return;
         const map = getCombatMap();
-        if (!map || !map.imageDataUrl) return;
+        if (!map || (!map.imageDataUrl && !(map.mediaType === 'video' && map.videoObjectUrl))) return;
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        if (tool === 'grid-offset') {
+          window.__gridDrag = {
+            startX: x, startY: y,
+            ox: Number(map.gridOffsetX) || 0,
+            oy: Number(map.gridOffsetY) || 0
+          };
+          return;
+        }
         if (tool === 'token' || tool === 'pan') {
           // hit-test existing token
           const g = Number(map.gridSize) || 70;
@@ -10046,14 +10075,30 @@ function escapeHtml(str) {
         }
       });
       canvas.addEventListener('mousemove', (ev) => {
-        if (!dragId) return;
         const map = getCombatMap();
         if (!map) return;
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        if (window.__gridDrag) {
+          const d = window.__gridDrag;
+          map.gridOffsetX = d.ox + (x - d.startX);
+          map.gridOffsetY = d.oy + (y - d.startY);
+          const ox = document.getElementById('map-grid-ox');
+          const oy = document.getElementById('map-grid-oy');
+          if (ox) ox.value = String(Math.round(map.gridOffsetX));
+          if (oy) oy.value = String(Math.round(map.gridOffsetY));
+          renderBattleMap();
+          return;
+        }
+        if (!dragId) return;
         map.tokens[dragId] = snapWorldToGrid(map, x, y);
         renderBattleMap();
       });
       canvas.addEventListener('mouseup', () => {
+        if (window.__gridDrag) {
+          window.__gridDrag = null;
+          try { save(); } catch (err) {}
+          toast('Grid offset updated');
+        }
         if (dragId) {
           try { save(); } catch (err) {}
           dragId = null;
