@@ -63,16 +63,98 @@
     }
   }
 
-  function cloneStateForLocalStorage() {
-    // Deep-ish clone campaigns but strip huge map image data URLs
-    const campaigns = (state.campaigns || []).map(c => {
-      const copy = JSON.parse(JSON.stringify(c));
-      if (copy.combatMap && copy.combatMap.imageDataUrl) {
-        copy.combatMap = Object.assign({}, copy.combatMap, {
-          imageDataUrl: null,
-          hasImageInIdb: true
-        });
+  async function idbSetMapVideo(workspaceId, blob) {
+    if (!workspaceId || !blob) return;
+    try {
+      const db = await openMapDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(MAP_IDB_STORE, 'readwrite');
+        tx.objectStore(MAP_IDB_STORE).put(blob, 'mapvideo:' + workspaceId);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch (e) {
+      console.warn('Map video IDB save failed', e);
+    }
+  }
+
+  async function idbGetMapVideo(workspaceId) {
+    if (!workspaceId) return null;
+    try {
+      const db = await openMapDb();
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(MAP_IDB_STORE, 'readonly');
+        const req = tx.objectStore(MAP_IDB_STORE).get('mapvideo:' + workspaceId);
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function stripHeavyFields(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) {
+      obj.forEach(stripHeavyFields);
+      return obj;
+    }
+    const heavyKeys = ['imageDataUrl', 'videoObjectUrl', 'avatar', 'portrait', 'image', 'tokenImage', 'raw'];
+    Object.keys(obj).forEach(k => {
+      const v = obj[k];
+      if (heavyKeys.includes(k) && typeof v === 'string' && v.length > 500) {
+        if (k === 'imageDataUrl') obj.hasImageInIdb = true;
+        if (k === 'videoObjectUrl' || (typeof v === 'string' && v.startsWith('blob:'))) {
+          obj.hasVideoInIdb = true;
+        }
+        obj[k] = null;
+      } else if (typeof v === 'string' && v.startsWith('data:') && v.length > 2000) {
+        obj[k] = null;
+      } else if (v && typeof v === 'object') {
+        stripHeavyFields(v);
       }
+    });
+    return obj;
+  }
+
+  function cloneStateForLocalStorage() {
+    const campaigns = (state.campaigns || []).map(c => {
+      let copy;
+      try {
+        copy = JSON.parse(JSON.stringify(c));
+      } catch (e) {
+        // Fallback: keep essential combat only
+        copy = {
+          id: c.id,
+          name: c.name,
+          party: c.party || [],
+          villains: c.villains || [],
+          combat: c.combat || { combatants: [], round: 1, turnIndex: 0, selectedIndex: 0 },
+          combatMap: c.combatMap ? {
+            gridSize: c.combatMap.gridSize,
+            gridOffsetX: c.combatMap.gridOffsetX,
+            gridOffsetY: c.combatMap.gridOffsetY,
+            tokens: c.combatMap.tokens,
+            walls: c.combatMap.walls,
+            mediaType: c.combatMap.mediaType,
+            hasImageInIdb: true,
+            hasVideoInIdb: !!c.combatMap.mediaType && c.combatMap.mediaType !== 'image',
+            imageDataUrl: null,
+            videoObjectUrl: null
+          } : null
+        };
+      }
+      if (copy.combatMap) {
+        if (copy.combatMap.imageDataUrl) {
+          copy.combatMap.hasImageInIdb = true;
+          copy.combatMap.imageDataUrl = null;
+        }
+        if (copy.combatMap.videoObjectUrl) {
+          copy.combatMap.hasVideoInIdb = true;
+          copy.combatMap.videoObjectUrl = null;
+        }
+      }
+      stripHeavyFields(copy);
       return copy;
     });
     return {
@@ -712,12 +794,35 @@
   // ─── Persistence ─────────────────────────────────────────────────────────
   function load() {
     try {
+      // Preserve heavy media already in memory (storage events strip data URLs)
+      const prevMedia = {};
+      (state.campaigns || []).forEach(c => {
+        if (!c || !c.id) return;
+        prevMedia[c.id] = {
+          imageDataUrl: c.combatMap && c.combatMap.imageDataUrl,
+          videoObjectUrl: c.combatMap && c.combatMap.videoObjectUrl,
+          mediaType: c.combatMap && c.combatMap.mediaType
+        };
+      });
+
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         state.campaigns = (parsed.campaigns || []).map(ensureCampaignShape);
         state.activeCampaignId = parsed.activeCampaignId || null;
         state.diceHistory = parsed.diceHistory || [];
+        // Restore media from memory if stripped in JSON
+        state.campaigns.forEach(c => {
+          if (!c.combatMap) c.combatMap = {};
+          const prev = prevMedia[c.id];
+          if (prev) {
+            if (!c.combatMap.imageDataUrl && prev.imageDataUrl) c.combatMap.imageDataUrl = prev.imageDataUrl;
+            if (!c.combatMap.videoObjectUrl && prev.videoObjectUrl) {
+              c.combatMap.videoObjectUrl = prev.videoObjectUrl;
+              c.combatMap.mediaType = prev.mediaType || c.combatMap.mediaType;
+            }
+          }
+        });
       }
     } catch (e) {
       console.warn('Failed to load state', e);
@@ -728,18 +833,29 @@
   async function restoreMapImagesAfterLoad() {
     try {
       for (const c of (state.campaigns || [])) {
-        if (!c.combatMap) continue;
-        if (c.combatMap.imageDataUrl) continue;
-        if (c.combatMap.hasImageInIdb || !c.combatMap.imageDataUrl) {
+        if (!c.combatMap) c.combatMap = {};
+        if (!c.combatMap.imageDataUrl) {
           const img = await idbGetMapImage(c.id);
           if (img) {
             c.combatMap.imageDataUrl = img;
             c.combatMap.hasImageInIdb = true;
+            if (!c.combatMap.mediaType) c.combatMap.mediaType = 'image';
+          }
+        }
+        if (!c.combatMap.videoObjectUrl && (c.combatMap.hasVideoInIdb || c.combatMap.mediaType === 'video')) {
+          const blob = await idbGetMapVideo(c.id);
+          if (blob) {
+            if (c.combatMap.videoObjectUrl && String(c.combatMap.videoObjectUrl).startsWith('blob:')) {
+              try { URL.revokeObjectURL(c.combatMap.videoObjectUrl); } catch (e) {}
+            }
+            c.combatMap.videoObjectUrl = URL.createObjectURL(blob);
+            c.combatMap.mediaType = 'video';
+            c.combatMap.hasVideoInIdb = true;
           }
         }
       }
     } catch (e) {
-      console.warn('restore map images', e);
+      console.warn('restore map media', e);
     }
   }
 
@@ -784,8 +900,9 @@
     // Persist large map image outside localStorage (quota)
     try {
       const c = (state.campaigns || []).find(x => x.id === state.activeCampaignId);
-      if (c && c.combatMap && c.combatMap.imageDataUrl) {
-        idbSetMapImage(c.id, c.combatMap.imageDataUrl);
+      if (c && c.combatMap) {
+        if (c.combatMap.imageDataUrl) idbSetMapImage(c.id, c.combatMap.imageDataUrl);
+        // video blob saved at import time via idbSetMapVideo
       }
     } catch (e) {}
 
@@ -8812,9 +8929,10 @@ function escapeHtml(str) {
 
   // ─── Init ────────────────────────────────────────────────────────────────
   function init() {
-    try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) { console.warn('map ui', e); }
+    // Load persisted workspace FIRST so nothing creates a blank over it
+    try { load(); } catch (e) { console.warn(e); }
+    try { tryRestoreRosterBackupIfEmpty(); } catch (e) {}
     try { bindMapCrossWindowSync(); } catch (e) {}
-    try { applyMapPopoutMode(); } catch (e) {}
     document.getElementById('combat-map-popout-btn')?.addEventListener('click', () => openMapPopout());
     document.getElementById('map-popout-btn')?.addEventListener('click', () => openMapPopout());
     loadUserCompendiumAsync().then(() => {
@@ -8827,24 +8945,29 @@ function escapeHtml(str) {
       if (typeof renderBestiary === 'function' && $('#view-bestiary')?.classList.contains('active')) renderBestiary();
     }).catch(e => console.warn(e));
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
-    load();
-    try { tryRestoreRosterBackupIfEmpty(); } catch (e) {}
     try {
       restoreMapImagesAfterLoad().then(() => {
         try {
           if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
-          if (document.getElementById('view-map')?.classList.contains('active')) {
+          else if (typeof initBattleMapUi === 'function') initBattleMapUi();
+          if (document.getElementById('view-map')?.classList.contains('active') || isMapPopoutMode()) {
             renderBattleMap();
             renderMapRoster();
           }
-          if (document.getElementById('view-combat')?.classList.contains('active')) renderCombat();
+          if (document.getElementById('view-combat')?.classList.contains('active') && !isMapPopoutMode()) renderCombat();
         } catch (e) {}
       });
     } catch (e) {}
     if (document.body?.dataset?.app === 'combat-tracker') {
-      ensureCombatWorkspace();
-      updateNavEnabled();
-      setView('combat');
+      if (!(typeof isMapPopoutMode === 'function' && isMapPopoutMode())) {
+        ensureCombatWorkspace();
+        updateNavEnabled();
+        setView('combat');
+      } else {
+        updateNavEnabled();
+        // pop-out: stay on map only
+        try { applyMapPopoutMode(); } catch (e) {}
+      }
     } else {
       updateNavEnabled();
     }
@@ -9075,16 +9198,19 @@ function escapeHtml(str) {
     // localStorage from other window (same origin)
     window.addEventListener('storage', (e) => {
       if (!e.key) return;
-      // reload state when combat workspace changes
-      try {
-        if (typeof load === 'function') load();
-      } catch (err) {}
-      if (isMapPopoutMode() || (document.getElementById('view-map') || {}).classList?.contains('active')) {
-        try { refreshMapTokenSelect(); renderBattleMap(); renderMapRoster(); } catch (err) {}
-      }
-      if (!isMapPopoutMode() && (document.getElementById('view-combat') || {}).classList?.contains('active')) {
-        try { renderCombat(); } catch (err) {}
-      }
+      if (e.key !== STORAGE_KEY && e.key !== ROSTER_BACKUP_KEY) return;
+      try { if (typeof load === 'function') load(); } catch (err) {}
+      const after = () => {
+        if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
+          try { refreshMapTokenSelect(); renderBattleMap(); renderMapRoster(); } catch (err) {}
+        }
+        if (!isMapPopoutMode() && document.getElementById('view-combat')?.classList.contains('active')) {
+          try { renderCombat(); } catch (err) {}
+        }
+      };
+      if (typeof restoreMapImagesAfterLoad === 'function') {
+        restoreMapImagesAfterLoad().then(after).catch(after);
+      } else after();
     });
     // BroadcastChannel for same-browser live updates
     try {
@@ -9092,19 +9218,23 @@ function escapeHtml(str) {
       window.__mapBc = bc;
       bc.onmessage = (ev) => {
         if (!ev.data || ev.data.type !== 'state') return;
-        try {
-          if (typeof load === 'function') load();
-        } catch (err) {}
-        try {
-          if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
-            refreshMapTokenSelect();
-            renderBattleMap();
-            renderMapRoster();
-          }
-          if (!isMapPopoutMode() && document.getElementById('view-combat')?.classList.contains('active')) {
-            renderCombat();
-          }
-        } catch (err) {}
+        // Pop-out: reload light state; main: merge without dropping media
+        try { if (typeof load === 'function') load(); } catch (err) {}
+        const after = () => {
+          try {
+            if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
+              refreshMapTokenSelect();
+              renderBattleMap();
+              renderMapRoster();
+            }
+            if (!isMapPopoutMode() && document.getElementById('view-combat')?.classList.contains('active')) {
+              renderCombat();
+            }
+          } catch (err) {}
+        };
+        if (typeof restoreMapImagesAfterLoad === 'function') {
+          restoreMapImagesAfterLoad().then(after).catch(after);
+        } else after();
       };
     } catch (e) {}
   }
@@ -9260,22 +9390,199 @@ function escapeHtml(str) {
     });
   }
 
+
+  function drawMapOverlays(ctx, canvas, map, scale) {
+    if (!ctx || !canvas || !map) return;
+      const g = (Number(map.gridSize) || 70) * scale;
+    const gox = (Number(map.gridOffsetX) || 0) * scale;
+    const goy = (Number(map.gridOffsetY) || 0) * scale;
+    if (g >= 8) {
+      ctx.strokeStyle = 'rgba(196,163,90,0.28)';
+      ctx.lineWidth = 1;
+      let x0 = gox % g;
+      if (x0 > 0) x0 -= g;
+      for (let x = x0; x <= canvas.width + g; x += g) {
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+      }
+      let y0 = goy % g;
+      if (y0 > 0) y0 -= g;
+      for (let y = y0; y <= canvas.height + g; y += g) {
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+      }
+    }
+
+    // walls
+    if (map.walls && map.walls.length) {
+      ctx.strokeStyle = 'rgba(255,80,80,0.55)';
+      ctx.lineWidth = 2;
+      map.walls.forEach(w => {
+      ctx.beginPath();
+      ctx.moveTo(w.x1 * scale, w.y1 * scale);
+      ctx.lineTo(w.x2 * scale, w.y2 * scale);
+      ctx.stroke();
+      });
+    }
+
+    // tokens
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    const selectedId = combat && combat.selectedIndex != null && combat.combatants[combat.selectedIndex]
+      ? String(combat.combatants[combat.selectedIndex].id || combat.selectedIndex)
+      : (combat && combat.mapFocusId) || null;
+    list.forEach((cb, idx) => {
+      const id = String(cb.id || idx);
+      const pos = map.tokens[id];
+      if (!pos) return;
+      const x = pos.x * scale, y = pos.y * scale;
+      const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+      const side = String(cb.side || '').toLowerCase();
+      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+      const isAlly = side === 'ally' || side === 'allies';
+      let fill = isEnemy ? 'rgba(180,40,40,0.9)' : (isAlly ? 'rgba(50,100,180,0.9)' : 'rgba(40,120,80,0.9)');
+      const hp = Number(cb.hp) || 0;
+      const hpMax = Math.max(1, Number(cb.hpMax) || 1);
+      const ratio = Math.max(0, Math.min(1, hp / hpMax));
+      if (hp <= 0) fill = 'rgba(60,60,60,0.85)';
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      // HP arc (hidden when hideHp)
+      if (!cb.hideHp && hp > 0) {
+      ctx.beginPath();
+      ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
+      ctx.lineWidth = 3;
+      ctx.arc(x, y, r + 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+      ctx.stroke();
+      }
+      ctx.strokeStyle = String(id) === String(selectedId) ? '#ffd24a' : '#e8dcc8';
+      ctx.lineWidth = String(id) === String(selectedId) ? 3 : 2;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
+      if (!cb.hideHp) {
+      ctx.fillStyle = '#c4a35a';
+      ctx.font = '10px sans-serif';
+      ctx.fillText(hp + '/' + hpMax, x, y + 3);
+      }
+      // still draw HP arc only if not hidden
+    });
+
+    // AoE
+    if (map.aoe) {
+      const a = map.aoe;
+      const ox = a.x * scale, oy = a.y * scale;
+      const ft = a.ft || 20;
+      const pxPerFt = ((Number(map.gridSize) || 70) * scale) / 5; // 5 ft square
+      const rad = (ft) * pxPerFt;
+      ctx.fillStyle = 'rgba(100,160,255,0.25)';
+      ctx.strokeStyle = 'rgba(100,180,255,0.9)';
+      ctx.lineWidth = 2;
+      if (a.shape === 'sphere' || a.shape === 'cube') {
+      if (a.shape === 'sphere') {
+        ctx.beginPath();
+        ctx.arc(ox, oy, rad, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+      } else {
+        ctx.fillRect(ox - rad, oy - rad, rad * 2, rad * 2);
+        ctx.strokeRect(ox - rad, oy - rad, rad * 2, rad * 2);
+      }
+      } else if (a.shape === 'cone') {
+      const ang = a.angle != null ? a.angle : -Math.PI / 2;
+      const spread = Math.PI / 3;
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.arc(ox, oy, rad, ang - spread / 2, ang + spread / 2);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      } else if (a.shape === 'line') {
+      const ang = a.angle != null ? a.angle : 0;
+      const ex = ox + Math.cos(ang) * rad;
+      const ey = oy + Math.sin(ang) * rad;
+      ctx.strokeStyle = 'rgba(100,180,255,0.9)';
+      ctx.lineWidth = Math.max(6, ((Number(map.gridSize) || 70) * scale) * 0.2);
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      }
+    }
+
+
+  }
+  window.__drawMapOverlays = drawMapOverlays;
+
   function renderBattleMap() {
     const canvas = document.getElementById('map-canvas');
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const map = getCombatMap();
     const status = document.getElementById('map-status');
-    if (!map || !map.imageDataUrl) {
+    if (window.__mapRaf) { cancelAnimationFrame(window.__mapRaf); window.__mapRaf = null; }
+    const videoEl = document.getElementById('map-video');
+    const hasVideo = !!(map && map.mediaType === 'video' && map.videoObjectUrl);
+    const hasImage = !!(map && map.imageDataUrl);
+    if (!map || (!hasImage && !hasVideo)) {
+      if (videoEl) {
+        try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch (e) {}
+        videoEl.style.display = 'none';
+      }
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#1a1510';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#c4a35a';
       ctx.font = '16px sans-serif';
-      ctx.fillText('Import an image or UVTT file to begin.', 24, 40);
+      ctx.fillText('Import an image, video (MP4/WebM), or UVTT file to begin.', 24, 40);
       if (status) status.textContent = 'No map loaded';
       try { renderMapRoster(); } catch (e) {}
       return;
+    }
+
+    // Live video map: draw frames to canvas under tokens/grid
+    if (hasVideo && videoEl) {
+      videoEl.style.display = 'none'; // we draw to canvas
+      if (videoEl.src !== map.videoObjectUrl) {
+        videoEl.src = map.videoObjectUrl;
+      }
+      videoEl.muted = true;
+      videoEl.loop = true;
+      const startVideoDraw = () => {
+        const srcW = videoEl.videoWidth || 1280;
+        const srcH = videoEl.videoHeight || 720;
+        map.width = srcW;
+        map.height = srcH;
+        const maxW = Math.min(1200, window.innerWidth - 80);
+        const scale = Math.min(1, maxW / srcW);
+        map.scale = scale;
+        canvas.width = Math.floor(srcW * scale);
+        canvas.height = Math.floor(srcH * scale);
+        const tick = () => {
+          if (!getCombatMap() || getCombatMap().mediaType !== 'video') return;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
+          // grid + tokens drawn via helper below
+          try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, map, scale); } catch (e) {}
+          window.__mapRaf = requestAnimationFrame(tick);
+        };
+        videoEl.play().catch(() => {});
+        tick();
+        if (status) status.textContent = `Video ${srcW}×${srcH} · grid ${map.gridSize}px`;
+        try { renderMapRoster(); } catch (e) {}
+      };
+      if (videoEl.readyState >= 2) startVideoDraw();
+      else videoEl.onloadeddata = startVideoDraw;
+      return;
+    }
+
+    if (videoEl) {
+      try { videoEl.pause(); } catch (e) {}
+      videoEl.style.display = 'none';
     }
     const img = new Image();
     img.onload = () => {
@@ -9521,6 +9828,11 @@ function escapeHtml(str) {
       const map = getCombatMap();
       if (!map) return;
       map.imageDataUrl = null;
+      if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+        try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+      }
+      map.videoObjectUrl = null;
+      map.mediaType = null;
       map.walls = [];
       map.tokens = {};
       map.aoe = null;
@@ -9653,6 +9965,35 @@ function escapeHtml(str) {
             toast('Could not parse UVTT: ' + (err.message || err));
           }
           el.value = '';
+
+        if (el.id === 'map-file-video') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          try {
+            ensureCombatWorkspace();
+            const map = getCombatMap();
+            if (!map) { toast('No workspace'); return; }
+            const c = getActive();
+            const buf = await f.arrayBuffer();
+            const blob = new Blob([buf], { type: f.type || 'video/mp4' });
+            await idbSetMapVideo(c.id, blob);
+            if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+              try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+            }
+            map.videoObjectUrl = URL.createObjectURL(blob);
+            map.mediaType = 'video';
+            map.hasVideoInIdb = true;
+            map.imageDataUrl = null; // prefer video
+            map.aoe = null;
+            try { save(); } catch (e) {}
+            renderBattleMap();
+            toast('Video map loaded (loops muted)');
+          } catch (err) {
+            console.warn(err);
+            toast('Could not load video');
+          }
+          el.value = '';
+        }
         }
       });
     }

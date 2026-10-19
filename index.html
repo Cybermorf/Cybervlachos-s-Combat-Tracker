@@ -146,6 +146,7 @@
           <div class="header-actions" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
             <label class="btn secondary" for="map-file-image" id="map-import-image-btn" style="cursor:pointer;margin:0">Import Image</label>
             <label class="btn secondary" for="map-file-uvtt" id="map-import-uvtt-btn" style="cursor:pointer;margin:0">Import UVTT / DD2VTT</label>
+            <label class="btn secondary" for="map-file-video" id="map-import-video-btn" style="cursor:pointer;margin:0">Import Video (MP4/WebM)</label>
             <button type="button" class="btn secondary" id="map-clear-btn">Clear Map</button>
             <button type="button" class="btn primary" id="map-popout-btn" title="Open map in a separate window for screen share">Pop out map</button>
           </div>
@@ -183,6 +184,7 @@
         </div>
         <div class="map-layout">
           <div class="map-canvas-wrap">
+            <video id="map-video" muted loop playsinline preload="auto" style="display:none"></video>
             <canvas id="map-canvas" width="900" height="600"></canvas>
           </div>
           <aside class="map-roster card" id="map-roster">
@@ -308,5 +310,6 @@
   <!-- Map file inputs at document root so they work even when views are display:none -->
   <input type="file" id="map-file-image" accept="image/*" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
   <input type="file" id="map-file-uvtt" accept=".dd2vtt,.uvtt,.json,application/json,text/plain" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
+  <input type="file" id="map-file-video" accept="video/mp4,video/webm,video/*" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
 </body>
 </html>
