@@ -6673,9 +6673,21 @@ function parseAttackLines(ch) {
       if (mode === 'auto') {
         const dmg = rollDieExpr(dmgEl?.value || '1d4+1');
         const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
-        if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${dmg.total + bonus}</strong></div>`;
-        window.__lastCombatRoll = { damage: dmg.total + bonus, heal: 0, hit: true, name: atkName };
-        appendLog(`${atkName}: auto-hit dmg ${dmg.total + bonus}`);
+        const total = dmg.total + bonus;
+        const asHeal = isHealingSpellName(atkName) || (window.__lastCombatRoll && window.__lastCombatRoll.isHeal);
+        if (asHeal) {
+          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — healing</div><div>Heal: <strong>${total}</strong></div>`;
+          window.__lastCombatRoll = { damage: 0, heal: total, healDice: dmgEl?.value || '', hit: true, isHeal: true, name: atkName };
+          const applyAmt = panel.querySelector('#cr-apply-amt');
+          if (applyAmt) applyAmt.value = String(total);
+          appendLog(`${atkName}: heal ${total}`);
+        } else {
+          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${total}</strong></div>`;
+          window.__lastCombatRoll = { damage: total, heal: 0, hit: true, isHeal: false, name: atkName };
+          const applyAmt = panel.querySelector('#cr-apply-amt');
+          if (applyAmt) applyAmt.value = String(total);
+          appendLog(`${atkName}: auto-hit dmg ${total}`);
+        }
         return;
       }
       if (mode === 'save') {
@@ -6820,14 +6832,22 @@ function parseAttackLines(ch) {
       if (!packs.length) { toast('Choose one or more targets'); return; }
       if (kind === 'heal') {
         const can = characterCanHeal(cb);
-        if (!can.ok) { toast('This combatant has no healing spells or potions'); return; }
+        const lastHeal = window.__lastCombatRoll && (window.__lastCombatRoll.heal > 0 || window.__lastCombatRoll.isHeal || isHealingSpellName(window.__lastCombatRoll.name));
+        const overridePre = parseInt(panel.querySelector('#cr-apply-amt')?.value, 10);
+        if (!can.ok && !lastHeal && !(overridePre > 0)) {
+          toast('No healing spell/potion detected — set Apply amount or cast a heal spell first');
+          return;
+        }
       }
       const override = parseInt(panel.querySelector('#cr-apply-amt')?.value, 10);
       const half = !!panel.querySelector('#cr-half')?.checked;
       packs.forEach(({ target }) => {
         if (kind === 'damage') {
-          let amt = !isNaN(override) ? override : (window.__lastCombatRoll?.damage || 0);
-          if (!amt) return;
+          let amt = resolveRollAmount(panel, 'damage');
+          if (!amt) {
+            toast('No damage amount — Roll Attack / auto-hit first, or set Apply amount');
+            return;
+          }
           if (half) amt = Math.floor(amt / 2);
           let left = amt;
           const temp = target.tempHp || 0;
@@ -6850,20 +6870,27 @@ function parseAttackLines(ch) {
           appendLog(`Applied ${amt} damage to ${target.name} (now ${target.hp}/${target.hpMax})`);
           syncLinkedCharacterHp(target);
         } else if (kind === 'heal') {
-          let amt = !isNaN(override) ? override : (window.__lastCombatRoll?.heal || 0);
+          let amt = resolveRollAmount(panel, 'heal');
           if (!amt) {
             const can = characterCanHeal(cb);
             const pot = (can.potions || [])[0];
             if (pot && pot.healDice) {
               const rolled = rollDieExpr(pot.healDice);
               amt = rolled.total;
-              consumeHealingPotion(cb, pot.name);
+              try { consumeHealingPotion(cb, pot.name); } catch (e) {}
               appendLog(`Used ${pot.name}: ${pot.healDice} = ${amt}`);
+            } else if (window.__lastCombatRoll && window.__lastCombatRoll.healDice) {
+              const rolled = rollDieExpr(window.__lastCombatRoll.healDice);
+              amt = rolled.total;
+              appendLog(`Heal roll ${window.__lastCombatRoll.healDice} = ${amt}`);
             } else {
-              amt = parseInt(prompt('Heal amount?', '5'), 10) || 0;
+              amt = parseInt(prompt('Heal amount?', String(window.__lastCombatRoll?.heal || 8)), 10) || 0;
             }
           }
-          if (amt <= 0) return;
+          if (amt <= 0) {
+            toast('No heal amount — cast/roll a healing spell first or enter Apply amount');
+            return;
+          }
           target.hp = Math.min(target.hpMax || amt, (target.hp || 0) + amt);
           if (target.hp > 0) target.deathSaves = { successes: 0, failures: 0 };
           appendLog(`Healed ${target.name} for ${amt} (now ${target.hp}/${target.hpMax})`);
@@ -7360,22 +7387,58 @@ function parseAttackLines(ch) {
         }
         if (!applyCastEconomy(sp, slotLevel)) return;
 
-        // Prefill roller
+        // Prefill roller for damage / heal
         const mode = panel.querySelector('#cr-mode');
-        const toHit = panel.querySelector('#cr-tohit') || panel.querySelector('input[id*="tohit"]') || panel.querySelector('#cr-bonus');
-        // find inputs by common ids
         const hitIn = panel.querySelector('#cr-hit-bonus') || panel.querySelector('#cr-to-hit') || panel.querySelector('#cr-tohit');
         const dmgIn = panel.querySelector('#cr-dmg') || panel.querySelector('#cr-damage') || panel.querySelector('#cr-damage-dice');
         const dcIn = panel.querySelector('#cr-dc') || panel.querySelector('#cr-save-dc');
+        const applyAmt = panel.querySelector('#cr-apply-amt');
+        const slotNeed = Math.max(sp.level || 0, Number(slotLevel) || sp.level || 0);
         const cls = typeof classifySpellAction === 'function' ? classifySpellAction(sp.name, sp.description || '') : { kind: 'utility' };
+        const isHeal = isHealingSpellName(sp.name);
+        const isAuto = isAutoHitSpellName(sp.name) || /missile/i.test(sp.name);
+
         if (mode) {
-          if (cls.kind === 'attack') mode.value = 'attack';
+          if (isHeal) mode.value = 'auto';
+          else if (isAuto) mode.value = 'auto';
+          else if (cls.kind === 'attack') mode.value = 'attack';
           else if (cls.kind === 'save') mode.value = 'save';
-          else if (/missile|magic missile/i.test(sp.name)) mode.value = 'auto';
           else mode.value = cls.kind === 'utility' ? 'utility' : 'save';
         }
-        if (hitIn && (mode && mode.value === 'attack')) hitIn.value = String(stats.attack);
+        if (hitIn && mode && mode.value === 'attack') hitIn.value = String(stats.attack);
         if (dcIn) dcIn.value = String(stats.dc);
+
+        if (isHeal) {
+          const expr = spellHealDice(sp, slotNeed, stats.mod);
+          if (dmgIn) dmgIn.value = expr;
+          const rolled = rollDieExpr(expr);
+          window.__lastCombatRoll = {
+            damage: 0,
+            heal: rolled.total,
+            healDice: expr,
+            hit: true,
+            isHeal: true,
+            name: sp.name
+          };
+          if (applyAmt) applyAmt.value = String(rolled.total);
+          toast(sp.name + ' heal rolled: ' + rolled.total + ' (' + expr + ') — select target(s) & Apply Heal');
+        } else if (isAuto) {
+          const expr = spellDamageDice(sp, slotNeed || 1);
+          if (dmgIn) dmgIn.value = expr;
+          const rolled = rollDieExpr(expr);
+          window.__lastCombatRoll = {
+            damage: rolled.total,
+            heal: 0,
+            hit: true,
+            isHeal: false,
+            name: sp.name
+          };
+          if (applyAmt) applyAmt.value = String(rolled.total);
+          toast(sp.name + ' damage: ' + rolled.total + ' (' + expr + ') — select target(s) & Apply Damage');
+        } else {
+          const expr = spellDamageDice(sp, slotNeed || sp.level || 1);
+          if (dmgIn && (!dmgIn.value || dmgIn.value === '1d8+3' || dmgIn.value === '1d4+1')) dmgIn.value = expr;
+        }
         const resEl = panel.querySelector('#combat-roll-result');
         if (resEl) {
           resEl.innerHTML = `<strong>${escapeHtml(sp.name)}</strong> cast` +
@@ -7458,8 +7521,8 @@ function parseAttackLines(ch) {
       });
     })();
 
-    panel.querySelector('#cr-apply-dmg')?.addEventListener('click', () => applyToTarget('damage'));
-    panel.querySelector('#cr-apply-heal')?.addEventListener('click', () => applyToTarget('heal'));
+    panel.querySelector('#cr-apply-dmg')?.addEventListener('click', () => { applyToTarget('damage'); try { save(); renderCombat(); } catch (e) {} });
+    panel.querySelector('#cr-apply-heal')?.addEventListener('click', () => { applyToTarget('heal'); try { save(); renderCombat(); } catch (e) {} });
     panel.querySelector('#cr-apply-cond')?.addEventListener('click', () => applyToTarget('cond'));
 
     window.__activeCombatAction = null;
