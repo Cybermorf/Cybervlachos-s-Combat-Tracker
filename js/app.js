@@ -2811,6 +2811,8 @@
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="dash" title="Gain extra movement equal to your speed">Dash</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="disengage" title="Movement does not provoke opportunity attacks">Disengage</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="dodge" title="Attacks vs you have disadvantage; Dex saves advantage">Dodge</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="grapple" title="Athletics contest">Grapple</button>
+          <button type="button" class="btn secondary btn-tiny act-opt" data-act="shove" title="Push or prone">Shove</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="help" title="Help an ally (advantage)">Help</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="hide" title="Make a Stealth check to Hide">Hide</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="ready" title="Ready a trigger; response uses your reaction">Ready</button>
@@ -6485,6 +6487,302 @@ function rollDieExpr(expr) {
     };
   }
 
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Combat mechanics expansion: conditions, damage types, death saves, rests,
+  // legendary resistance, grapple/shove, concentration, resistances
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  const CONDITION_RULES = {
+    blinded: { label: 'Blinded', attackDis: true, attackedAdv: true, speedMult: 1 },
+    charmed: { label: 'Charmed', notes: 'Cannot attack charmer' },
+    deafened: { label: 'Deafened' },
+    frightened: { label: 'Frightened', attackDis: true, notes: 'Disadv while source in sight' },
+    grappled: { label: 'Grappled', speedMult: 0 },
+    incapacitated: { label: 'Incapacitated', noActions: true, breaksConcentration: true },
+    invisible: { label: 'Invisible', attackAdv: true, attackedDis: true },
+    paralyzed: { label: 'Paralyzed', noActions: true, speedMult: 0, autoFailStrDex: true, attackedAdv: true, critMelee: true, breaksConcentration: true },
+    petrified: { label: 'Petrified', noActions: true, speedMult: 0, resistAll: true, breaksConcentration: true },
+    poisoned: { label: 'Poisoned', attackDis: true },
+    prone: { label: 'Prone', attackDis: true, attackedAdvMelee: true, attackedDisRanged: true, notes: 'Crawl or stand (half move)' },
+    restrained: { label: 'Restrained', speedMult: 0, attackDis: true, attackedAdv: true },
+    stunned: { label: 'Stunned', noActions: true, autoFailStrDex: true, attackedAdv: true, breaksConcentration: true },
+    unconscious: { label: 'Unconscious', noActions: true, speedMult: 0, autoFailStrDex: true, attackedAdv: true, critMelee: true, prone: true, breaksConcentration: true },
+    exhausted: { label: 'Exhaustion', notes: 'Track level separately' },
+    blessed: { label: 'Blessed', attackBonus: 4, notes: '+1d4 attacks/saves (approx +2)' },
+    hasted: { label: 'Hasted', extraAttack: true, notes: 'Extra action (Attack/Dash/Disengage/Hide)' },
+    raging: { label: 'Raging', notes: 'Rage damage & resistance as per class' },
+    dodging: { label: 'Dodging', attackedDis: true },
+    hiding: { label: 'Hidden', attackedDis: true },
+    concentrating: { label: 'Concentrating', notes: 'Shown via concentrating field' }
+  };
+
+  function normalizeConditionList(cb) {
+    if (!cb) return [];
+    if (Array.isArray(cb.conditionList) && cb.conditionList.length) return cb.conditionList;
+    const raw = cb.conditions;
+    if (Array.isArray(raw)) return raw.map(c => typeof c === 'string' ? { id: c.toLowerCase(), name: c } : c);
+    if (typeof raw === 'string' && raw.trim()) {
+      return raw.split(/[,;]/).map(s => s.trim()).filter(Boolean).map(s => ({ id: s.toLowerCase(), name: s }));
+    }
+    return [];
+  }
+
+  function combatantHasCondition(cb, id) {
+    const idn = String(id).toLowerCase();
+    return normalizeConditionList(cb).some(c => (c.id || c.name || '').toLowerCase() === idn || (c.name || '').toLowerCase().includes(idn));
+  }
+
+  function addCondition(cb, name, rounds) {
+    if (!cb) return;
+    const id = String(name).toLowerCase().replace(/\s+/g, '-');
+    const list = normalizeConditionList(cb);
+    if (!list.some(c => (c.id || c.name || '').toLowerCase() === id)) {
+      list.push({ id, name: CONDITION_RULES[id]?.label || name, rounds: rounds || 0 });
+    }
+    cb.conditionList = list;
+    cb.conditions = list.map(c => c.name).join(', ');
+    const rule = CONDITION_RULES[id];
+    if (rule && rule.breaksConcentration) {
+      cb.concentrating = false;
+    }
+    if (id === 'unconscious' || id === 'incapacitated' || id === 'paralyzed' || id === 'stunned') {
+      cb.concentrating = false;
+    }
+  }
+
+  function removeCondition(cb, name) {
+    if (!cb) return;
+    const id = String(name).toLowerCase().replace(/\s+/g, '-');
+    cb.conditionList = normalizeConditionList(cb).filter(c => (c.id || c.name || '').toLowerCase() !== id && (c.name || '').toLowerCase() !== String(name).toLowerCase());
+    cb.conditions = cb.conditionList.map(c => c.name).join(', ');
+  }
+
+  function getAttackModifiers(attacker, target, opts) {
+    opts = opts || {};
+    let adv = false, dis = false;
+    const notes = [];
+    if (combatantHasCondition(attacker, 'blinded') || combatantHasCondition(attacker, 'frightened') || combatantHasCondition(attacker, 'poisoned') || combatantHasCondition(attacker, 'prone') || combatantHasCondition(attacker, 'restrained')) {
+      dis = true; notes.push('attacker condition → dis');
+    }
+    if (combatantHasCondition(attacker, 'invisible')) { adv = true; notes.push('invisible'); }
+    if (combatantHasCondition(attacker, 'blessed')) notes.push('bless');
+    if (combatantHasCondition(target, 'dodging') || combatantHasCondition(target, 'hiding')) { dis = true; notes.push('target dodge/hide'); }
+    if (combatantHasCondition(target, 'blinded') || combatantHasCondition(target, 'paralyzed') || combatantHasCondition(target, 'restrained') || combatantHasCondition(target, 'stunned') || combatantHasCondition(target, 'unconscious')) {
+      adv = true; notes.push('target helpless');
+    }
+    if (combatantHasCondition(target, 'prone')) {
+      if (opts.ranged) { dis = true; notes.push('prone vs ranged'); }
+      else { adv = true; notes.push('prone vs melee'); }
+    }
+    if (combatantHasCondition(target, 'invisible')) { dis = true; notes.push('target invisible'); }
+    // Cover
+    const cover = Number(target.cover) || 0; // 0, 2 half, 5 three-quarters
+    return { adv, dis, cover, notes };
+  }
+
+  function rollD20WithAdv(adv, dis) {
+    const a = 1 + Math.floor(Math.random() * 20);
+    const b = 1 + Math.floor(Math.random() * 20);
+    if (adv && !dis) return { used: Math.max(a, b), rolls: [a, b], mode: 'adv' };
+    if (dis && !adv) return { used: Math.min(a, b), rolls: [a, b], mode: 'dis' };
+    return { used: a, rolls: [a], mode: 'normal' };
+  }
+
+  function parseDamageTypesString(s) {
+    return String(s || '').toLowerCase().split(/[,;]/).map(x => x.trim()).filter(Boolean);
+  }
+
+  function applyDamageTypeModifiers(target, amount, damageType) {
+    let amt = Number(amount) || 0;
+    const dt = String(damageType || '').toLowerCase();
+    const resists = parseDamageTypesString(target.resistances);
+    const immunes = parseDamageTypesString(target.immunities);
+    const vulns = parseDamageTypesString(target.vulnerabilities);
+    if (combatantHasCondition(target, 'petrified')) {
+      // resistance to all non-magical typically - approximate resistance to all
+      amt = Math.floor(amt / 2);
+    }
+    if (dt) {
+      if (immunes.some(x => dt.includes(x) || x.includes(dt) || x === 'all')) return { amount: 0, note: 'immune' };
+      if (resists.some(x => dt.includes(x) || x.includes(dt))) { amt = Math.floor(amt / 2); }
+      if (vulns.some(x => dt.includes(x) || x.includes(dt))) { amt = amt * 2; }
+    }
+    // Raging resistance bludgeoning/piercing/slashing
+    if (combatantHasCondition(target, 'raging') || target.raging) {
+      if (/bludgeoning|piercing|slashing/.test(dt)) amt = Math.floor(amt / 2);
+    }
+    return { amount: amt, note: '' };
+  }
+
+  function applyDamageToCombatant(target, amount, opts) {
+    opts = opts || {};
+    let amt = Math.max(0, Number(amount) || 0);
+    const dtype = opts.damageType || opts.type || '';
+    if (opts.half) amt = Math.floor(amt / 2);
+    const mod = applyDamageTypeModifiers(target, amt, dtype);
+    amt = mod.amount;
+    // Temp HP
+    let left = amt;
+    const temp = Number(target.tempHp) || 0;
+    if (temp > 0 && left > 0) {
+      const absorb = Math.min(temp, left);
+      target.tempHp = temp - absorb;
+      left -= absorb;
+    }
+    target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+    // Concentration
+    if (target.concentrating && left > 0) {
+      const dc = Math.max(10, Math.floor(left / 2));
+      const r = rollD20WithAdv(false, false);
+      const conMod = Number(target.conMod) || 0;
+      const total = r.used + conMod;
+      const ok = total >= dc;
+      if (!ok) {
+        target.concentrating = false;
+        removeCondition(target, 'concentrating');
+      }
+      if (typeof appendLog === 'function') appendLog(`${target.name} concentration DC ${dc}: ${total} (${ok ? 'OK' : 'LOST'})`);
+    }
+    // Death / unconscious
+    if (target.hp <= 0) {
+      target.hp = 0;
+      target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
+      if (opts.massive && (opts.rawDamage || amt) >= (target.hpMax || 1)) {
+        target.dead = true;
+        if (typeof appendLog === 'function') appendLog(`${target.name} dies instantly (massive damage)`);
+      } else {
+        addCondition(target, 'unconscious');
+        addCondition(target, 'prone');
+      }
+    }
+    return { applied: amt, remainingHp: target.hp };
+  }
+
+  function applyHealToCombatant(target, amount) {
+    const amt = Math.max(0, Number(amount) || 0);
+    const wasDying = (target.hp || 0) <= 0;
+    target.hp = Math.min(target.hpMax || amt, (target.hp || 0) + amt);
+    if (target.hp > 0) {
+      target.deathSaves = { successes: 0, failures: 0 };
+      target.dead = false;
+      if (wasDying) {
+        removeCondition(target, 'unconscious');
+      }
+    }
+    return target.hp;
+  }
+
+  function rollDeathSave(cb) {
+    if (!cb || cb.dead || (cb.hp || 0) > 0) return null;
+    cb.deathSaves = cb.deathSaves || { successes: 0, failures: 0 };
+    const r = 1 + Math.floor(Math.random() * 20);
+    if (r === 1) {
+      cb.deathSaves.failures = Math.min(3, (cb.deathSaves.failures || 0) + 2);
+    } else if (r === 20) {
+      cb.hp = 1;
+      cb.deathSaves = { successes: 0, failures: 0 };
+      removeCondition(cb, 'unconscious');
+      if (typeof appendLog === 'function') appendLog(`${cb.name} death save 20 — regains 1 HP!`);
+      return { roll: r, result: 'revive' };
+    } else if (r >= 10) {
+      cb.deathSaves.successes = Math.min(3, (cb.deathSaves.successes || 0) + 1);
+    } else {
+      cb.deathSaves.failures = Math.min(3, (cb.deathSaves.failures || 0) + 1);
+    }
+    if (cb.deathSaves.successes >= 3) {
+      if (typeof appendLog === 'function') appendLog(`${cb.name} is stable`);
+      cb.stable = true;
+    }
+    if (cb.deathSaves.failures >= 3) {
+      cb.dead = true;
+      if (typeof appendLog === 'function') appendLog(`${cb.name} has died`);
+    }
+    return { roll: r, successes: cb.deathSaves.successes, failures: cb.deathSaves.failures };
+  }
+
+  function useLegendaryResistance(cb) {
+    if (!cb) return false;
+    const max = Number(cb.legendaryResistMax != null ? cb.legendaryResistMax : cb.legendaryResist) || 0;
+    let left = Number(cb.legendaryResist != null ? cb.legendaryResist : max);
+    if (left <= 0) {
+      if (typeof toast === 'function') toast('No Legendary Resistances left');
+      return false;
+    }
+    cb.legendaryResist = left - 1;
+    if (typeof appendLog === 'function') appendLog(`${cb.name} uses Legendary Resistance (${cb.legendaryResist} left)`);
+    if (typeof toast === 'function') toast('Legendary Resistance — save succeeds');
+    return true;
+  }
+
+  function shortRestCombat(combat) {
+    if (!combat || !combat.combatants) return;
+    combat.combatants.forEach(cb => {
+      // Short rest resources
+      const res = cb.combatResources || {};
+      Object.keys(res).forEach(k => {
+        const recover = String(res[k].recover || '').toLowerCase();
+        if (recover.includes('short')) res[k].used = 0;
+        // Lunar Recovery: half on short rest once - simple half refill
+        if (k === 'lunar' && res[k].used > 0) {
+          const half = Math.floor((res[k].max || 0) / 2);
+          res[k].used = Math.max(0, (res[k].used || 0) - half);
+        }
+      });
+      // Warlock slots often short rest - pact handled separately if present
+    });
+    if (typeof appendLog === 'function') appendLog('Party takes a Short Rest (short-rest resources recover)');
+  }
+
+  function longRestCombat(combat) {
+    if (!combat || !combat.combatants) return;
+    combat.combatants.forEach(cb => {
+      cb.hp = cb.hpMax || cb.hp;
+      cb.tempHp = 0;
+      cb.deathSaves = { successes: 0, failures: 0 };
+      cb.dead = false;
+      cb.stable = false;
+      cb.concentrating = false;
+      cb.moveUsed = 0;
+      cb.actionUsed = false;
+      cb.bonusUsed = false;
+      cb.reactionUsed = false;
+      cb.attacksUsed = 0;
+      cb.turnPhase = 'ready';
+      const res = cb.combatResources || {};
+      Object.keys(res).forEach(k => { res[k].used = 0; });
+      if (cb.combatSpellSlots) {
+        Object.keys(cb.combatSpellSlots).forEach(L => {
+          cb.combatSpellSlots[L].used = 0;
+        });
+      }
+      if (cb.legendaryResistMax != null) cb.legendaryResist = cb.legendaryResistMax;
+      // Clear end-of-rest conditions
+      ['dodging', 'hiding', 'grappled', 'restrained'].forEach(c => removeCondition(cb, c));
+      removeCondition(cb, 'unconscious');
+    });
+    if (typeof appendLog === 'function') appendLog('Party takes a Long Rest — HP, slots, and resources restored');
+  }
+
+  function tickConditionRounds(cb) {
+    if (!cb || !cb.conditionList) return;
+    cb.conditionList = normalizeConditionList(cb).map(c => {
+      if (c.rounds > 0) c.rounds -= 1;
+      return c;
+    }).filter(c => !c.rounds || c.rounds > 0);
+    cb.conditions = cb.conditionList.map(c => c.name + (c.rounds ? ` (${c.rounds})` : '')).join(', ');
+  }
+
+  function canTakeActions(cb) {
+    if (!cb || cb.dead) return false;
+    if ((cb.hp || 0) <= 0 && !cb.stable) return false;
+    if (combatantHasCondition(cb, 'incapacitated') || combatantHasCondition(cb, 'paralyzed') ||
+        combatantHasCondition(cb, 'petrified') || combatantHasCondition(cb, 'stunned') ||
+        combatantHasCondition(cb, 'unconscious')) return false;
+    return true;
+  }
+
+
   function showCombatDetail(cb) {
     if (!cb) return;
     // Resolve linked character for Extra Attack / speed
@@ -6555,6 +6853,18 @@ function rollDieExpr(expr) {
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
             <label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>
+        <div class="form-row" style="margin-top:0.35rem;gap:0.35rem;flex-wrap:wrap">
+          <button type="button" class="btn secondary btn-tiny" id="cd-death-save">Death Save</button>
+          <button type="button" class="btn secondary btn-tiny" id="cd-leg-resist">Legendary Resistance</button>
+          <label class="muted small">Cover
+            <select id="cd-cover">
+              <option value="0">None</option>
+              <option value="2">Half (+2 AC)</option>
+              <option value="5">3/4 (+5 AC)</option>
+            </select>
+          </label>
+          <span class="muted small" id="cd-death-status"></span>
+        </div>
           </div>
           ${(cb.hp <= 0 || (cb.deathSaves && (cb.deathSaves.successes || cb.deathSaves.failures))) ? `
           <div class="detail-block">
@@ -6659,6 +6969,15 @@ function rollDieExpr(expr) {
             </div>
             <div class="field"><label>Damage dice</label>
               <input type="text" id="cr-dmg" value="${escapeAttr((attacks[0] && attacks[0].damage) || '1d8+3')}" placeholder="2d6+4" />
+            </div>
+            <div class="field"><label>Damage type</label>
+              <select id="cr-dmg-type">
+                <option value="">—</option>
+                <option>slashing</option><option>piercing</option><option>bludgeoning</option>
+                <option>fire</option><option>cold</option><option>lightning</option><option>thunder</option>
+                <option>acid</option><option>poison</option><option>necrotic</option><option>radiant</option>
+                <option>force</option><option>psychic</option>
+              </select>
             </div>
           </div>
           <div class="tool-btns" style="margin-top:0.5rem;flex-wrap:wrap">
@@ -6970,8 +7289,7 @@ function rollDieExpr(expr) {
             toast('No heal amount — cast/roll a healing spell first or enter Apply amount');
             return;
           }
-          target.hp = Math.min(target.hpMax || amt, (target.hp || 0) + amt);
-          if (target.hp > 0) target.deathSaves = { successes: 0, failures: 0 };
+          applyHealToCombatant(target, amt);
           appendLog(`Healed ${target.name} for ${amt} (now ${target.hp}/${target.hpMax})`);
           syncLinkedCharacterHp(target);
         } else if (kind === 'cond') {
@@ -7180,10 +7498,16 @@ function rollDieExpr(expr) {
           const note = prompt('Describe the action', cb.lastAction || '');
           if (note == null) return;
           cb.lastAction = note;
+        } else if (act === 'grapple' || act === 'shove') {
+          cb.lastAction = act === 'grapple' ? 'Grapple' : 'Shove';
+          toast(cb.lastAction + ' — resolve Athletics contest vs target (use Apply condition Grappled/Prone on success)');
         } else {
           cb.lastAction = labels[act] || act;
         }
         cb.actionUsed = true;
+        if (act === 'dodge') { try { addCondition(cb, 'dodging', 1); } catch (e) {} }
+        if (act === 'hide') { try { addCondition(cb, 'hiding', 1); } catch (e) {} }
+        if (act === 'disengage') { cb.disengage = true; }
         if (act === 'dash') {
           const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
           cb.speed = sp;
@@ -7324,6 +7648,7 @@ function rollDieExpr(expr) {
     panel.querySelector('#cd-start-turn')?.addEventListener('click', () => {
       // Start of turn: reset per-turn resources, keep reaction until start (reaction already available from previous end)
       cb.turnPhase = 'active';
+      cb.reactionUsed = false;
           try {
             const c0 = getActive();
             let ch0 = null;
@@ -7333,6 +7658,13 @@ function rollDieExpr(expr) {
             }
             ensureCombatantTurnState(cb, ch0);
           } catch (e) {}
+      if ((cb.hp || 0) <= 0 && !cb.dead) {
+        const ds = rollDeathSave(cb);
+        if (ds) toast('Death save: ' + ds.roll + ' (S' + (ds.successes||cb.deathSaves?.successes||0) + '/F' + (ds.failures||cb.deathSaves?.failures||0) + ')');
+      }
+      if (!canTakeActions(cb) && (cb.hp || 0) > 0) {
+        toast(cb.name + ' cannot take actions (condition)');
+      }
       cb.moveUsed = 0;
       cb.actionUsed = false;
       cb.bonusUsed = false;
@@ -7351,9 +7683,31 @@ function rollDieExpr(expr) {
     });
     panel.querySelector('#cd-end-turn-local')?.addEventListener('click', () => {
       cb.turnPhase = 'ended';
+      try { tickConditionRounds(cb); } catch (e) {}
+      try { removeCondition(cb, 'dodging'); } catch (e) {}
       appendLog(`${cb.name}: end of turn`);
       refreshCombatDetail();
     });
+    panel.querySelector('#cd-death-save')?.addEventListener('click', () => {
+      const ds = rollDeathSave(cb);
+      if (!ds) toast('Not dying');
+      else toast('Death save ' + ds.roll);
+      save(); refreshCombatDetail();
+    });
+    panel.querySelector('#cd-leg-resist')?.addEventListener('click', () => {
+      useLegendaryResistance(cb);
+      save(); refreshCombatDetail();
+    });
+    panel.querySelector('#cd-cover')?.addEventListener('change', (e) => {
+      cb.cover = Number(e.target.value) || 0;
+      save();
+    });
+    const cov = panel.querySelector('#cd-cover');
+    if (cov) cov.value = String(cb.cover || 0);
+    const dsEl = panel.querySelector('#cd-death-status');
+    if (dsEl && cb.deathSaves) {
+      dsEl.textContent = (cb.hp <= 0 ? ('Death S' + (cb.deathSaves.successes||0) + '/F' + (cb.deathSaves.failures||0) + (cb.dead ? ' DEAD' : cb.stable ? ' stable' : '')) : '');
+    }
     panel.querySelector('#cd-reset-turn')?.addEventListener('click', () => {
       cb.turnPhase = 'active';
       cb.moveUsed = 0;
