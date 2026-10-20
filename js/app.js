@@ -10034,15 +10034,16 @@ function escapeHtml(str) {
   }
   function paintFog(map, wx, wy, reveal) {
     ensureMapFog(map);
+    map.fogEnabled = true;
     const g = Number(map.gridSize) || 70;
-    const brush = Math.max(1, Number(map.fogBrush) || 1);
+    const brush = Math.max(1, Number(map.fogBrush) || 2);
     const ox = Number(map.gridOffsetX) || 0;
     const oy = Number(map.gridOffsetY) || 0;
     const cx = Math.floor((wx - ox) / g);
     const cy = Math.floor((wy - oy) / g);
-    const half = Math.floor(brush / 2);
-    for (let dy = -half; dy <= half; dy++) {
-      for (let dx = -half; dx <= half; dx++) {
+    const half = Math.floor((brush - 1) / 2);
+    for (let dy = -half; dy <= half + (brush % 2 === 0 ? 1 : 0); dy++) {
+      for (let dx = -half; dx <= half + (brush % 2 === 0 ? 1 : 0); dx++) {
         const key = (cx + dx) + ',' + (cy + dy);
         if (reveal) map.fogRevealed[key] = true;
         else delete map.fogRevealed[key];
@@ -10764,6 +10765,16 @@ function escapeHtml(str) {
       const tool = document.getElementById('map-tool');
       const btn = document.getElementById('map-grid-adjust-toggle');
       if (btn) btn.classList.toggle('primary', tool && tool.value === 'grid-offset');
+      const v = tool && tool.value;
+      if (v === 'fog-reveal') {
+        window.__mapFogTool = 'reveal';
+        toast('Fog Reveal — click or drag on the map');
+      } else if (v === 'fog-hide') {
+        window.__mapFogTool = 'hide';
+        toast('Fog Hide — click or drag on the map');
+      } else {
+        window.__mapFogTool = null;
+      }
     });
 
     document.getElementById('map-snap-all')?.addEventListener('click', () => {
@@ -10914,11 +10925,13 @@ function escapeHtml(str) {
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
         // Fog brush (DM only)
-        if (window.__mapFogTool && !isPlayerRole()) {
+        const fogMode = window.__mapFogTool || (tool === 'fog-reveal' ? 'reveal' : (tool === 'fog-hide' ? 'hide' : null));
+        if (fogMode && !isPlayerRole()) {
           const map0 = getCombatMap();
-          paintFog(map0, x, y, window.__mapFogTool === 'reveal');
-          window.__fogDrag = window.__mapFogTool;
-          renderBattleMap();
+          if (!map0) return;
+          paintFog(map0, x, y, fogMode === 'reveal');
+          window.__fogDrag = fogMode;
+          try { renderBattleMap(); } catch (e) {}
           return;
         }
         if (tool === 'grid-offset') {
@@ -10972,7 +10985,7 @@ function escapeHtml(str) {
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
         if (window.__fogDrag && !isPlayerRole()) {
           paintFog(map, x, y, window.__fogDrag === 'reveal');
-          renderBattleMap();
+          try { renderBattleMap(); } catch (e) {}
           return;
         }
         if (window.__gridDrag) {
@@ -10998,7 +11011,11 @@ function escapeHtml(str) {
       canvas.addEventListener('mouseup', () => {
         if (window.__fogDrag) {
           window.__fogDrag = null;
-          try { save(); broadcastVttState('fog'); } catch (e) {}
+          try { save(); } catch (e) {}
+          try { broadcastVttState('fog'); } catch (e) {}
+          const st = document.getElementById('map-status');
+          const map3 = getCombatMap();
+          if (st && map3) st.textContent = (st.textContent || '') + ' · revealed ' + Object.keys(map3.fogRevealed || {}).length;
         }
         if (window.__gridDrag) {
           window.__gridDrag = null;
@@ -11016,41 +11033,6 @@ function escapeHtml(str) {
       });
       canvas.addEventListener('mouseleave', () => { dragId = null; });
 
-    // Fog of war tools (Phase 1 VTT)
-    document.getElementById('map-fog-toggle')?.addEventListener('click', () => {
-      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
-      const map = getCombatMap();
-      if (!map) return;
-      ensureMapFog(map);
-      map.fogEnabled = !map.fogEnabled;
-      toast(map.fogEnabled ? 'Fog of war ON' : 'Fog of war OFF');
-      try { save(); } catch (e) {}
-      renderBattleMap();
-      try { broadcastVttState('fog'); } catch (e) {}
-    });
-    document.getElementById('map-fog-reset')?.addEventListener('click', () => {
-      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
-      const map = getCombatMap();
-      if (!map) return;
-      map.fogRevealed = {};
-      map.fogEnabled = true;
-      toast('Map fully fogged');
-      try { save(); } catch (e) {}
-      renderBattleMap();
-      try { broadcastVttState('fog-reset'); } catch (e) {}
-    });
-    document.getElementById('map-fog-brush')?.addEventListener('change', (e) => {
-      const map = getCombatMap();
-      if (map) map.fogBrush = Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 1));
-    });
-    document.getElementById('map-fog-reveal')?.addEventListener('click', () => {
-      window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
-      toast(window.__mapFogTool ? 'Reveal brush ON — click/drag map' : 'Reveal brush off');
-    });
-    document.getElementById('map-fog-hide')?.addEventListener('click', () => {
-      window.__mapFogTool = window.__mapFogTool === 'hide' ? null : 'hide';
-      toast(window.__mapFogTool ? 'Hide brush ON — click/drag map' : 'Hide brush off');
-    });
 
       canvas.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();

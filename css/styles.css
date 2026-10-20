@@ -3316,3 +3316,24 @@ body.vtt-player #view-map {
 body.vtt-player #view-map.active {
   display: flex !important;
 }
+
+html.map-popout #menu-toggle,
+html.vtt-player #menu-toggle,
+html.map-popout .icon-btn[aria-label="Menu"],
+html.vtt-player .icon-btn[aria-label="Menu"],
+html.map-popout .app-header,
+html.vtt-player .app-header,
+html.map-popout .header-left,
+html.vtt-player .header-left {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  position: fixed !important;
+  left: -10000px !important;
+  top: -10000px !important;
+  z-index: -1 !important;
+}
