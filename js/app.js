@@ -2226,17 +2226,36 @@
       });
       cb.combatResources = next;
     }
-    if (!cb.combatSpellSlots && ch) {
+    if (ch && (!cb.combatSpellSlots || !Object.keys(cb.combatSpellSlots).length)) {
       try {
-        const maxes = typeof getMulticlassSpellSlotMaxes === 'function' ? getMulticlassSpellSlotMaxes(ch) : null;
         const used = ch.spellSlotsUsed || {};
-        if (maxes) {
+        const fromChar = ch.spellSlots || ch.spell_slots || {};
+        let maxes = typeof getMulticlassSpellSlotMaxes === 'function' ? getMulticlassSpellSlotMaxes(ch) : null;
+        if (!maxes || !Object.keys(maxes).length) {
+          maxes = {};
+          for (let L = 1; L <= 9; L++) {
+            const m = fromChar[L] != null ? Number(fromChar[L]) : (fromChar[String(L)] != null ? Number(fromChar[String(L)]) : 0);
+            if (m > 0) maxes[L] = m;
+          }
+        }
+        if (!Object.keys(maxes).length) {
+          const cls = String(ch.class || (ch.classes && ch.classes[0] && ch.classes[0].name) || '').toLowerCase();
+          const lvl = Number(ch.level) || 1;
+          if (/cleric|druid|bard|wizard|sorcerer|warlock|paladin|ranger|artificer|priest|moon guardian/.test(cls)) {
+            maxes[1] = lvl >= 1 ? (lvl >= 3 ? 4 : (lvl >= 2 ? 3 : 2)) : 0;
+            if (lvl >= 3) maxes[2] = lvl >= 4 ? 3 : 2;
+            if (lvl >= 5) maxes[3] = 2;
+            if (lvl >= 7) maxes[4] = 1;
+            if (lvl >= 9) maxes[5] = 1;
+          }
+        }
+        if (maxes && Object.keys(maxes).length) {
           cb.combatSpellSlots = {};
           for (let L = 1; L <= 9; L++) {
-            const m = maxes[L] || maxes[String(L)] || 0;
+            const m = Number(maxes[L] || maxes[String(L)] || 0);
             if (m > 0) {
               const u = used[L] != null ? Number(used[L]) : (used[String(L)] != null ? Number(used[String(L)]) : 0);
-              cb.combatSpellSlots[L] = { max: m, used: u };
+              cb.combatSpellSlots[L] = { max: m, used: Math.min(m, Math.max(0, u)) };
             }
           }
         }
@@ -2508,14 +2527,14 @@
     ['cr-roll-btn','cr-dmg-only','cr-damage-only','cr-apply-dmg','cr-apply-heal','cr-apply-effect','cr-apply-condition','cr-save-check'].forEach(id => {
       const el = panel.querySelector('#' + id);
       if (!el) return;
-      // After turn ended: allow apply tools for reaction resolution; block new attacks/casts
-      if (turnEnded && (id === 'cr-apply-dmg' || id === 'cr-apply-effect' || id === 'cr-apply-condition' || id === 'cr-apply-heal')) {
+      // Apply is always available so HP can change after rolls even before/after turn
+      if (id === 'cr-apply-dmg' || id === 'cr-apply-heal' || id === 'cr-apply-effect' || id === 'cr-apply-condition') {
         setDisabled(el, false);
-      } else if (lockedUntilStart) {
-        setDisabled(el, true, lockMsg);
-      } else {
-        setDisabled(el, !allowMain, lockMsg);
+        return;
       }
+      if (lockedUntilStart) setDisabled(el, true, lockMsg);
+      else if (turnEnded) setDisabled(el, true, 'Turn ended — only Reaction / Legendary');
+      else setDisabled(el, !allowMain, lockMsg);
     });
     // Save DC check can be used for reaction (e.g. Counterspell) when turn ended
     const saveBtn = panel.querySelector('#cr-save-check') || panel.querySelector('#cr-save-btn');
@@ -6356,7 +6375,55 @@ function parseAttackLines(ch) {
     return attacks;
   }
 
-  function rollDieExpr(expr) {
+  
+  function isHealingSpellName(name) {
+    return /cure wounds|healing word|heal\b|mass cure|mass heal|prayer of healing|aura of vitality|goodberry|life transference|healing spirit|power word heal|spare the dying/i.test(String(name || ''));
+  }
+  function isAutoHitSpellName(name) {
+    return /magic missile|magic missle/i.test(String(name || ''));
+  }
+  function spellHealDice(sp, slotLevel, abilityMod) {
+    const name = (sp && sp.name) || '';
+    const lvl = Math.max(Number(sp && sp.level) || 1, Number(slotLevel) || 1);
+    const mod = Number(abilityMod) || 0;
+    const modStr = mod >= 0 ? '+' + mod : String(mod);
+    if (/healing word/i.test(name)) return (1 + Math.max(0, lvl - 1)) + 'd4' + modStr;
+    if (/cure wounds/i.test(name)) return (1 + Math.max(0, lvl - 1)) + 'd8' + modStr;
+    if (/prayer of healing/i.test(name)) return '2d8' + modStr;
+    if (/^heal$/i.test(String(name).trim())) return '70';
+    return '1d8' + modStr;
+  }
+  function spellDamageDice(sp, slotLevel) {
+    const name = (sp && sp.name) || '';
+    const lvl = Math.max(Number(sp && sp.level) || 1, Number(slotLevel) || 1);
+    if (isAutoHitSpellName(name)) {
+      const n = 2 + lvl;
+      return n + 'd4+' + n;
+    }
+    if (/guiding bolt/i.test(name)) return (4 + Math.max(0, lvl - 1)) + 'd6';
+    if (/fireball/i.test(name)) return (8 + Math.max(0, lvl - 3)) + 'd6';
+    const desc = String((sp && (sp.description || sp.summary)) || '');
+    const m = desc.match(/(\d+d\d+(?:\s*[+-]\s*\d+)?)/i);
+    if (m) return m[1].replace(/\s+/g, '');
+    return '1d8';
+  }
+  function resolveRollAmount(panel, kind) {
+    const override = parseInt(panel && panel.querySelector('#cr-apply-amt')?.value, 10);
+    if (!isNaN(override) && override > 0) return override;
+    const last = window.__lastCombatRoll || {};
+    if (kind === 'heal' && last.heal > 0) return last.heal;
+    if (kind === 'damage' && last.damage > 0) return last.damage;
+    const dmgEl = panel && panel.querySelector('#cr-dmg');
+    const expr = (dmgEl && dmgEl.value) ? dmgEl.value.trim() : '';
+    if (expr) {
+      const rolled = rollDieExpr(expr);
+      const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
+      return (rolled.total || 0) + bonus;
+    }
+    return 0;
+  }
+
+function rollDieExpr(expr) {
     const s = String(expr || '').replace(/\s+/g, '');
     const m = s.match(/^(\d+)d(\d+)([+-]\d+)?$/i);
     if (!m) {
@@ -7245,6 +7312,15 @@ function parseAttackLines(ch) {
     panel.querySelector('#cd-start-turn')?.addEventListener('click', () => {
       // Start of turn: reset per-turn resources, keep reaction until start (reaction already available from previous end)
       cb.turnPhase = 'active';
+          try {
+            const c0 = getActive();
+            let ch0 = null;
+            if (c0) {
+              const lists = [].concat(c0.party||[], c0.villains||[]);
+              ch0 = lists.find(x => x && (x.id === cb.charId || x.id === cb.sourceId || x.name === cb.name));
+            }
+            ensureCombatantTurnState(cb, ch0);
+          } catch (e) {}
       cb.moveUsed = 0;
       cb.actionUsed = false;
       cb.bonusUsed = false;
@@ -7326,9 +7402,26 @@ function parseAttackLines(ch) {
         level = Number(level) || 0;
         if (level <= 0) return true;
         if (!cb.combatSpellSlots) cb.combatSpellSlots = {};
-        const row = cb.combatSpellSlots[level] || cb.combatSpellSlots[String(level)];
+        if (!Object.keys(cb.combatSpellSlots).length) {
+          try {
+            const c0 = getActive();
+            let ch0 = null;
+            if (c0) {
+              const lists = [].concat(c0.party || [], c0.villains || []);
+              ch0 = lists.find(x => x && (x.id === cb.charId || x.id === cb.sourceId || x.name === cb.name));
+            }
+            ensureCombatantTurnState(cb, ch0);
+          } catch (e) {}
+        }
+        let row = cb.combatSpellSlots[level] || cb.combatSpellSlots[String(level)];
         if (!row || ((row.max || 0) - (row.used || 0)) <= 0) {
-          toast('No spell slots of that level left');
+          for (let L = level; L <= 9; L++) {
+            const r = cb.combatSpellSlots[L] || cb.combatSpellSlots[String(L)];
+            if (r && ((r.max || 0) - (r.used || 0)) > 0) { row = r; break; }
+          }
+        }
+        if (!row || ((row.max || 0) - (row.used || 0)) <= 0) {
+          toast('No spell slots left — slots may be missing on this sheet');
           return false;
         }
         row.used = (row.used || 0) + 1;
@@ -7421,7 +7514,15 @@ function parseAttackLines(ch) {
             name: sp.name
           };
           if (applyAmt) applyAmt.value = String(rolled.total);
-          toast(sp.name + ' heal rolled: ' + rolled.total + ' (' + expr + ') — select target(s) & Apply Heal');
+          {
+            const packs = getSelectedTargets();
+            if (packs.length) {
+              applyToTarget('heal');
+              toast(sp.name + ' healed ' + rolled.total + ' on ' + packs.length + ' target(s)');
+            } else {
+              toast(sp.name + ' heal ' + rolled.total + ' — select target(s), then Apply Heal');
+            }
+          }
         } else if (isAuto) {
           const expr = spellDamageDice(sp, slotNeed || 1);
           if (dmgIn) dmgIn.value = expr;
@@ -7434,11 +7535,21 @@ function parseAttackLines(ch) {
             name: sp.name
           };
           if (applyAmt) applyAmt.value = String(rolled.total);
-          toast(sp.name + ' damage: ' + rolled.total + ' (' + expr + ') — select target(s) & Apply Damage');
+          {
+            const packs = getSelectedTargets();
+            if (packs.length) {
+              applyToTarget('damage');
+              toast(sp.name + ' dealt ' + rolled.total + ' to ' + packs.length + ' target(s)');
+            } else {
+              toast(sp.name + ' damage ' + rolled.total + ' — select target(s), then Apply Damage');
+            }
+          }
         } else {
           const expr = spellDamageDice(sp, slotNeed || sp.level || 1);
           if (dmgIn && (!dmgIn.value || dmgIn.value === '1d8+3' || dmgIn.value === '1d4+1')) dmgIn.value = expr;
         }
+        try { save(); } catch (e) {}
+        try { renderCombat(); } catch (e) {}
         const resEl = panel.querySelector('#combat-roll-result');
         if (resEl) {
           resEl.innerHTML = `<strong>${escapeHtml(sp.name)}</strong> cast` +
@@ -9229,39 +9340,51 @@ function escapeHtml(str) {
   function applyMapPopoutMode() {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
-    document.querySelectorAll('.app-header, header, #menu-toggle, .header-left, .header-right, #sidebar, .sidebar').forEach(el => {
-      if (!el) return;
-      el.style.setProperty('display', 'none', 'important');
-      el.style.setProperty('visibility', 'hidden', 'important');
+    document.title = 'Battle Map (shared)';
+    // Physically remove chrome so it cannot reappear or stay clickable
+    const strip = [
+      '.app-header', 'header', '#menu-toggle', '#sidebar', '.sidebar',
+      '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
+      '.view-desc', '.map-toolbar', '#view-map .view-header'
+    ];
+    strip.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => {
+        try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
+      });
     });
-    document.title = (document.title || 'Combat Tracker') + ' — Map';
-    // Load existing state only — do not create a blank workspace
+    // Keep only map view content
+    const mapView = document.getElementById('view-map');
+    if (mapView) {
+      mapView.classList.add('active');
+      mapView.style.display = 'flex';
+      mapView.style.flexDirection = 'column';
+      mapView.style.minHeight = '100dvh';
+      mapView.style.margin = '0';
+      mapView.style.padding = '0.25rem';
+    }
     try { if (typeof load === 'function') load(); } catch (e) {}
-    try {
-      if (typeof restoreMapImagesAfterLoad === 'function') {
-        restoreMapImagesAfterLoad().then(() => {
-          try {
-            if (typeof setView === 'function') setView('map');
-            initBattleMapUi();
-            refreshMapTokenSelect();
-            renderBattleMap();
-            renderMapRoster();
-          } catch (err) { console.warn(err); }
-        });
-      } else {
+    const finish = () => {
+      try {
         if (typeof setView === 'function') setView('map');
+      } catch (e) {}
+      try {
         initBattleMapUi();
         refreshMapTokenSelect();
         renderBattleMap();
         renderMapRoster();
-      }
-    } catch (e) { console.warn(e); }
-    const side = document.getElementById('sidebar');
-    if (side) side.style.display = 'none';
-    document.querySelectorAll('.app-header, header.app-header').forEach(el => {
-      el.style.display = 'none';
-    });
-    document.getElementById('menu-toggle') && (document.getElementById('menu-toggle').style.display = 'none');
+      } catch (err) { console.warn(err); }
+      // Second pass strip (setView may re-show)
+      strip.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => {
+          if (el.id === 'view-map') return;
+          try { el.remove(); } catch (e) {}
+        });
+      });
+      document.querySelectorAll('#menu-toggle, .app-header, header').forEach(el => { try { el.remove(); } catch (e) {} });
+    };
+    if (typeof restoreMapImagesAfterLoad === 'function') {
+      restoreMapImagesAfterLoad().then(finish).catch(finish);
+    } else finish();
   }
 
   function bindMapCrossWindowSync() {
