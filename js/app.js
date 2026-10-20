@@ -9940,7 +9940,7 @@ function escapeHtml(str) {
       const pct = hide ? 0 : Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
-      const init = cb.initiative != null ? cb.initiative : '—';
+      const init = (cb.init != null && cb.init !== '') ? cb.init : (cb.initiative != null ? cb.initiative : '—');
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
         <div class="mr-meta">Init ${escapeHtml(String(init))} · AC ${cb.ac != null ? cb.ac : '—'} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
@@ -10120,6 +10120,8 @@ function escapeHtml(str) {
         current: combat.current,
         combatants: (combat.combatants || []).map(cb => ({
           id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+          init: cb.init != null ? cb.init : cb.initiative,
+          initiative: cb.initiative != null ? cb.initiative : cb.init,
           side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
           concentrating: cb.concentrating, dead: cb.dead
         }))
@@ -10127,6 +10129,59 @@ function escapeHtml(str) {
       map: mapLite
     };
   }
+  
+  function broadcastTokenPositions(reason) {
+    try {
+      const c = getActive();
+      if (!c || !c.combatMap) return;
+      const payload = {
+        type: 'vtt-tokens',
+        room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
+        reason: reason || 'token-move',
+        at: Date.now(),
+        tokens: JSON.parse(JSON.stringify(c.combatMap.tokens || {})),
+        fogEnabled: !!c.combatMap.fogEnabled,
+        fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
+      };
+      try { localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(payload)); } catch (e) {}
+      try { localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(Object.assign(buildVttStatePayload(reason) || { type: 'vtt-state', at: Date.now() }, { map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed } }))); } catch (e) {}
+      const ch = getVttChannel();
+      if (ch) {
+        try { ch.postMessage(payload); } catch (e) {}
+      }
+    } catch (e) { console.warn('token bc', e); }
+  }
+  function applyTokenMessage(msg) {
+    if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
+    const room = getVttRoomCode();
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    // Ignore our own echo within 50ms if we just sent
+    if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
+    try {
+      const map = getCombatMap();
+      if (!map) return;
+      if (msg.type === 'vtt-tokens' && msg.tokens) {
+        map.tokens = msg.tokens;
+        if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
+        if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
+      } else if (msg.type === 'vtt-state' && msg.map && msg.map.tokens) {
+        map.tokens = msg.map.tokens;
+        if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
+        if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+      } else return;
+      // Persist token positions into workspace even from player window (local only)
+      try {
+        if (!isPlayerRole() || isMapPopoutMode()) {
+          // popout/player: write tokens into shared localStorage campaign via light merge
+          const raw = localStorage.getItem(typeof STORAGE_KEY !== 'undefined' ? STORAGE_KEY : 'cybervlachos_combat_v1');
+          // always update in-memory; DM save will persist full
+        }
+      } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      try { renderMapRoster(); } catch (e) {}
+    } catch (e) { console.warn('apply tokens', e); }
+  }
+
   function broadcastVttState(reason) {
     if (isPlayerRole()) return; // only DM host pushes
     try {
@@ -10159,6 +10214,9 @@ function escapeHtml(str) {
             if (local) {
               local.hp = remote.hp;
               local.hpMax = remote.hpMax;
+              if (remote.init != null) local.init = remote.init;
+              if (remote.initiative != null) local.initiative = remote.initiative;
+              if (remote.init != null && local.initiative == null) local.initiative = remote.init;
               local.conditions = remote.conditions;
               local.hideHp = remote.hideHp;
               local.concentrating = remote.concentrating;
@@ -10271,25 +10329,43 @@ function escapeHtml(str) {
     const ch = getVttChannel();
     if (ch) {
       ch.onmessage = (ev) => {
-        try { applyVttStateMessage(ev.data); } catch (e) {}
+        try {
+          if (ev.data && ev.data.type === 'vtt-tokens') applyTokenMessage(ev.data);
+          else applyVttStateMessage(ev.data);
+        } catch (e) {}
       };
     }
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'cybervlachos_vtt_tokens' && e.newValue) {
+        try { applyTokenMessage(JSON.parse(e.newValue)); } catch (err) {}
+      }
+    });
     window.addEventListener('storage', (e) => {
       if (e.key !== 'cybervlachos_vtt_sync' || !e.newValue) return;
       try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
     });
     // Player/popout: poll lightly as fallback
     // All viewer windows poll; DM also can receive nothing
-    let lastAt = 0;
+    let lastAt = 0, lastTok = 0;
     setInterval(() => {
-      if (!isPlayerRole() && !isMapPopoutMode()) return;
       try {
         const raw = localStorage.getItem('cybervlachos_vtt_sync');
-        if (!raw) return;
-        const msg = JSON.parse(raw);
-        if (msg && msg.at && msg.at !== lastAt) {
-          lastAt = msg.at;
-          applyVttStateMessage(msg);
+        if (raw) {
+          const msg = JSON.parse(raw);
+          if (msg && msg.at && msg.at !== lastAt) {
+            lastAt = msg.at;
+            // DM applies only map/tokens from viewers; full apply for players
+            if (isPlayerRole() || isMapPopoutMode()) applyVttStateMessage(msg);
+            else if (msg.map && msg.map.tokens) applyTokenMessage(msg);
+          }
+        }
+        const rawT = localStorage.getItem('cybervlachos_vtt_tokens');
+        if (rawT) {
+          const msgT = JSON.parse(rawT);
+          if (msgT && msgT.at && msgT.at !== lastTok) {
+            lastTok = msgT.at;
+            applyTokenMessage(msgT);
+          }
         }
       } catch (e) {}
     }, 200);
@@ -11040,8 +11116,32 @@ function escapeHtml(str) {
           toast('Grid offset updated — tokens re-centered');
         }
         if (dragId) {
-          try { save(); } catch (err) {}
-          try { broadcastVttState('token-move'); } catch (err) {}
+          window.__lastTokenSent = Date.now();
+          try {
+            if (!isPlayerRole()) save();
+            else {
+              // Player/popout: persist token positions into main storage key lightly
+              try {
+                const map = getCombatMap();
+                if (map) {
+                  const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+                  const raw = localStorage.getItem(key);
+                  if (raw) {
+                    const data = JSON.parse(raw);
+                    const camps = data.campaigns || data.state?.campaigns || [];
+                    const camp = camps.find(x => x.id === (data.activeCampaignId || data.state?.activeCampaignId)) || camps[0];
+                    if (camp) {
+                      if (!camp.combatMap) camp.combatMap = map;
+                      else camp.combatMap.tokens = map.tokens;
+                      localStorage.setItem(key, JSON.stringify(data));
+                    }
+                  }
+                }
+              } catch (e) { console.warn('player token persist', e); }
+            }
+          } catch (err) {}
+          try { broadcastTokenPositions('token-move'); } catch (err) {}
+          try { if (!isPlayerRole()) broadcastVttState('token-move'); } catch (err) {}
           dragId = null;
         }
       });
