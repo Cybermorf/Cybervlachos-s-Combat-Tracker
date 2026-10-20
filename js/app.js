@@ -10247,17 +10247,83 @@ function escapeHtml(str) {
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
     document.body.classList.add('vtt-player');
+    document.documentElement.classList.add('vtt-player');
     document.title = 'Battle Map (Player)' + (getVttRoomCode() ? ' · ' + getVttRoomCode() : '');
-    // Strip DM chrome similar to map popout
-    const strip = ['.app-header', '#menu-toggle', '#sidebar', '#view-tools', '.view-desc'];
-    strip.forEach(sel => {
+
+    const hideSel = [
+      '#view-combat', '#view-tools', '#sidebar', '#menu-toggle',
+      '.app-header', 'header.app-header', '.view-desc',
+      '#vtt-create-room', '#vtt-join-player', '#vtt-room-code',
+      '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush',
+      '#map-file-image', '#map-file-uvtt', '#map-import-image', '#map-import-uvtt'
+    ];
+    hideSel.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
-        try { el.style.setProperty('display', 'none', 'important'); } catch (e) {}
+        try {
+          el.style.setProperty('display', 'none', 'important');
+          el.setAttribute('data-player-hidden', '1');
+        } catch (e) {}
       });
     });
-    // Prefer map view
+
+    // Force map view visible
+    const mapView = document.getElementById('view-map');
+    if (mapView) {
+      mapView.classList.add('active');
+      mapView.style.setProperty('display', 'flex', 'important');
+      mapView.style.setProperty('flex-direction', 'column', 'important');
+      mapView.style.setProperty('min-height', '100dvh', 'important');
+    }
+    document.querySelectorAll('.view').forEach(v => {
+      if (v.id !== 'view-map') {
+        v.classList.remove('active');
+        v.style.setProperty('display', 'none', 'important');
+      }
+    });
+
     try { if (typeof setView === 'function') setView('map'); } catch (e) {}
+    try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+
+    // Re-apply after short delay (setView/render may restore combat)
+    setTimeout(() => {
+      document.querySelectorAll('#view-combat, #view-tools').forEach(el => {
+        el.style.setProperty('display', 'none', 'important');
+        el.classList.remove('active');
+      });
+      const mv = document.getElementById('view-map');
+      if (mv) {
+        mv.classList.add('active');
+        mv.style.setProperty('display', 'flex', 'important');
+      }
+      try { renderBattleMap(); renderMapRoster(); } catch (e) {}
+    }, 100);
+    setTimeout(() => {
+      document.querySelectorAll('#view-combat').forEach(el => el.style.setProperty('display', 'none', 'important'));
+      try { renderBattleMap(); } catch (e) {}
+    }, 500);
   }
+
+  /** Player-facing combatant summary: hide enemy HP / optionally mask names in fog */
+  function playerVisibleCombatant(cb) {
+    if (!cb) return null;
+    if (!isPlayerRole()) return cb;
+    const side = String(cb.side || '').toLowerCase();
+    const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+    const copy = Object.assign({}, cb);
+    if (isEnemy) {
+      // Hide precise HP from players unless DM cleared hideHp flag meaning "show"
+      if (cb.hideHp !== false) {
+        copy.hp = null;
+        copy.hpMax = null;
+        copy.hideHp = true;
+      }
+      // Unrevealed enemies can stay on map but roster shows generic label if fogged - handled in roster
+    }
+    return copy;
+  }
+
 
 
   function drawMapOverlays(ctx, canvas, map, scale) {
@@ -10299,10 +10365,17 @@ function escapeHtml(str) {
     const selectedId = combat && combat.selectedIndex != null && combat.combatants[combat.selectedIndex]
       ? String(combat.combatants[combat.selectedIndex].id || combat.selectedIndex)
       : (combat && combat.mapFocusId) || null;
+    const playerMode = typeof isPlayerRole === 'function' && isPlayerRole();
+    ensureMapFog(map);
     list.forEach((cb, idx) => {
       const id = String(cb.id || idx);
       const pos = map.tokens[id];
       if (!pos) return;
+      // Players: hide tokens in unrevealed fog cells
+      if (playerMode && map.fogEnabled) {
+        const cell = worldToFogCell(map, pos.x, pos.y);
+        if (!map.fogRevealed[cell]) return;
+      }
       const x = pos.x * scale, y = pos.y * scale;
       const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
       const side = String(cb.side || '').toLowerCase();
@@ -10313,17 +10386,18 @@ function escapeHtml(str) {
       const hpMax = Math.max(1, Number(cb.hpMax) || 1);
       const ratio = Math.max(0, Math.min(1, hp / hpMax));
       if (hp <= 0) fill = 'rgba(60,60,60,0.85)';
+      // Player: never show enemy HP numbers/arcs
+      const showHp = !cb.hideHp && !(playerMode && isEnemy);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fillStyle = fill;
       ctx.fill();
-      // HP arc (hidden when hideHp)
-      if (!cb.hideHp && hp > 0) {
-      ctx.beginPath();
-      ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
-      ctx.lineWidth = 3;
-      ctx.arc(x, y, r + 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
-      ctx.stroke();
+      if (showHp && hp > 0) {
+        ctx.beginPath();
+        ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
+        ctx.lineWidth = 3;
+        ctx.arc(x, y, r + 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+        ctx.stroke();
       }
       ctx.strokeStyle = String(id) === String(selectedId) ? '#ffd24a' : '#e8dcc8';
       ctx.lineWidth = String(id) === String(selectedId) ? 3 : 2;
@@ -10333,13 +10407,13 @@ function escapeHtml(str) {
       ctx.fillStyle = '#fff';
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
-      if (!cb.hideHp) {
-      ctx.fillStyle = '#c4a35a';
-      ctx.font = '10px sans-serif';
-      ctx.fillText(hp + '/' + hpMax, x, y + 3);
+      const label = (playerMode && isEnemy) ? (cb.hideName ? 'Creature' : (cb.name || 'Enemy').slice(0, 10)) : (cb.name || '?').slice(0, 10);
+      ctx.fillText(label, x, y + r + 12);
+      if (showHp) {
+        ctx.fillStyle = '#c4a35a';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(hp + '/' + hpMax, x, y + 3);
       }
-      // still draw HP arc only if not hidden
     });
 
     // AoE
