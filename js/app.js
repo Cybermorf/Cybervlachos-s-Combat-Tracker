@@ -9494,9 +9494,17 @@ function escapeHtml(str) {
     try { load(); } catch (e) { console.warn(e); }
     try { tryRestoreRosterBackupIfEmpty(); } catch (e) {}
     try { bindMapCrossWindowSync(); } catch (e) {}
+    try {
+      // Clear stale player role left by older builds (sessionStorage is per-tab but was set on DM by mistake)
+      const q = new URLSearchParams(location.search);
+      if (q.get('role') !== 'player' && q.get('mapPopout') !== '1') {
+        sessionStorage.setItem('vtt_role', 'dm');
+      }
+    } catch (e) {}
     try { bindVttSync(); } catch (e) { console.warn('bindVttSync', e); }
     try { wireVttRoomUi(); } catch (e) { console.warn('wireVttRoomUi', e); }
     try { applyPlayerShell(); } catch (e) { console.warn('applyPlayerShell', e); }
+    try { applyMapPopoutMode(); } catch (e) {}
     document.getElementById('combat-map-popout-btn')?.addEventListener('click', () => openMapPopout());
     document.getElementById('map-popout-btn')?.addEventListener('click', () => openMapPopout());
     loadUserCompendiumAsync().then(() => {
@@ -9984,11 +9992,15 @@ function escapeHtml(str) {
   function getVttRole() {
     try {
       const q = new URLSearchParams(location.search);
-      const r = (q.get('role') || sessionStorage.getItem('vtt_role') || 'dm').toLowerCase();
-      return r === 'player' ? 'player' : 'dm';
+      // ONLY the URL decides role — never sessionStorage (that was flipping the DM tab to player)
+      if (String(q.get('role') || '').toLowerCase() === 'player') return 'player';
+      // Shared map pop-out is a viewer (player-facing fog/HP rules)
+      if (q.get('mapPopout') === '1' || q.get('mapPopout') === 'true') return 'player';
+      return 'dm';
     } catch (e) { return 'dm'; }
   }
   function isPlayerRole() { return getVttRole() === 'player'; }
+  function isDmRole() { return getVttRole() === 'dm'; }
   function getVttRoomCode() {
     try {
       return (new URLSearchParams(location.search).get('room') || sessionStorage.getItem('vtt_room') || '').toUpperCase();
@@ -10067,48 +10079,55 @@ function escapeHtml(str) {
     }
     return window.__vttBc || null;
   }
+  function buildVttStatePayload(reason) {
+    const c = getActive();
+    if (!c) return null;
+    const combat = getCombat(c);
+    const map = c.combatMap || null;
+    const mapLite = map ? {
+      gridSize: map.gridSize,
+      gridOffsetX: map.gridOffsetX,
+      gridOffsetY: map.gridOffsetY,
+      width: map.width,
+      height: map.height,
+      walls: map.walls || [],
+      tokens: JSON.parse(JSON.stringify(map.tokens || {})),
+      aoe: map.aoe || null,
+      scale: map.scale || 1,
+      fogEnabled: !!map.fogEnabled,
+      fogRevealed: Object.assign({}, map.fogRevealed || {}),
+      fogBrush: map.fogBrush || 1,
+      hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
+      mediaType: map.mediaType || null
+    } : null;
+    return {
+      type: 'vtt-state',
+      room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
+      reason: reason || 'update',
+      at: Date.now(),
+      combat: combat ? {
+        round: combat.round,
+        current: combat.current,
+        combatants: (combat.combatants || []).map(cb => ({
+          id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+          side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
+          concentrating: cb.concentrating, dead: cb.dead
+        }))
+      } : null,
+      map: mapLite
+    };
+  }
   function broadcastVttState(reason) {
-    if (isPlayerRole()) return; // only host broadcasts full state
-    const ch = getVttChannel();
-    if (!ch) return;
+    if (isPlayerRole()) return; // only DM host pushes
     try {
-      const c = getActive();
-      if (!c) return;
-      const combat = getCombat(c);
-      const map = c.combatMap || null;
-      // Strip heavy media for BC size limits — players keep local image if already loaded
-      const mapLite = map ? {
-        gridSize: map.gridSize,
-        gridOffsetX: map.gridOffsetX,
-        gridOffsetY: map.gridOffsetY,
-        width: map.width,
-        height: map.height,
-        walls: map.walls || [],
-        tokens: map.tokens || {},
-        aoe: map.aoe || null,
-        scale: map.scale || 1,
-        fogEnabled: !!map.fogEnabled,
-        fogRevealed: map.fogRevealed || {},
-        fogBrush: map.fogBrush || 1,
-        hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
-        mediaType: map.mediaType || null
-      } : null;
-      ch.postMessage({
-        type: 'vtt-state',
-        room: getVttRoomCode(),
-        reason: reason || 'update',
-        at: Date.now(),
-        combat: combat ? {
-          round: combat.round,
-          current: combat.current,
-          combatants: (combat.combatants || []).map(cb => ({
-            id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
-            side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
-            concentrating: cb.concentrating, dead: cb.dead
-          }))
-        } : null,
-        map: mapLite
-      });
+      const payload = buildVttStatePayload(reason);
+      if (!payload) return;
+      // localStorage: works across tabs even when BC is flaky
+      try { localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(payload)); } catch (e) {}
+      const ch = getVttChannel();
+      if (ch) {
+        try { ch.postMessage(payload); } catch (e) {}
+      }
     } catch (e) { console.warn('VTT broadcast', e); }
   }
   function applyVttStateMessage(msg) {
@@ -10183,15 +10202,18 @@ function escapeHtml(str) {
         if (id === 'vtt-join-player') {
           let code = (document.getElementById('vtt-room-code')?.value || getVttRoomCode() || '').toUpperCase().trim();
           if (!code) code = generateRoomCode();
-          setVttSession('player', code);
+          // DM tab stays DM — only store room code
+          setVttSession('dm', code);
           const inp = document.getElementById('vtt-room-code');
           if (inp) inp.value = code;
           const url = new URL(location.href);
+          url.searchParams.delete('mapPopout');
           url.searchParams.set('role', 'player');
           url.searchParams.set('room', code);
-          const w = window.open(url.toString(), 'vtt-player-' + code);
-          if (!w) toast('Popup blocked — allow popups or open: ' + url.pathname + url.search);
-          else toast('Player view: room ' + code);
+          const w = window.open(url.toString(), 'vtt-player-' + code, 'noopener,noreferrer,width=1280,height=800');
+          if (!w) toast('Popup blocked — allow popups');
+          else toast('Player view opened (you stay DM here). Room ' + code);
+          try { broadcastVttState('player-open'); } catch (e) {}
           return;
         }
         if (id === 'map-fog-toggle' || id === 'map-fog-reveal' || id === 'map-fog-hide' || id === 'map-fog-reset') {
@@ -10242,8 +10264,25 @@ function escapeHtml(str) {
         try { applyVttStateMessage(ev.data); } catch (e) {}
       };
     }
-    // Hook save to broadcast (DM only)
-    const _save = window.__origSaveVtt;
+    window.addEventListener('storage', (e) => {
+      if (e.key !== 'cybervlachos_vtt_sync' || !e.newValue) return;
+      try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
+    });
+    // Player/popout: poll lightly as fallback
+    if (isPlayerRole()) {
+      let lastAt = 0;
+      setInterval(() => {
+        try {
+          const raw = localStorage.getItem('cybervlachos_vtt_sync');
+          if (!raw) return;
+          const msg = JSON.parse(raw);
+          if (msg && msg.at && msg.at !== lastAt) {
+            lastAt = msg.at;
+            applyVttStateMessage(msg);
+          }
+        } catch (e) {}
+      }, 500);
+    }
   }
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
