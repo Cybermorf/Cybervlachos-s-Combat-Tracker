@@ -10046,7 +10046,7 @@ function escapeHtml(str) {
     const goy = (Number(map.gridOffsetY) || 0) * scale;
     const player = isPlayerRole();
     // Player: solid black over unrevealed; DM: translucent
-    ctx.fillStyle = player ? 'rgba(0,0,0,0.92)' : 'rgba(8,10,18,0.55)';
+    ctx.fillStyle = player ? 'rgba(0,0,0,0.94)' : 'rgba(0,0,0,0.72)';
     const cols = Math.ceil(canvas.width / g) + 2;
     const rows = Math.ceil(canvas.height / g) + 2;
     const startCol = Math.floor(-gox / g) - 1;
@@ -10114,7 +10114,8 @@ function escapeHtml(str) {
   function applyVttStateMessage(msg) {
     if (!msg || msg.type !== 'vtt-state') return;
     const room = getVttRoomCode();
-    if (room && msg.room && msg.room !== room) return;
+    // Only reject if BOTH sides have a room code and they differ
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
     try {
       const c = getActive();
       if (!c) return;
@@ -10140,18 +10141,18 @@ function escapeHtml(str) {
       if (msg.map) {
         const map = getCombatMap();
         if (map) {
-          map.gridSize = msg.map.gridSize;
-          map.gridOffsetX = msg.map.gridOffsetX;
-          map.gridOffsetY = msg.map.gridOffsetY;
-          map.tokens = msg.map.tokens || map.tokens;
+          if (msg.map.gridSize != null) map.gridSize = msg.map.gridSize;
+          if (msg.map.gridOffsetX != null) map.gridOffsetX = msg.map.gridOffsetX;
+          if (msg.map.gridOffsetY != null) map.gridOffsetY = msg.map.gridOffsetY;
+          if (msg.map.tokens) map.tokens = msg.map.tokens;
           map.aoe = msg.map.aoe;
-          map.walls = msg.map.walls || map.walls;
-          map.fogEnabled = msg.map.fogEnabled;
-          map.fogRevealed = msg.map.fogRevealed || {};
+          if (msg.map.walls) map.walls = msg.map.walls;
+          if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+          if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
         }
       }
-      if (typeof renderBattleMap === 'function') renderBattleMap();
-      if (typeof renderMapRoster === 'function') renderMapRoster();
+      try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+      try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
       if (typeof renderCombat === 'function' && document.getElementById('view-combat')?.classList.contains('active')) {
         try { renderCombat(); } catch (e) {}
       }
@@ -10554,129 +10555,13 @@ function escapeHtml(str) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const g = (Number(map.gridSize) || 70) * scale;
-      const gox = (Number(map.gridOffsetX) || 0) * scale;
-      const goy = (Number(map.gridOffsetY) || 0) * scale;
-      if (g >= 8) {
-        ctx.strokeStyle = 'rgba(196,163,90,0.28)';
-        ctx.lineWidth = 1;
-        let x0 = gox % g;
-        if (x0 > 0) x0 -= g;
-        for (let x = x0; x <= canvas.width + g; x += g) {
-          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-        }
-        let y0 = goy % g;
-        if (y0 > 0) y0 -= g;
-        for (let y = y0; y <= canvas.height + g; y += g) {
-          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-        }
-      }
-
-      // walls
-      if (map.walls && map.walls.length) {
-        ctx.strokeStyle = 'rgba(255,80,80,0.55)';
-        ctx.lineWidth = 2;
-        map.walls.forEach(w => {
-          ctx.beginPath();
-          ctx.moveTo(w.x1 * scale, w.y1 * scale);
-          ctx.lineTo(w.x2 * scale, w.y2 * scale);
-          ctx.stroke();
-        });
-      }
-
-      // tokens
-      const c = getActive();
-      const combat = c ? getCombat(c) : null;
-      const list = (combat && combat.combatants) || [];
-      const selectedId = combat && combat.selectedIndex != null && combat.combatants[combat.selectedIndex]
-        ? String(combat.combatants[combat.selectedIndex].id || combat.selectedIndex)
-        : (combat && combat.mapFocusId) || null;
-      list.forEach((cb, idx) => {
-        const id = String(cb.id || idx);
-        const pos = map.tokens[id];
-        if (!pos) return;
-        const x = pos.x * scale, y = pos.y * scale;
-        const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
-        const side = String(cb.side || '').toLowerCase();
-        const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
-        const isAlly = side === 'ally' || side === 'allies';
-        let fill = isEnemy ? 'rgba(180,40,40,0.9)' : (isAlly ? 'rgba(50,100,180,0.9)' : 'rgba(40,120,80,0.9)');
-        const hp = Number(cb.hp) || 0;
-        const hpMax = Math.max(1, Number(cb.hpMax) || 1);
-        const ratio = Math.max(0, Math.min(1, hp / hpMax));
-        if (hp <= 0) fill = 'rgba(60,60,60,0.85)';
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fillStyle = fill;
-        ctx.fill();
-        // HP arc (hidden when hideHp)
-        if (!cb.hideHp && hp > 0) {
-          ctx.beginPath();
-          ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
-          ctx.lineWidth = 3;
-          ctx.arc(x, y, r + 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
-          ctx.stroke();
-        }
-        ctx.strokeStyle = String(id) === String(selectedId) ? '#ffd24a' : '#e8dcc8';
-        ctx.lineWidth = String(id) === String(selectedId) ? 3 : 2;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.fillStyle = '#fff';
-        ctx.font = '11px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText((cb.name || '?').slice(0, 10), x, y + r + 12);
-        if (!cb.hideHp) {
-          ctx.fillStyle = '#c4a35a';
-          ctx.font = '10px sans-serif';
-          ctx.fillText(hp + '/' + hpMax, x, y + 3);
-        }
-        // still draw HP arc only if not hidden
-      });
-
-      // AoE
-      if (map.aoe) {
-        const a = map.aoe;
-        const ox = a.x * scale, oy = a.y * scale;
-        const ft = a.ft || 20;
-        const pxPerFt = ((Number(map.gridSize) || 70) * scale) / 5; // 5 ft square
-        const rad = (ft) * pxPerFt;
-        ctx.fillStyle = 'rgba(100,160,255,0.25)';
-        ctx.strokeStyle = 'rgba(100,180,255,0.9)';
-        ctx.lineWidth = 2;
-        if (a.shape === 'sphere' || a.shape === 'cube') {
-          if (a.shape === 'sphere') {
-            ctx.beginPath();
-            ctx.arc(ox, oy, rad, 0, Math.PI * 2);
-            ctx.fill(); ctx.stroke();
-          } else {
-            ctx.fillRect(ox - rad, oy - rad, rad * 2, rad * 2);
-            ctx.strokeRect(ox - rad, oy - rad, rad * 2, rad * 2);
-          }
-        } else if (a.shape === 'cone') {
-          const ang = a.angle != null ? a.angle : -Math.PI / 2;
-          const spread = Math.PI / 3;
-          ctx.beginPath();
-          ctx.moveTo(ox, oy);
-          ctx.arc(ox, oy, rad, ang - spread / 2, ang + spread / 2);
-          ctx.closePath();
-          ctx.fill(); ctx.stroke();
-        } else if (a.shape === 'line') {
-          const ang = a.angle != null ? a.angle : 0;
-          const ex = ox + Math.cos(ang) * rad;
-          const ey = oy + Math.sin(ang) * rad;
-          ctx.strokeStyle = 'rgba(100,180,255,0.9)';
-          ctx.lineWidth = Math.max(6, ((Number(map.gridSize) || 70) * scale) * 0.2);
-          ctx.beginPath();
-          ctx.moveTo(ox, oy);
-          ctx.lineTo(ex, ey);
-          ctx.stroke();
-        }
-      }
+      try {
+        if (window.__drawMapOverlays) window.__drawMapOverlays(ctx, canvas, map, scale);
+        else drawMapOverlays(ctx, canvas, map, scale);
+      } catch (e) { console.warn('overlays', e); }
 
       if (status) {
-        status.textContent = `${img.width}×${img.height}px · grid ${map.gridSize}px · offset ${map.gridOffsetX||0},${map.gridOffsetY||0} · ${map.walls.length} walls · ${Object.keys(map.tokens||{}).length} tokens`;
+        status.textContent = `${img.width}×${img.height}px · grid ${map.gridSize}px · FoW ${map.fogEnabled ? 'ON' : 'off'} (${Object.keys(map.fogRevealed||{}).length} revealed) · ${Object.keys(map.tokens||{}).length} tokens`;
       }
       try { renderMapRoster(); } catch (e) {}
     };
@@ -11086,6 +10971,7 @@ function escapeHtml(str) {
         }
         if (dragId) {
           try { save(); } catch (err) {}
+          try { broadcastVttState('token-move'); } catch (err) {}
           dragId = null;
         }
       });
