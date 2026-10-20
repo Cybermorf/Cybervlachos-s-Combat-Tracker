@@ -3368,3 +3368,51 @@ html.vtt-player #view-map {
   min-height: 100vh !important;
   padding: 0.25rem !important;
 }
+
+/* Player landing */
+html.vtt-landing body > *:not(#player-landing) { display: none !important; }
+html.vtt-landing #player-landing { display: flex !important; }
+.player-landing {
+  display: none;
+  position: fixed; inset: 0; z-index: 99999;
+  align-items: center; justify-content: center;
+  background: radial-gradient(ellipse at center, #1a1510 0%, #0a0908 70%);
+}
+.player-landing:not(.hidden) { display: flex; }
+html.vtt-landing .player-landing { display: flex !important; }
+.player-landing.hidden { display: none !important; }
+html.vtt-landing .player-landing.hidden { display: flex !important; }
+.player-landing-card {
+  background: #16120e;
+  border: 1px solid #c4a35a55;
+  border-radius: 12px;
+  padding: 2rem 2.25rem;
+  max-width: 22rem;
+  width: 92%;
+  text-align: center;
+  box-shadow: 0 12px 40px #000a;
+}
+.player-landing-card .pl-brand { color: #c4a35a; font-size: 1.1rem; margin-bottom: 0.5rem; }
+.player-landing-card h1 { margin: 0 0 0.5rem; font-size: 1.4rem; color: #f0e6d2; }
+.player-landing-card label { display: block; text-align: left; margin: 1rem 0 0.35rem; color: #c4a35a; font-size: 0.85rem; }
+.player-landing-card input {
+  width: 100%; box-sizing: border-box; padding: 0.65rem;
+  background: #0e0c0a; border: 1px solid #c4a35a66; border-radius: 8px; color: #f0e6d2;
+}
+.player-landing-card .btn { margin-top: 1.1rem; width: 100%; }
+/* Menu never on viewer */
+html.map-popout #menu-toggle,
+html.vtt-player #menu-toggle,
+html.map-popout button[aria-label="Menu"],
+html.vtt-player button[aria-label="Menu"] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  position: fixed !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  clip: rect(0,0,0,0) !important;
+}

@@ -5,26 +5,29 @@
   <script>
   (function(){
     var q = new URLSearchParams(location.search);
-    if (q.get('mapPopout') === '1' || q.get('role') === 'player') {
+    var isPlayer = q.get('role') === 'player' || q.get('join') === '1';
+    var isPop = q.get('mapPopout') === '1' || q.get('mapPopout') === 'true';
+    var room = (q.get('room') || '').trim();
+    if (isPlayer && !room) {
+      document.documentElement.classList.add('vtt-landing');
+    }
+    if ((isPlayer && room) || isPop) {
       document.documentElement.classList.add('vtt-player', 'map-popout');
       document.documentElement.style.background = '#0e0c0a';
       function killChrome(){
-        [
-          '#menu-toggle','.menu-toggle','#sidebar','.sidebar','#view-combat','#view-tools',
+        var sels = [
+          '#menu-toggle','.menu-toggle','button[aria-label="Menu"]','button[title="Menu"]',
+          '#sidebar','.sidebar','#view-combat','#view-tools',
           '.app-header','header','.header-left','.header-right','#dice-toggle',
-          '.map-toolbar','#view-map .view-header','.view-desc','nav','.app-nav'
-        ].forEach(function(sel){
-          document.querySelectorAll(sel).forEach(function(el){
-            try { el.remove(); } catch(e) {}
-          });
-        });
-        document.querySelectorAll('button[aria-label="Menu"], button[title="Menu"]').forEach(function(el){
-          try { el.remove(); } catch(e) {}
+          '.map-toolbar','#view-map .view-header','.view-desc','nav','.app-nav',
+          '#player-landing'
+        ];
+        sels.forEach(function(sel){
+          document.querySelectorAll(sel).forEach(function(el){ try { el.remove(); } catch(e) {} });
         });
       }
-      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', killChrome);
-      else killChrome();
-      setInterval(killChrome, 250);
+      document.addEventListener('DOMContentLoaded', killChrome);
+      setInterval(killChrome, 200);
     }
   })();
   </script>
@@ -41,6 +44,19 @@
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body data-app="combat-tracker">
+
+  <div id="player-landing" class="player-landing hidden" aria-live="polite">
+    <div class="player-landing-card">
+      <div class="pl-brand">☀ Cybervlachos</div>
+      <h1>Join Battle Map</h1>
+      <p class="muted">Enter the room code from your DM to open the shared map.</p>
+      <label for="player-room-input">Room code</label>
+      <input id="player-room-input" type="text" maxlength="8" placeholder="e.g. JGLE3E" autocomplete="off" style="text-transform:uppercase;letter-spacing:0.12em;font-size:1.25rem;text-align:center">
+      <button type="button" class="btn primary" id="player-room-join-btn">Enter map</button>
+      <p class="muted small" id="player-landing-err"></p>
+    </div>
+  </div>
+
   <div id="app">
     <!-- Header -->
     <header class="app-header">

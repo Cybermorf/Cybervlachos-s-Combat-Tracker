@@ -10279,8 +10279,9 @@ function escapeHtml(str) {
           url.searchParams.set('room', code);
           url.searchParams.set('mapPopout', '1');
           const w = window.open(url.toString(), 'vtt-player-' + code, 'noopener,noreferrer,width=1280,height=800');
-          if (!w) toast('Popup blocked — allow popups');
-          else toast('Player view opened (DM stays here). Room ' + code);
+          const joinUrl = location.origin + location.pathname + '?join=1';
+          if (!w) toast('Popup blocked — players can open: ' + joinUrl);
+          else toast('Player view opened · Room ' + code + ' · share join link: ?join=1');
           try { broadcastVttState('player-open'); } catch (e) {}
           return;
         }
@@ -10370,6 +10371,45 @@ function escapeHtml(str) {
       } catch (e) {}
     }, 200);
   }
+  
+  function isJoinLanding() {
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get('join') === '1') return true;
+      if (q.get('role') === 'player' && !(q.get('room') || '').trim()) return true;
+      return false;
+    } catch (e) { return false; }
+  }
+  function wirePlayerLanding() {
+    if (!isJoinLanding()) {
+      const el = document.getElementById('player-landing');
+      if (el) el.classList.add('hidden');
+      return;
+    }
+    document.documentElement.classList.add('vtt-landing');
+    const el = document.getElementById('player-landing');
+    if (el) el.classList.remove('hidden');
+    const go = () => {
+      const inp = document.getElementById('player-room-input');
+      const err = document.getElementById('player-landing-err');
+      let code = (inp && inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+      if (code.length < 4) {
+        if (err) err.textContent = 'Enter the full room code from your DM.';
+        return;
+      }
+      const url = new URL(location.href);
+      url.searchParams.set('role', 'player');
+      url.searchParams.set('room', code);
+      url.searchParams.set('mapPopout', '1');
+      url.searchParams.delete('join');
+      location.replace(url.toString());
+    };
+    document.getElementById('player-room-join-btn')?.addEventListener('click', go);
+    document.getElementById('player-room-input')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') go();
+    });
+  }
+
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
     document.body.classList.add('vtt-player');
