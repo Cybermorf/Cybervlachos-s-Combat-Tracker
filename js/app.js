@@ -2258,6 +2258,18 @@
               cb.combatSpellSlots[L] = { max: m, used: Math.min(m, Math.max(0, u)) };
             }
           }
+          // If sheet had every slot spent, refill for this encounter so casting works
+          let remain = 0;
+          Object.keys(cb.combatSpellSlots).forEach(L => {
+            const r = cb.combatSpellSlots[L];
+            remain += Math.max(0, (r.max || 0) - (r.used || 0));
+          });
+          if (remain === 0) {
+            Object.keys(cb.combatSpellSlots).forEach(L => {
+              cb.combatSpellSlots[L].used = 0;
+            });
+            cb._slotsRefilledForEncounter = true;
+          }
         }
         // Warlock pact
         const wl = typeof warlockLevels === 'function' ? warlockLevels(ch) : 0;
@@ -7374,8 +7386,10 @@ function rollDieExpr(expr) {
 
       function syncSpellUi() {
         const sp = currentSpell();
+        const descEl = panel.querySelector('#cr-spell-desc');
         if (!sp) {
           if (timeIn) timeIn.value = '—';
+          if (descEl) descEl.textContent = 'Select a spell to see range, targets, and description.';
           return;
         }
         if (timeIn) timeIn.value = sp.time || 'Action';
@@ -7383,7 +7397,6 @@ function rollDieExpr(expr) {
           if (sp.level === 0) {
             slotSel.value = '0';
           } else {
-            // default to minimum available slot >= spell level
             const opts = Array.from(slotSel.options).map(o => Number(o.value)).filter(v => v >= sp.level);
             if (opts.length) slotSel.value = String(Math.min(...opts));
           }
@@ -7393,6 +7406,18 @@ function rollDieExpr(expr) {
           hint.textContent = (sp.concentration ? 'Concentration ◎ · ' : '') +
             'Uses your ' + (bucket === 'bonus' ? 'Bonus Action' : bucket === 'reaction' ? 'Reaction' : 'Action') +
             (sp.level > 0 ? ' · spends a slot on Cast' : ' · cantrip (no slot)');
+        }
+        if (descEl) {
+          const bits = [];
+          bits.push('Level: ' + (sp.level === 0 ? 'Cantrip' : sp.level));
+          if (sp.school) bits.push('School: ' + sp.school);
+          if (sp.time) bits.push('Casting time: ' + sp.time);
+          if (sp.range) bits.push('Range: ' + sp.range);
+          if (sp.components) bits.push('Components: ' + sp.components);
+          if (sp.duration) bits.push('Duration: ' + sp.duration);
+          if (sp.concentration) bits.push('Concentration');
+          const body = (sp.description || sp.summary || '').trim();
+          descEl.textContent = bits.join(' · ') + (body ? '\n\n' + body : '\n\n(No description in catalog — import Open5e/SRD spells in Tools.)');
         }
       }
       pick?.addEventListener('change', syncSpellUi);
