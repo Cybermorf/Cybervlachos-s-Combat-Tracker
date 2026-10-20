@@ -10032,19 +10032,28 @@ function escapeHtml(str) {
     const gy = Math.floor((wy - oy) / g);
     return gx + ',' + gy;
   }
+  function getFogBrushSize(map) {
+    const fromInput = parseInt(document.getElementById('map-fog-brush')?.value, 10);
+    if (!isNaN(fromInput) && fromInput >= 1) return Math.min(12, fromInput);
+    const fromMap = Number(map && map.fogBrush);
+    if (!isNaN(fromMap) && fromMap >= 1) return Math.min(12, fromMap);
+    return 1;
+  }
   function paintFog(map, wx, wy, reveal) {
     ensureMapFog(map);
     map.fogEnabled = true;
     const g = Number(map.gridSize) || 70;
-    const brush = Math.max(1, Number(map.fogBrush) || 2);
+    const brush = getFogBrushSize(map);
+    map.fogBrush = brush;
     const ox = Number(map.gridOffsetX) || 0;
     const oy = Number(map.gridOffsetY) || 0;
     const cx = Math.floor((wx - ox) / g);
     const cy = Math.floor((wy - oy) / g);
+    // brush N → exactly N×N cells (odd centered; even biased bottom-right)
     const half = Math.floor((brush - 1) / 2);
-    for (let dy = -half; dy <= half + (brush % 2 === 0 ? 1 : 0); dy++) {
-      for (let dx = -half; dx <= half + (brush % 2 === 0 ? 1 : 0); dx++) {
-        const key = (cx + dx) + ',' + (cy + dy);
+    for (let dy = 0; dy < brush; dy++) {
+      for (let dx = 0; dx < brush; dx++) {
+        const key = (cx - half + dx) + ',' + (cy - half + dy);
         if (reveal) map.fogRevealed[key] = true;
         else delete map.fogRevealed[key];
       }
@@ -10203,17 +10212,17 @@ function escapeHtml(str) {
         if (id === 'vtt-join-player') {
           let code = (document.getElementById('vtt-room-code')?.value || getVttRoomCode() || '').toUpperCase().trim();
           if (!code) code = generateRoomCode();
-          // DM tab stays DM — only store room code
           setVttSession('dm', code);
           const inp = document.getElementById('vtt-room-code');
           if (inp) inp.value = code;
           const url = new URL(location.href);
-          url.searchParams.delete('mapPopout');
+          // Player view = clean shared map (same shell as popout) + player rules
           url.searchParams.set('role', 'player');
           url.searchParams.set('room', code);
+          url.searchParams.set('mapPopout', '1');
           const w = window.open(url.toString(), 'vtt-player-' + code, 'noopener,noreferrer,width=1280,height=800');
           if (!w) toast('Popup blocked — allow popups');
-          else toast('Player view opened (you stay DM here). Room ' + code);
+          else toast('Player view opened (DM stays here). Room ' + code);
           try { broadcastVttState('player-open'); } catch (e) {}
           return;
         }
@@ -10270,20 +10279,20 @@ function escapeHtml(str) {
       try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
     });
     // Player/popout: poll lightly as fallback
-    if (isPlayerRole()) {
-      let lastAt = 0;
-      setInterval(() => {
-        try {
-          const raw = localStorage.getItem('cybervlachos_vtt_sync');
-          if (!raw) return;
-          const msg = JSON.parse(raw);
-          if (msg && msg.at && msg.at !== lastAt) {
-            lastAt = msg.at;
-            applyVttStateMessage(msg);
-          }
-        } catch (e) {}
-      }, 500);
-    }
+    // All viewer windows poll; DM also can receive nothing
+    let lastAt = 0;
+    setInterval(() => {
+      if (!isPlayerRole() && !isMapPopoutMode()) return;
+      try {
+        const raw = localStorage.getItem('cybervlachos_vtt_sync');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (msg && msg.at && msg.at !== lastAt) {
+          lastAt = msg.at;
+          applyVttStateMessage(msg);
+        }
+      } catch (e) {}
+    }, 200);
   }
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
@@ -10986,6 +10995,11 @@ function escapeHtml(str) {
         if (window.__fogDrag && !isPlayerRole()) {
           paintFog(map, x, y, window.__fogDrag === 'reveal');
           try { renderBattleMap(); } catch (e) {}
+          const now = Date.now();
+          if (!window.__lastFogBc || now - window.__lastFogBc > 150) {
+            window.__lastFogBc = now;
+            try { broadcastVttState('fog-drag'); } catch (e) {}
+          }
           return;
         }
         if (window.__gridDrag) {

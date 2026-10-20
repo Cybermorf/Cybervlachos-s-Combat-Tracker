@@ -3337,3 +3337,34 @@ html.vtt-player .header-left {
   top: -10000px !important;
   z-index: -1 !important;
 }
+
+/* Absolute hide menu on any viewer */
+html.map-popout button#menu-toggle,
+html.vtt-player button#menu-toggle,
+html.map-popout button[aria-label="Menu"],
+html.vtt-player button[aria-label="Menu"],
+html.map-popout .header-left,
+html.vtt-player .header-left,
+html.map-popout .app-header,
+html.vtt-player .app-header,
+html.map-popout .map-toolbar,
+html.vtt-player .map-toolbar,
+html.map-popout #view-map .view-header,
+html.vtt-player #view-map .view-header {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  position: absolute !important;
+  left: -99999px !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  opacity: 0 !important;
+  z-index: -9999 !important;
+}
+html.map-popout #view-map,
+html.vtt-player #view-map {
+  display: flex !important;
+  min-height: 100vh !important;
+  padding: 0.25rem !important;
+}

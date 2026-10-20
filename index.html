@@ -7,17 +7,24 @@
     var q = new URLSearchParams(location.search);
     if (q.get('mapPopout') === '1' || q.get('role') === 'player') {
       document.documentElement.classList.add('vtt-player', 'map-popout');
-      function killMenu(){
-        var ids = ['menu-toggle','sidebar','view-combat'];
-        ids.forEach(function(id){
-          var el = document.getElementById(id);
-          if (el) { el.remove(); }
+      document.documentElement.style.background = '#0e0c0a';
+      function killChrome(){
+        [
+          '#menu-toggle','.menu-toggle','#sidebar','.sidebar','#view-combat','#view-tools',
+          '.app-header','header','.header-left','.header-right','#dice-toggle',
+          '.map-toolbar','#view-map .view-header','.view-desc','nav','.app-nav'
+        ].forEach(function(sel){
+          document.querySelectorAll(sel).forEach(function(el){
+            try { el.remove(); } catch(e) {}
+          });
         });
-        document.querySelectorAll('.app-header, header, .menu-toggle').forEach(function(el){ el.remove(); });
+        document.querySelectorAll('button[aria-label="Menu"], button[title="Menu"]').forEach(function(el){
+          try { el.remove(); } catch(e) {}
+        });
       }
-      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', killMenu);
-      else killMenu();
-      setInterval(killMenu, 400);
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', killChrome);
+      else killChrome();
+      setInterval(killChrome, 250);
     }
   })();
   </script>
