@@ -81,11 +81,6 @@
           <div class="header-actions">
             <button id="combat-clear-btn" class="btn danger ghost">Clear</button>
             <button type="button" class="btn secondary" id="combat-map-popout-btn" title="Open map window for players / Discord">Pop out map</button>
-            <span class="vtt-room-bar" style="display:inline-flex;gap:0.35rem;align-items:center;flex-wrap:wrap">
-              <button type="button" class="btn secondary" id="vtt-create-room" title="Create multiplayer room (this browser tabs)">VTT Room</button>
-              <input type="text" id="vtt-room-code" placeholder="Room" maxlength="8" style="width:5.5rem;text-transform:uppercase" title="Room code">
-              <button type="button" class="btn secondary" id="vtt-join-player" title="Open player view for this room">Player view</button>
-            </span>
             <button type="button" class="btn secondary" id="combat-short-rest" title="Recover short-rest resources">Short Rest</button>
             <button type="button" class="btn secondary" id="combat-long-rest" title="Full HP, slots, resources">Long Rest</button>
             <button id="combat-next-btn" class="btn primary">Next Turn</button>
@@ -191,6 +186,9 @@
           </div>
           <button type="button" class="btn primary" id="map-apply-aoe-targets">Select targets in AoE</button>
           <button type="button" class="btn secondary" id="map-clear-aoe">Clear AoE</button>
+          <button type="button" class="btn primary" id="vtt-create-room" title="Create VTT room">VTT Room</button>
+          <input type="text" id="vtt-room-code" placeholder="Room" maxlength="8" style="width:5rem;text-transform:uppercase">
+          <button type="button" class="btn secondary" id="vtt-join-player" title="Open player view">Player view</button>
           <button type="button" class="btn secondary" id="map-fog-toggle" title="Toggle fog of war">FoW</button>
           <button type="button" class="btn secondary" id="map-fog-reveal" title="Reveal fog brush">Reveal</button>
           <button type="button" class="btn secondary" id="map-fog-hide" title="Hide fog brush">Hide</button>

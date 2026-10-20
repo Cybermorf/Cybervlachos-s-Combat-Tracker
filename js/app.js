@@ -9494,6 +9494,9 @@ function escapeHtml(str) {
     try { load(); } catch (e) { console.warn(e); }
     try { tryRestoreRosterBackupIfEmpty(); } catch (e) {}
     try { bindMapCrossWindowSync(); } catch (e) {}
+    try { bindVttSync(); } catch (e) { console.warn('bindVttSync', e); }
+    try { wireVttRoomUi(); } catch (e) { console.warn('wireVttRoomUi', e); }
+    try { applyPlayerShell(); } catch (e) { console.warn('applyPlayerShell', e); }
     document.getElementById('combat-map-popout-btn')?.addEventListener('click', () => openMapPopout());
     document.getElementById('map-popout-btn')?.addEventListener('click', () => openMapPopout());
     loadUserCompendiumAsync().then(() => {
@@ -10158,26 +10161,75 @@ function escapeHtml(str) {
   function wireVttRoomUi() {
     if (window.__vttRoomWired) return;
     window.__vttRoomWired = true;
-    document.getElementById('vtt-create-room')?.addEventListener('click', () => {
-      const code = generateRoomCode();
-      setVttSession('dm', code);
-      const inp = document.getElementById('vtt-room-code');
-      if (inp) inp.value = code;
-      toast('Room ' + code + ' — open Player view in another tab');
-      bindVttSync();
-      broadcastVttState('create');
-    });
-    document.getElementById('vtt-join-player')?.addEventListener('click', () => {
-      const code = (document.getElementById('vtt-room-code')?.value || getVttRoomCode() || generateRoomCode()).toUpperCase();
-      setVttSession('player', code);
-      const url = new URL(location.href);
-      url.searchParams.set('role', 'player');
-      url.searchParams.set('room', code);
-      window.open(url.toString(), 'vtt-player-' + code);
-      toast('Player view opened for room ' + code);
+    // Document-level delegation so buttons work even if re-rendered
+    document.addEventListener('click', (ev) => {
+      const t = ev.target && ev.target.closest && (ev.target.closest('#vtt-create-room') || ev.target.closest('#vtt-join-player') ||
+        ev.target.closest('#map-fog-toggle') || ev.target.closest('#map-fog-reveal') ||
+        ev.target.closest('#map-fog-hide') || ev.target.closest('#map-fog-reset'));
+      if (!t) return;
+      const id = t.id;
+      try {
+        if (id === 'vtt-create-room') {
+          const code = generateRoomCode();
+          setVttSession('dm', code);
+          const inp = document.getElementById('vtt-room-code');
+          if (inp) inp.value = code;
+          try { bindVttSync(); } catch (e) {}
+          try { broadcastVttState('create'); } catch (e) {}
+          toast('Room ' + code + ' created — click Player view');
+          return;
+        }
+        if (id === 'vtt-join-player') {
+          let code = (document.getElementById('vtt-room-code')?.value || getVttRoomCode() || '').toUpperCase().trim();
+          if (!code) code = generateRoomCode();
+          setVttSession('player', code);
+          const inp = document.getElementById('vtt-room-code');
+          if (inp) inp.value = code;
+          const url = new URL(location.href);
+          url.searchParams.set('role', 'player');
+          url.searchParams.set('room', code);
+          const w = window.open(url.toString(), 'vtt-player-' + code);
+          if (!w) toast('Popup blocked — allow popups or open: ' + url.pathname + url.search);
+          else toast('Player view: room ' + code);
+          return;
+        }
+        if (id === 'map-fog-toggle' || id === 'map-fog-reveal' || id === 'map-fog-hide' || id === 'map-fog-reset') {
+          if (typeof isPlayerRole === 'function' && isPlayerRole()) { toast('Players cannot edit fog'); return; }
+          ensureCombatWorkspace();
+          const map = getCombatMap();
+          if (!map) { toast('No map workspace — open Map tab once'); return; }
+          ensureMapFog(map);
+          if (id === 'map-fog-toggle') {
+            map.fogEnabled = !map.fogEnabled;
+            toast(map.fogEnabled ? 'Fog ON — use Reveal on the Map tab' : 'Fog OFF');
+          } else if (id === 'map-fog-reset') {
+            map.fogRevealed = {};
+            map.fogEnabled = true;
+            toast('Map fully fogged');
+          } else if (id === 'map-fog-reveal') {
+            window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
+            toast(window.__mapFogTool ? 'Reveal brush ON — go to Map, click/drag' : 'Reveal off');
+          } else if (id === 'map-fog-hide') {
+            window.__mapFogTool = window.__mapFogTool === 'hide' ? null : 'hide';
+            toast(window.__mapFogTool ? 'Hide brush ON — go to Map, click/drag' : 'Hide off');
+          }
+          try { save(); } catch (e) {}
+          try { renderBattleMap(); } catch (e) {}
+          try { broadcastVttState('fog'); } catch (e) {}
+        }
+      } catch (err) {
+        console.error(err);
+        toast('VTT error: ' + (err && err.message ? err.message : err));
+      }
     });
     const inp = document.getElementById('vtt-room-code');
     if (inp && getVttRoomCode()) inp.value = getVttRoomCode();
+    // Debug presence
+    try {
+      console.log('[VTT] wired. buttons:',
+        !!document.getElementById('vtt-create-room'),
+        !!document.getElementById('map-fog-toggle'));
+    } catch (e) {}
   }
 
   function bindVttSync() {
@@ -10346,22 +10398,21 @@ function escapeHtml(str) {
     const videoEl = document.getElementById('map-video');
     const hasVideo = !!(map && map.mediaType === 'video' && map.videoObjectUrl);
     const hasImage = !!(map && map.imageDataUrl);
-    if (!map || (!hasImage && !hasVideo)) {
-      if (videoEl) {
-        try { videoEl.pause(); videoEl.removeAttribute('src'); videoEl.load(); } catch (e) {}
-        videoEl.style.display = 'none';
-      }
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#1a1510';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#c4a35a';
-      ctx.font = '16px sans-serif';
-      ctx.fillText('Import an image, video (MP4/WebM), or UVTT file to begin.', 24, 40);
-      if (status) status.textContent = 'No map loaded';
-      try { renderMapRoster(); } catch (e) {}
+    if (!map) {
+      if (status) status.textContent = 'No map workspace';
       return;
     }
-
+    if (!hasImage && !hasVideo) {
+      // Still allow fog/grid overlay on empty canvas so FoW tools are visible
+      const w = canvas.clientWidth || 900, h = canvas.clientHeight || 600;
+      if (canvas.width !== w) canvas.width = w;
+      if (canvas.height !== h) canvas.height = h;
+      ctx.fillStyle = '#1a1a22';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      try { drawMapOverlays(ctx, canvas, map, 1); } catch (e) {}
+      if (status) status.textContent = map.fogEnabled ? 'FoW on (no map image yet)' : 'No map image — import one';
+      return;
+    }
     // Live video map: draw frames to canvas under tokens/grid
     if (hasVideo && videoEl) {
       videoEl.style.display = 'none';
