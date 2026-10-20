@@ -3280,3 +3280,22 @@ body.map-popout .header-right {
   overflow: hidden !important;
   opacity: 0 !important;
 }
+
+
+/* Phase 1 VTT player shell */
+body.vtt-player .app-header,
+body.vtt-player #menu-toggle,
+body.vtt-player #sidebar,
+body.vtt-player #view-tools,
+body.vtt-player #view-combat .combat-toolbar .tool-btns,
+body.vtt-player .map-toolbar .btn:not(#map-token-combatant) {
+  /* keep map usable */
+}
+body.vtt-player #view-combat { display: none !important; }
+body.vtt-player #view-tools { display: none !important; }
+body.vtt-player .map-fog-dm-only { display: none !important; }
+body.vtt-player #map-fog-toggle,
+body.vtt-player #map-fog-reveal,
+body.vtt-player #map-fog-hide,
+body.vtt-player #map-fog-reset,
+body.vtt-player #map-fog-brush { display: none !important; }

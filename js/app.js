@@ -894,8 +894,16 @@
         return;
       }
     } catch (e) {}
+    // Player VTT role is also view-only for full state
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        try { broadcastVttState('player-noop'); } catch (e) {}
+        return;
+      }
+    } catch (e) {}
 
     try { if (typeof notifyMapWindows === "function") setTimeout(notifyMapWindows, 0); } catch (e) {}
+    try { if (typeof broadcastVttState === "function") setTimeout(function(){ broadcastVttState("save"); }, 0); } catch (e) {}
 
     // Persist large map image outside localStorage (quota)
     try {
@@ -9834,7 +9842,10 @@ function escapeHtml(str) {
         walls: [],
         tokens: {},
         aoe: null,
-        scale: 1
+        scale: 1,
+        fogEnabled: false,
+        fogRevealed: {},
+        fogBrush: 1
       };
     }
     return c.combatMap;
@@ -9965,6 +9976,238 @@ function escapeHtml(str) {
   }
 
 
+  
+  // ─── Phase 1 VTT: roles, room sync, fog of war ───────────────────────────
+  function getVttRole() {
+    try {
+      const q = new URLSearchParams(location.search);
+      const r = (q.get('role') || sessionStorage.getItem('vtt_role') || 'dm').toLowerCase();
+      return r === 'player' ? 'player' : 'dm';
+    } catch (e) { return 'dm'; }
+  }
+  function isPlayerRole() { return getVttRole() === 'player'; }
+  function getVttRoomCode() {
+    try {
+      return (new URLSearchParams(location.search).get('room') || sessionStorage.getItem('vtt_room') || '').toUpperCase();
+    } catch (e) { return ''; }
+  }
+  function setVttSession(role, room) {
+    try {
+      if (role) sessionStorage.setItem('vtt_role', role);
+      if (room) sessionStorage.setItem('vtt_room', String(room).toUpperCase());
+    } catch (e) {}
+  }
+  function generateRoomCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = '';
+    for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
+    return s;
+  }
+  function ensureMapFog(map) {
+    if (!map) return;
+    if (!map.fogRevealed || typeof map.fogRevealed !== 'object') map.fogRevealed = {};
+    if (map.fogEnabled == null) map.fogEnabled = false;
+    if (!map.fogBrush) map.fogBrush = 1;
+  }
+  function worldToFogCell(map, wx, wy) {
+    const g = Number(map.gridSize) || 70;
+    const ox = Number(map.gridOffsetX) || 0;
+    const oy = Number(map.gridOffsetY) || 0;
+    const gx = Math.floor((wx - ox) / g);
+    const gy = Math.floor((wy - oy) / g);
+    return gx + ',' + gy;
+  }
+  function paintFog(map, wx, wy, reveal) {
+    ensureMapFog(map);
+    const g = Number(map.gridSize) || 70;
+    const brush = Math.max(1, Number(map.fogBrush) || 1);
+    const ox = Number(map.gridOffsetX) || 0;
+    const oy = Number(map.gridOffsetY) || 0;
+    const cx = Math.floor((wx - ox) / g);
+    const cy = Math.floor((wy - oy) / g);
+    const half = Math.floor(brush / 2);
+    for (let dy = -half; dy <= half; dy++) {
+      for (let dx = -half; dx <= half; dx++) {
+        const key = (cx + dx) + ',' + (cy + dy);
+        if (reveal) map.fogRevealed[key] = true;
+        else delete map.fogRevealed[key];
+      }
+    }
+  }
+  function drawFogOfWar(ctx, canvas, map, scale) {
+    ensureMapFog(map);
+    if (!map.fogEnabled) return;
+    const g = (Number(map.gridSize) || 70) * scale;
+    if (g < 4) return;
+    const gox = (Number(map.gridOffsetX) || 0) * scale;
+    const goy = (Number(map.gridOffsetY) || 0) * scale;
+    const player = isPlayerRole();
+    // Player: solid black over unrevealed; DM: translucent
+    ctx.fillStyle = player ? 'rgba(0,0,0,0.92)' : 'rgba(8,10,18,0.55)';
+    const cols = Math.ceil(canvas.width / g) + 2;
+    const rows = Math.ceil(canvas.height / g) + 2;
+    const startCol = Math.floor(-gox / g) - 1;
+    const startRow = Math.floor(-goy / g) - 1;
+    for (let gy = startRow; gy < startRow + rows; gy++) {
+      for (let gx = startCol; gx < startCol + cols; gx++) {
+        const key = gx + ',' + gy;
+        if (map.fogRevealed[key]) continue;
+        const x = gox + gx * g;
+        const y = goy + gy * g;
+        ctx.fillRect(x, y, g + 0.5, g + 0.5);
+      }
+    }
+  }
+  function getVttChannel() {
+    if (!window.__vttBc && typeof BroadcastChannel !== 'undefined') {
+      try { window.__vttBc = new BroadcastChannel('cybervlachos-vtt-v1'); } catch (e) {}
+    }
+    return window.__vttBc || null;
+  }
+  function broadcastVttState(reason) {
+    if (isPlayerRole()) return; // only host broadcasts full state
+    const ch = getVttChannel();
+    if (!ch) return;
+    try {
+      const c = getActive();
+      if (!c) return;
+      const combat = getCombat(c);
+      const map = c.combatMap || null;
+      // Strip heavy media for BC size limits — players keep local image if already loaded
+      const mapLite = map ? {
+        gridSize: map.gridSize,
+        gridOffsetX: map.gridOffsetX,
+        gridOffsetY: map.gridOffsetY,
+        width: map.width,
+        height: map.height,
+        walls: map.walls || [],
+        tokens: map.tokens || {},
+        aoe: map.aoe || null,
+        scale: map.scale || 1,
+        fogEnabled: !!map.fogEnabled,
+        fogRevealed: map.fogRevealed || {},
+        fogBrush: map.fogBrush || 1,
+        hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
+        mediaType: map.mediaType || null
+      } : null;
+      ch.postMessage({
+        type: 'vtt-state',
+        room: getVttRoomCode(),
+        reason: reason || 'update',
+        at: Date.now(),
+        combat: combat ? {
+          round: combat.round,
+          current: combat.current,
+          combatants: (combat.combatants || []).map(cb => ({
+            id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+            side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
+            concentrating: cb.concentrating, dead: cb.dead
+          }))
+        } : null,
+        map: mapLite
+      });
+    } catch (e) { console.warn('VTT broadcast', e); }
+  }
+  function applyVttStateMessage(msg) {
+    if (!msg || msg.type !== 'vtt-state') return;
+    const room = getVttRoomCode();
+    if (room && msg.room && msg.room !== room) return;
+    try {
+      const c = getActive();
+      if (!c) return;
+      if (msg.combat) {
+        const combat = getCombat(c);
+        if (combat && msg.combat.combatants) {
+          combat.round = msg.combat.round != null ? msg.combat.round : combat.round;
+          combat.current = msg.combat.current != null ? msg.combat.current : combat.current;
+          // Merge HP/conditions by id/name without wiping local full data
+          (msg.combat.combatants || []).forEach(remote => {
+            const local = (combat.combatants || []).find(x => String(x.id) === String(remote.id) || x.name === remote.name);
+            if (local) {
+              local.hp = remote.hp;
+              local.hpMax = remote.hpMax;
+              local.conditions = remote.conditions;
+              local.hideHp = remote.hideHp;
+              local.concentrating = remote.concentrating;
+              local.dead = remote.dead;
+            }
+          });
+        }
+      }
+      if (msg.map) {
+        const map = getCombatMap();
+        if (map) {
+          map.gridSize = msg.map.gridSize;
+          map.gridOffsetX = msg.map.gridOffsetX;
+          map.gridOffsetY = msg.map.gridOffsetY;
+          map.tokens = msg.map.tokens || map.tokens;
+          map.aoe = msg.map.aoe;
+          map.walls = msg.map.walls || map.walls;
+          map.fogEnabled = msg.map.fogEnabled;
+          map.fogRevealed = msg.map.fogRevealed || {};
+        }
+      }
+      if (typeof renderBattleMap === 'function') renderBattleMap();
+      if (typeof renderMapRoster === 'function') renderMapRoster();
+      if (typeof renderCombat === 'function' && document.getElementById('view-combat')?.classList.contains('active')) {
+        try { renderCombat(); } catch (e) {}
+      }
+    } catch (e) { console.warn('applyVttState', e); }
+  }
+  
+  function wireVttRoomUi() {
+    if (window.__vttRoomWired) return;
+    window.__vttRoomWired = true;
+    document.getElementById('vtt-create-room')?.addEventListener('click', () => {
+      const code = generateRoomCode();
+      setVttSession('dm', code);
+      const inp = document.getElementById('vtt-room-code');
+      if (inp) inp.value = code;
+      toast('Room ' + code + ' — open Player view in another tab');
+      bindVttSync();
+      broadcastVttState('create');
+    });
+    document.getElementById('vtt-join-player')?.addEventListener('click', () => {
+      const code = (document.getElementById('vtt-room-code')?.value || getVttRoomCode() || generateRoomCode()).toUpperCase();
+      setVttSession('player', code);
+      const url = new URL(location.href);
+      url.searchParams.set('role', 'player');
+      url.searchParams.set('room', code);
+      window.open(url.toString(), 'vtt-player-' + code);
+      toast('Player view opened for room ' + code);
+    });
+    const inp = document.getElementById('vtt-room-code');
+    if (inp && getVttRoomCode()) inp.value = getVttRoomCode();
+  }
+
+  function bindVttSync() {
+    if (window.__vttSyncBound) return;
+    window.__vttSyncBound = true;
+    const ch = getVttChannel();
+    if (ch) {
+      ch.onmessage = (ev) => {
+        try { applyVttStateMessage(ev.data); } catch (e) {}
+      };
+    }
+    // Hook save to broadcast (DM only)
+    const _save = window.__origSaveVtt;
+  }
+  function applyPlayerShell() {
+    if (!isPlayerRole()) return;
+    document.body.classList.add('vtt-player');
+    document.title = 'Battle Map (Player)' + (getVttRoomCode() ? ' · ' + getVttRoomCode() : '');
+    // Strip DM chrome similar to map popout
+    const strip = ['.app-header', '#menu-toggle', '#sidebar', '#view-tools', '.view-desc'];
+    strip.forEach(sel => {
+      document.querySelectorAll(sel).forEach(el => {
+        try { el.style.setProperty('display', 'none', 'important'); } catch (e) {}
+      });
+    });
+    // Prefer map view
+    try { if (typeof setView === 'function') setView('map'); } catch (e) {}
+  }
+
+
   function drawMapOverlays(ctx, canvas, map, scale) {
     if (!ctx || !canvas || !map) return;
       const g = (Number(map.gridSize) || 70) * scale;
@@ -10087,6 +10330,8 @@ function escapeHtml(str) {
       }
     }
 
+    // Fog of war (on top of map/tokens in unrevealed cells)
+    try { drawFogOfWar(ctx, canvas, map, scale); } catch (e) {}
 
   }
   window.__drawMapOverlays = drawMapOverlays;
@@ -10619,6 +10864,14 @@ function escapeHtml(str) {
         if (!map || (!map.imageDataUrl && !(map.mediaType === 'video' && map.videoObjectUrl))) return;
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        // Fog brush (DM only)
+        if (window.__mapFogTool && !isPlayerRole()) {
+          const map0 = getCombatMap();
+          paintFog(map0, x, y, window.__mapFogTool === 'reveal');
+          window.__fogDrag = window.__mapFogTool;
+          renderBattleMap();
+          return;
+        }
         if (tool === 'grid-offset') {
           window.__gridDrag = {
             startX: x, startY: y,
@@ -10668,6 +10921,11 @@ function escapeHtml(str) {
         const map = getCombatMap();
         if (!map) return;
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
+        if (window.__fogDrag && !isPlayerRole()) {
+          paintFog(map, x, y, window.__fogDrag === 'reveal');
+          renderBattleMap();
+          return;
+        }
         if (window.__gridDrag) {
           const d = window.__gridDrag;
           map.gridOffsetX = d.ox + (x - d.startX);
@@ -10689,6 +10947,10 @@ function escapeHtml(str) {
         renderBattleMap();
       });
       canvas.addEventListener('mouseup', () => {
+        if (window.__fogDrag) {
+          window.__fogDrag = null;
+          try { save(); broadcastVttState('fog'); } catch (e) {}
+        }
         if (window.__gridDrag) {
           window.__gridDrag = null;
           const map2 = getCombatMap();
@@ -10703,6 +10965,43 @@ function escapeHtml(str) {
         }
       });
       canvas.addEventListener('mouseleave', () => { dragId = null; });
+
+    // Fog of war tools (Phase 1 VTT)
+    document.getElementById('map-fog-toggle')?.addEventListener('click', () => {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+      const map = getCombatMap();
+      if (!map) return;
+      ensureMapFog(map);
+      map.fogEnabled = !map.fogEnabled;
+      toast(map.fogEnabled ? 'Fog of war ON' : 'Fog of war OFF');
+      try { save(); } catch (e) {}
+      renderBattleMap();
+      try { broadcastVttState('fog'); } catch (e) {}
+    });
+    document.getElementById('map-fog-reset')?.addEventListener('click', () => {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+      const map = getCombatMap();
+      if (!map) return;
+      map.fogRevealed = {};
+      map.fogEnabled = true;
+      toast('Map fully fogged');
+      try { save(); } catch (e) {}
+      renderBattleMap();
+      try { broadcastVttState('fog-reset'); } catch (e) {}
+    });
+    document.getElementById('map-fog-brush')?.addEventListener('change', (e) => {
+      const map = getCombatMap();
+      if (map) map.fogBrush = Math.max(1, Math.min(8, parseInt(e.target.value, 10) || 1));
+    });
+    document.getElementById('map-fog-reveal')?.addEventListener('click', () => {
+      window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
+      toast(window.__mapFogTool ? 'Reveal brush ON — click/drag map' : 'Reveal brush off');
+    });
+    document.getElementById('map-fog-hide')?.addEventListener('click', () => {
+      window.__mapFogTool = window.__mapFogTool === 'hide' ? null : 'hide';
+      toast(window.__mapFogTool ? 'Hide brush ON — click/drag map' : 'Hide brush off');
+    });
+
       canvas.addEventListener('contextmenu', (ev) => {
         ev.preventDefault();
         const map = getCombatMap();
