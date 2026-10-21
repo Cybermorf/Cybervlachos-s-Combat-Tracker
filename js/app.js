@@ -6852,6 +6852,8 @@ function rollDieExpr(expr) {
     try {
       const snapshot = {
         type: 'vtt-state',
+        from: 'player',
+        clientId: window.__vttClientId || null,
         room: room,
         reason: 'player-combat',
         at: Date.now(),
@@ -10293,6 +10295,8 @@ function escapeHtml(str) {
     } : null;
     return {
       type: 'vtt-state',
+      from: 'dm',
+      clientId: window.__vttClientId || null,
       room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
       reason: reason || 'update',
       at: Date.now(),
@@ -10523,56 +10527,156 @@ function escapeHtml(str) {
   function bindVttSync() {
     if (window.__vttSyncBound) return;
     window.__vttSyncBound = true;
+
     const ch = getVttChannel();
     if (ch) {
       ch.onmessage = (ev) => {
         try {
-          if (ev.data && ev.data.type === 'vtt-tokens') applyTokenMessage(ev.data);
-          else if (ev.data && ev.data.type === 'vtt-player-action') applyPlayerActionMessage(ev.data);
-          else applyVttStateMessage(ev.data);
-        } catch (e) {}
+          const msg = ev.data;
+          if (!msg || !msg.type) return;
+          // Ignore our own echoes
+          if (msg.clientId && msg.clientId === window.__vttClientId) return;
+
+          if (msg.type === 'vtt-tokens') {
+            applyTokenMessage(msg);
+            return;
+          }
+          if (msg.type === 'vtt-player-action') {
+            if (!isPlayerRole()) applyPlayerActionMessage(msg);
+            return;
+          }
+          if (msg.type === 'vtt-state') {
+            // DM only accepts player-originated combat patches
+            if (!isPlayerRole() && msg.from === 'player') {
+              applyPlayerCombatPatch(msg);
+              return;
+            }
+            // Players accept DM (or unknown) full/partial state
+            if (isPlayerRole() && msg.from !== 'player') {
+              applyVttStateMessage(msg);
+            }
+          }
+        } catch (e) { console.warn('vtt bc', e); }
       };
     }
-    window.addEventListener('storage', (e) => {
-      if (e.key === 'cybervlachos_vtt_tokens' && e.newValue) {
-        try { applyTokenMessage(JSON.parse(e.newValue)); } catch (err) {}
-      }
-    });
+
+    // storage events only fire in *other* documents — ideal for DM↔player
     window.addEventListener('storage', (e) => {
       if (!e.newValue) return;
-      if (e.key === 'cybervlachos_vtt_sync' || e.key === 'cybervlachos_vtt_player_combat') {
-        try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
-      }
+      try {
+        if (e.key === 'cybervlachos_vtt_tokens') {
+          applyTokenMessage(JSON.parse(e.newValue));
+          return;
+        }
+        if (e.key === 'cybervlachos_vtt_player_combat') {
+          // Player → DM only
+          if (!isPlayerRole()) {
+            applyPlayerCombatPatch(JSON.parse(e.newValue));
+          }
+          return;
+        }
+        if (e.key === 'cybervlachos_vtt_sync') {
+          // DM → player only (players apply; DM ignores to avoid fighting local UI)
+          if (isPlayerRole()) {
+            applyVttStateMessage(JSON.parse(e.newValue));
+          }
+          return;
+        }
+      } catch (err) { console.warn('vtt storage', err); }
     });
-    // Player/popout: poll lightly as fallback
-    // All viewer windows poll; DM also can receive nothing
-    let lastAt = 0, lastTok = 0;
+
+    // Lightweight poll fallback — role-specific, never re-apply own traffic on DM
+    window.__vttClientId = window.__vttClientId || ('c' + Math.random().toString(36).slice(2, 10));
+    let lastPlayerCombat = 0;
+    let lastDmSync = 0;
     setInterval(() => {
       try {
-        const raw = localStorage.getItem('cybervlachos_vtt_sync');
-        if (raw) {
-          const msg = JSON.parse(raw);
-          if (msg && msg.at && msg.at !== lastAt) {
-            lastAt = msg.at;
-            // Everyone applies combat+map state (player→DM HP/slots and DM→player)
-            applyVttStateMessage(msg);
-            if (msg.map && msg.map.tokens) {
-              try { applyTokenMessage(msg); } catch (e) {}
+        if (isPlayerRole()) {
+          // Player listens for DM broadcasts
+          const raw = localStorage.getItem('cybervlachos_vtt_sync');
+          if (raw) {
+            const msg = JSON.parse(raw);
+            if (msg && msg.at && msg.at !== lastDmSync && msg.from !== 'player') {
+              lastDmSync = msg.at;
+              applyVttStateMessage(msg);
+            }
+          }
+        } else {
+          // DM listens only for player combat patches
+          const raw = localStorage.getItem('cybervlachos_vtt_player_combat');
+          if (raw) {
+            const msg = JSON.parse(raw);
+            if (msg && msg.at && msg.at !== lastPlayerCombat && msg.from === 'player') {
+              lastPlayerCombat = msg.at;
+              applyPlayerCombatPatch(msg);
             }
           }
         }
-        const rawT = localStorage.getItem('cybervlachos_vtt_tokens');
-        if (rawT) {
-          const msgT = JSON.parse(rawT);
-          if (msgT && msgT.at && msgT.at !== lastTok) {
-            lastTok = msgT.at;
-            applyTokenMessage(msgT);
+      } catch (e) {}
+    }, 300);
+  }
+
+  /** DM-side: apply HP/slots/resources from a player without clobbering DM turn flow */
+  function applyPlayerCombatPatch(msg) {
+    if (!msg || !msg.combat || !msg.combat.combatants) return;
+    if (isPlayerRole()) return;
+    const room = getVttRoomCode();
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    // Ignore stale
+    if (msg.at && window.__lastAppliedPlayerCombat === msg.at) return;
+    window.__lastAppliedPlayerCombat = msg.at;
+
+    try {
+      const c = getActive();
+      if (!c) return;
+      const combat = getCombat(c);
+      let changed = false;
+      (msg.combat.combatants || []).forEach(remote => {
+        const local = (combat.combatants || []).find(x =>
+          String(x.id) === String(remote.id) || x.name === remote.name
+        );
+        if (!local) return;
+        const fields = [
+          'hp','hpMax','tempHp','conditions','concentrating','dead',
+          'turnState','turnPhase','actionUsed','bonusUsed','reactionUsed','moveUsed',
+          'attacksUsed','combatSpellSlots','combatResources','spellSlots','deathSaves'
+        ];
+        fields.forEach(f => {
+          if (remote[f] !== undefined && remote[f] !== null) {
+            const before = JSON.stringify(local[f]);
+            local[f] = remote[f];
+            if (JSON.stringify(local[f]) !== before) changed = true;
           }
+        });
+      });
+      // Fog reveal from player? usually no — skip map unless tokens moved by player
+      if (msg.map && msg.map.tokens) {
+        const map = getCombatMap();
+        if (map) {
+          map.tokens = msg.map.tokens;
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      // Persist without going through full save recursion storms
+      try {
+        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const data = JSON.parse(raw);
+          const camp = (data.campaigns || []).find(x => x.id === data.activeCampaignId) || (data.campaigns || [])[0];
+          if (camp && camp.combat) camp.combat.combatants = combat.combatants;
+          localStorage.setItem(key, JSON.stringify(data));
         }
       } catch (e) {}
-    }, 200);
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('from-player-patch'); } catch (e) {}
+      try { renderCombat(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      try { renderMapRoster(); } catch (e) {}
+    } catch (e) { console.warn('applyPlayerCombatPatch', e); }
   }
-  
+
+
   function isJoinLanding() {
     try {
       const q = new URLSearchParams(location.search);
