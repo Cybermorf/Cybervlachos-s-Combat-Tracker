@@ -887,17 +887,17 @@
   }
 
   function save() {
-    // Pop-out window is view-only — never write state (prevents wiping main workspace)
-    try {
-      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
-        try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
-        return;
-      }
-    } catch (e) {}
-    // Player: cannot rewrite full campaign, but MUST persist combat HP/resources and sync
+    // Player (including player+mapPopout): persist combat mutations + sync to DM
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole()) {
         try { playerPersistAndSyncCombat(); } catch (e) { console.warn('playerPersist', e); }
+        return;
+      }
+    } catch (e) {}
+    // Map pop-out (DM share window without player role): view-only
+    try {
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+        try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
         return;
       }
     } catch (e) {}
@@ -10061,13 +10061,28 @@ function escapeHtml(str) {
       listEl.innerHTML = '<p class="muted small">No combatants. Add them in Combat, then place tokens here.</p>';
       return;
     }
+    const playerMode = typeof isPlayerRole === 'function' && isPlayerRole();
+    if (map) try { ensureMapFog(map); } catch (e) {}
     listEl.innerHTML = list.map((cb, idx) => {
       const id = String(cb.id != null ? cb.id : idx);
       const side = String(cb.side || '').toLowerCase();
-      const sideClass = (side === 'enemy' || side === 'villain') ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
+      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+      const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
+      // Players: hide enemies not revealed by FoW (or not on map when fog is on)
+      if (playerMode && isEnemy) {
+        if (typeof playerCanSeeCombatant === 'function') {
+          const viewer = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          if (!playerCanSeeCombatant(viewer, cb)) return '';
+        } else if (map && map.fogEnabled) {
+          const pos = map.tokens && map.tokens[id];
+          if (!pos) return '';
+          const cell = worldToFogCell(map, pos.x, pos.y);
+          if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+        }
+      }
       const hp = Number(cb.hp) || 0;
       const hpMax = Math.max(1, Number(cb.hpMax) || 1);
-      const hide = !!cb.hideHp;
+      const hide = !!cb.hideHp || (playerMode && isEnemy);
       const pct = hide ? 0 : Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
@@ -10378,9 +10393,11 @@ function escapeHtml(str) {
       try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
       try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
       try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
-      if (typeof renderCombat === 'function' && document.getElementById('view-combat')?.classList.contains('active')) {
-        try { renderCombat(); } catch (e) {}
-      }
+      try {
+        if (typeof renderCombat === 'function' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          renderCombat();
+        }
+      } catch (e) {}
     } catch (e) { console.warn('applyVttState', e); }
   }
   
@@ -10494,9 +10511,11 @@ function escapeHtml(str) {
           const msg = JSON.parse(raw);
           if (msg && msg.at && msg.at !== lastAt) {
             lastAt = msg.at;
-            // DM applies only map/tokens from viewers; full apply for players
-            if (isPlayerRole() || isMapPopoutMode()) applyVttStateMessage(msg);
-            else if (msg.map && msg.map.tokens) applyTokenMessage(msg);
+            // Everyone applies combat+map state (player→DM HP/slots and DM→player)
+            applyVttStateMessage(msg);
+            if (msg.map && msg.map.tokens) {
+              try { applyTokenMessage(msg); } catch (e) {}
+            }
           }
         }
         const rawT = localStorage.getItem('cybervlachos_vtt_tokens');
