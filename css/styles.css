@@ -3416,3 +3416,46 @@ html.vtt-player button[aria-label="Menu"] {
   opacity: 0 !important;
   clip: rect(0,0,0,0) !important;
 }
+
+#player-landing, #player-landing * { pointer-events: auto !important; }
+#player-room-join-btn {
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 100000;
+}
+html.vtt-landing #player-landing { z-index: 100000; }
+
+/* Player personal combat panel */
+body.vtt-player .player-combat-panel,
+html.vtt-player .player-combat-panel,
+body.map-popout .player-combat-panel,
+html.map-popout .player-combat-panel {
+  display: flex !important;
+  flex-direction: column;
+  min-width: 16rem;
+  max-width: 20rem;
+  max-height: calc(100dvh - 1rem);
+  overflow: auto;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  background: #16120e;
+  border: 1px solid #c4a35a44;
+}
+body.vtt-player .map-layout,
+html.map-popout .map-layout {
+  display: flex !important;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.player-combat-body .pc-name { font-size: 1.1rem; color: #f0e6d2; font-weight: 600; }
+.player-combat-body .pc-stats { color: #c4a35a; font-size: 0.9rem; margin: 0.25rem 0 0.5rem; }
+.player-combat-body .pc-hp-row { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; margin: 0.35rem 0; }
+.player-combat-body .pc-hp-row strong { color: #e8dcc8; min-width: 5rem; }
+.player-combat-body .pc-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.5rem; }
+.player-combat-body .pc-claim-list { display: flex; flex-direction: column; gap: 0.35rem; }
+.player-combat-body .pc-claim-list button { text-align: left; }
+.player-combat-body .pc-res { font-size: 0.85rem; color: #c4a35a; margin: 0.2rem 0; }
+.player-combat-body .pc-turn { font-size: 0.8rem; color: #aaa; margin-top: 0.4rem; }
+#player-combat-panel .btn-tiny { padding: 0.25rem 0.45rem; font-size: 0.8rem; }

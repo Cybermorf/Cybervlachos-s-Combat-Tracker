@@ -3416,3 +3416,12 @@ html.vtt-player button[aria-label="Menu"] {
   opacity: 0 !important;
   clip: rect(0,0,0,0) !important;
 }
+
+#player-landing, #player-landing * { pointer-events: auto !important; }
+#player-room-join-btn {
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 100000;
+}
+html.vtt-landing #player-landing { z-index: 100000; }

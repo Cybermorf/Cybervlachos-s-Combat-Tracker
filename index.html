@@ -51,11 +51,51 @@
       <h1>Join Battle Map</h1>
       <p class="muted">Enter the room code from your DM to open the shared map.</p>
       <label for="player-room-input">Room code</label>
-      <input id="player-room-input" type="text" maxlength="8" placeholder="e.g. JGLE3E" autocomplete="off" style="text-transform:uppercase;letter-spacing:0.12em;font-size:1.25rem;text-align:center">
-      <button type="button" class="btn primary" id="player-room-join-btn">Enter map</button>
+      <input id="player-room-input" type="text" maxlength="12" placeholder="e.g. JGLE3E" autocomplete="off"
+        style="text-transform:uppercase;letter-spacing:0.12em;font-size:1.25rem;text-align:center"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();window.__joinBattleMap&&window.__joinBattleMap();}">
+      <button type="button" class="btn primary" id="player-room-join-btn"
+        onclick="window.__joinBattleMap&&window.__joinBattleMap(); return false;">Enter map</button>
       <p class="muted small" id="player-landing-err"></p>
     </div>
   </div>
+  <script>
+  (function(){
+    window.__joinBattleMap = function(){
+      try {
+        var inp = document.getElementById('player-room-input');
+        var err = document.getElementById('player-landing-err');
+        var code = String(inp && inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim();
+        if (!code || code.length < 3) {
+          if (err) err.textContent = 'Enter the room code from your DM (at least 3 characters).';
+          if (inp) inp.focus();
+          return;
+        }
+        if (err) err.textContent = 'Opening map…';
+        var url = new URL(window.location.href);
+        url.searchParams.set('role', 'player');
+        url.searchParams.set('room', code);
+        url.searchParams.set('mapPopout', '1');
+        url.searchParams.delete('join');
+        window.location.replace(url.toString());
+      } catch (e) {
+        var err2 = document.getElementById('player-landing-err');
+        if (err2) err2.textContent = 'Could not open map: ' + (e && e.message ? e.message : e);
+        console.error(e);
+      }
+    };
+    // Show landing immediately when appropriate
+    try {
+      var q = new URLSearchParams(location.search);
+      var room = (q.get('room') || '').trim();
+      if ((q.get('join') === '1' || q.get('role') === 'player') && !room) {
+        document.documentElement.classList.add('vtt-landing');
+        var pl = document.getElementById('player-landing');
+        if (pl) pl.classList.remove('hidden');
+      }
+    } catch (e) {}
+  })();
+  </script>
 
   <div id="app">
     <!-- Header -->
@@ -255,6 +295,12 @@
             </div>
             <div class="map-roster-list" id="map-roster-list">
               <p class="muted small">Add combatants in Combat, then place them here.</p>
+            </div>
+          </aside>
+          <aside class="player-combat-panel card" id="player-combat-panel" style="display:none">
+            <div class="map-roster-head"><strong>Your character</strong></div>
+            <div id="player-combat-body" class="player-combat-body">
+              <p class="muted small">Claim a character to open your combat panel.</p>
             </div>
           </aside>
         </div>

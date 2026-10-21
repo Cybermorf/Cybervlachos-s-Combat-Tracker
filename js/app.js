@@ -9745,6 +9745,7 @@ function escapeHtml(str) {
       '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
       '.view-desc', '.map-toolbar', '#view-map .view-header'
     ];
+    // Keep #player-combat-panel and #map-roster
     strip.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
         try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
@@ -10240,6 +10241,7 @@ function escapeHtml(str) {
       }
       try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
       try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+      try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
       if (typeof renderCombat === 'function' && document.getElementById('view-combat')?.classList.contains('active')) {
         try { renderCombat(); } catch (e) {}
       }
@@ -10332,6 +10334,7 @@ function escapeHtml(str) {
       ch.onmessage = (ev) => {
         try {
           if (ev.data && ev.data.type === 'vtt-tokens') applyTokenMessage(ev.data);
+          else if (ev.data && ev.data.type === 'vtt-player-action') applyPlayerActionMessage(ev.data);
           else applyVttStateMessage(ev.data);
         } catch (e) {}
       };
@@ -10389,26 +10392,273 @@ function escapeHtml(str) {
     document.documentElement.classList.add('vtt-landing');
     const el = document.getElementById('player-landing');
     if (el) el.classList.remove('hidden');
-    const go = () => {
-      const inp = document.getElementById('player-room-input');
-      const err = document.getElementById('player-landing-err');
-      let code = (inp && inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
-      if (code.length < 4) {
-        if (err) err.textContent = 'Enter the full room code from your DM.';
-        return;
-      }
-      const url = new URL(location.href);
-      url.searchParams.set('role', 'player');
-      url.searchParams.set('room', code);
-      url.searchParams.set('mapPopout', '1');
-      url.searchParams.delete('join');
-      location.replace(url.toString());
-    };
-    document.getElementById('player-room-join-btn')?.addEventListener('click', go);
+    // Prefer global __joinBattleMap (defined next to the form) so the button always works
+    const go = () => { if (typeof window.__joinBattleMap === 'function') window.__joinBattleMap(); };
+    document.getElementById('player-room-join-btn')?.addEventListener('click', (e) => { e.preventDefault(); go(); });
     document.getElementById('player-room-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') go();
+      if (e.key === 'Enter') { e.preventDefault(); go(); }
     });
   }
+
+  
+  // ─── Player claim + personal combat panel ────────────────────────────────
+  function claimStorageKey() {
+    const room = (getVttRoomCode() || 'default').toUpperCase();
+    return 'cybervlachos_claim_' + room;
+  }
+  function getClaimedId() {
+    try { return sessionStorage.getItem(claimStorageKey()) || localStorage.getItem(claimStorageKey()) || ''; } catch (e) { return ''; }
+  }
+  function setClaimedId(id) {
+    try {
+      sessionStorage.setItem(claimStorageKey(), String(id || ''));
+      localStorage.setItem(claimStorageKey(), String(id || ''));
+    } catch (e) {}
+  }
+  function getClaimedCombatant() {
+    const id = getClaimedId();
+    if (!id) return null;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    return list.find(cb => String(cb.id) === String(id) || String(cb.name) === String(id)) || null;
+  }
+  function broadcastPlayerAction(action) {
+    try {
+      const payload = {
+        type: 'vtt-player-action',
+        room: getVttRoomCode() || '',
+        at: Date.now(),
+        claimedId: getClaimedId(),
+        action: action || {}
+      };
+      localStorage.setItem('cybervlachos_vtt_player_action', JSON.stringify(payload));
+      const ch = getVttChannel();
+      if (ch) try { ch.postMessage(payload); } catch (e) {}
+      // Also refresh full state token/HP snapshot for other clients
+      try {
+        if (!isPlayerRole()) broadcastVttState('player-action');
+        else {
+          // player: push light HP update via token channel style
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          if (combat) {
+            const lite = {
+              type: 'vtt-state',
+              room: getVttRoomCode() || '',
+              reason: 'player-hp',
+              at: Date.now(),
+              combat: {
+                round: combat.round,
+                current: combat.current,
+                combatants: (combat.combatants || []).map(cb => ({
+                  id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+                  init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp
+                }))
+              },
+              map: c.combatMap ? {
+                tokens: c.combatMap.tokens || {},
+                fogEnabled: c.combatMap.fogEnabled,
+                fogRevealed: c.combatMap.fogRevealed || {}
+              } : null
+            };
+            localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(lite));
+            if (ch) try { ch.postMessage(lite); } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    } catch (e) { console.warn('broadcastPlayerAction', e); }
+  }
+  function applyPlayerActionMessage(msg) {
+    if (!msg || msg.type !== 'vtt-player-action') return;
+    const room = getVttRoomCode();
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    const act = msg.action || {};
+    const c = getActive();
+    if (!c) return;
+    const combat = getCombat(c);
+    const target = (combat.combatants || []).find(cb =>
+      String(cb.id) === String(act.targetId) || String(cb.name) === String(act.targetId)
+    );
+    if (!target) return;
+    if (act.kind === 'heal') {
+      const amt = Math.max(0, Number(act.amount) || 0);
+      target.hp = Math.min(Number(target.hpMax) || amt, (Number(target.hp) || 0) + amt);
+    } else if (act.kind === 'damage') {
+      const amt = Math.max(0, Number(act.amount) || 0);
+      // temp HP first
+      let left = amt;
+      const th = Number(target.tempHp) || 0;
+      if (th > 0) {
+        const use = Math.min(th, left);
+        target.tempHp = th - use;
+        left -= use;
+      }
+      target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+    } else if (act.kind === 'setHp') {
+      target.hp = Math.max(0, Math.min(Number(target.hpMax) || 0, Number(act.amount) || 0));
+    } else if (act.kind === 'tempHp') {
+      target.tempHp = Math.max(0, Number(act.amount) || 0);
+    } else if (act.kind === 'markAction') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.actionUsed = !!act.value;
+    } else if (act.kind === 'markBonus') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.bonusUsed = !!act.value;
+    } else if (act.kind === 'markReaction') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.reactionUsed = !!act.value;
+    }
+    try { if (!isPlayerRole()) save(); } catch (e) {}
+    try { renderBattleMap(); renderMapRoster(); renderPlayerCombatPanel(); } catch (e) {}
+    try { if (!isPlayerRole() && typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+  }
+  function ensurePlayerCombatPanel() {
+    let panel = document.getElementById('player-combat-panel');
+    if (!panel) {
+      const layout = document.querySelector('.map-layout');
+      if (!layout) return null;
+      panel = document.createElement('aside');
+      panel.id = 'player-combat-panel';
+      panel.className = 'player-combat-panel card';
+      panel.innerHTML = '<div class="map-roster-head"><strong>Your character</strong></div><div id="player-combat-body" class="player-combat-body"></div>';
+      layout.appendChild(panel);
+    }
+    return panel;
+  }
+  function renderPlayerCombatPanel() {
+    if (!isPlayerRole() && !isMapPopoutMode()) {
+      const p = document.getElementById('player-combat-panel');
+      if (p) p.style.display = 'none';
+      return;
+    }
+    // Only for true player role (or popout with player role)
+    if (!isPlayerRole()) {
+      const p = document.getElementById('player-combat-panel');
+      if (p) p.style.display = 'none';
+      return;
+    }
+    const panel = ensurePlayerCombatPanel();
+    if (!panel) return;
+    panel.style.display = 'flex';
+    const body = document.getElementById('player-combat-body');
+    if (!body) return;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    // Claim only PCs / allies by default
+    const claimable = list.filter(cb => {
+      const side = String(cb.side || '').toLowerCase();
+      return side !== 'enemy' && side !== 'villain' && side !== 'enemies';
+    });
+    let me = getClaimedCombatant();
+    if (me && !list.some(cb => String(cb.id) === String(me.id))) me = null;
+
+    if (!me) {
+      if (!claimable.length) {
+        body.innerHTML = '<p class="muted small">No party members in combat yet. Ask the DM to add your character.</p>';
+        return;
+      }
+      body.innerHTML = '<p class="muted small">Choose your character:</p><div class="pc-claim-list">' +
+        claimable.map(cb => {
+          const hp = Number(cb.hp) || 0, hpMax = Number(cb.hpMax) || 0;
+          return `<button type="button" class="btn secondary" data-claim-id="${String(cb.id).replace(/"/g,'')}">${(cb.name || 'Unknown').replace(/</g,'')} · ${hp}/${hpMax} HP</button>`;
+        }).join('') +
+        '</div>';
+      body.querySelectorAll('[data-claim-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          setClaimedId(btn.getAttribute('data-claim-id'));
+          renderPlayerCombatPanel();
+          try { renderMapRoster(); } catch (e) {}
+        });
+      });
+      return;
+    }
+
+    const hp = Number(me.hp) || 0;
+    const hpMax = Math.max(1, Number(me.hpMax) || 1);
+    const temp = Number(me.tempHp) || 0;
+    const ac = me.ac != null ? me.ac : '—';
+    const init = me.init != null ? me.init : (me.initiative != null ? me.initiative : '—');
+    const ts = me.turnState || {};
+    body.innerHTML = `
+      <div class="pc-name">${(me.name || 'Character').replace(/</g,'')}</div>
+      <div class="pc-stats">AC ${ac} · Init ${init}${temp ? ' · Temp ' + temp : ''}</div>
+      <div class="pc-hp-row">
+        <strong>HP ${hp} / ${hpMax}</strong>
+      </div>
+      <div class="pc-actions">
+        <button type="button" class="btn secondary btn-tiny" data-pc="dmg1">−1</button>
+        <button type="button" class="btn secondary btn-tiny" data-pc="dmg5">−5</button>
+        <button type="button" class="btn primary btn-tiny" data-pc="heal1">+1 Heal</button>
+        <button type="button" class="btn primary btn-tiny" data-pc="heal5">+5 Heal</button>
+        <button type="button" class="btn secondary btn-tiny" data-pc="healCustom">Heal…</button>
+        <button type="button" class="btn secondary btn-tiny" data-pc="dmgCustom">Damage…</button>
+      </div>
+      <div class="pc-turn">
+        Action: <strong>${ts.actionUsed ? 'USED' : 'open'}</strong> ·
+        Bonus: <strong>${ts.bonusUsed ? 'USED' : 'open'}</strong> ·
+        Reaction: <strong>${ts.reactionUsed ? 'USED' : 'open'}</strong>
+      </div>
+      <div class="pc-actions">
+        <button type="button" class="btn secondary btn-tiny" data-pc="toggleAction">Toggle Action</button>
+        <button type="button" class="btn secondary btn-tiny" data-pc="toggleBonus">Toggle Bonus</button>
+        <button type="button" class="btn secondary btn-tiny" data-pc="toggleReaction">Toggle Reaction</button>
+      </div>
+      <div class="pc-actions" style="margin-top:0.6rem">
+        <button type="button" class="btn ghost btn-tiny" data-pc="unclaim">Switch character</button>
+      </div>
+    `;
+    const applyLocal = (kind, amount, extra) => {
+      const act = Object.assign({ kind, targetId: me.id, amount }, extra || {});
+      // Apply locally first for snappy UI
+      applyPlayerActionMessage({ type: 'vtt-player-action', room: getVttRoomCode(), action: act });
+      broadcastPlayerAction(act);
+      // Persist into shared storage if possible
+      try {
+        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const data = JSON.parse(raw);
+          const camps = data.campaigns || [];
+          const camp = camps.find(x => x.id === data.activeCampaignId) || camps[0];
+          if (camp && camp.combat && Array.isArray(camp.combat.combatants)) {
+            const tcb = camp.combat.combatants.find(x => String(x.id) === String(me.id));
+            if (tcb) {
+              tcb.hp = me.hp;
+              tcb.tempHp = me.tempHp;
+              tcb.turnState = me.turnState;
+              localStorage.setItem(key, JSON.stringify(data));
+            }
+          }
+        }
+      } catch (e) {}
+      renderPlayerCombatPanel();
+      try { renderBattleMap(); renderMapRoster(); } catch (e) {}
+    };
+    body.querySelector('[data-pc="heal1"]')?.addEventListener('click', () => applyLocal('heal', 1));
+    body.querySelector('[data-pc="heal5"]')?.addEventListener('click', () => applyLocal('heal', 5));
+    body.querySelector('[data-pc="dmg1"]')?.addEventListener('click', () => applyLocal('damage', 1));
+    body.querySelector('[data-pc="dmg5"]')?.addEventListener('click', () => applyLocal('damage', 5));
+    body.querySelector('[data-pc="healCustom"]')?.addEventListener('click', () => {
+      const n = prompt('Heal amount:', '10');
+      if (n == null) return;
+      applyLocal('heal', parseInt(n, 10) || 0);
+    });
+    body.querySelector('[data-pc="dmgCustom"]')?.addEventListener('click', () => {
+      const n = prompt('Damage amount:', '5');
+      if (n == null) return;
+      applyLocal('damage', parseInt(n, 10) || 0);
+    });
+    body.querySelector('[data-pc="toggleAction"]')?.addEventListener('click', () => applyLocal('markAction', 0, { value: !ts.actionUsed }));
+    body.querySelector('[data-pc="toggleBonus"]')?.addEventListener('click', () => applyLocal('markBonus', 0, { value: !ts.bonusUsed }));
+    body.querySelector('[data-pc="toggleReaction"]')?.addEventListener('click', () => applyLocal('markReaction', 0, { value: !ts.reactionUsed }));
+    body.querySelector('[data-pc="unclaim"]')?.addEventListener('click', () => {
+      setClaimedId('');
+      renderPlayerCombatPanel();
+    });
+  }
+
 
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
@@ -10451,6 +10701,7 @@ function escapeHtml(str) {
     try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) {}
     try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
     try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+    try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
 
     // Re-apply after short delay (setView/render may restore combat)
     setTimeout(() => {
@@ -10468,6 +10719,7 @@ function escapeHtml(str) {
     setTimeout(() => {
       document.querySelectorAll('#view-combat').forEach(el => el.style.setProperty('display', 'none', 'important'));
       try { renderBattleMap(); } catch (e) {}
+      try { renderPlayerCombatPanel(); } catch (e) {}
     }, 500);
   }
 

@@ -10389,24 +10389,11 @@ function escapeHtml(str) {
     document.documentElement.classList.add('vtt-landing');
     const el = document.getElementById('player-landing');
     if (el) el.classList.remove('hidden');
-    const go = () => {
-      const inp = document.getElementById('player-room-input');
-      const err = document.getElementById('player-landing-err');
-      let code = (inp && inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
-      if (code.length < 4) {
-        if (err) err.textContent = 'Enter the full room code from your DM.';
-        return;
-      }
-      const url = new URL(location.href);
-      url.searchParams.set('role', 'player');
-      url.searchParams.set('room', code);
-      url.searchParams.set('mapPopout', '1');
-      url.searchParams.delete('join');
-      location.replace(url.toString());
-    };
-    document.getElementById('player-room-join-btn')?.addEventListener('click', go);
+    // Prefer global __joinBattleMap (defined next to the form) so the button always works
+    const go = () => { if (typeof window.__joinBattleMap === 'function') window.__joinBattleMap(); };
+    document.getElementById('player-room-join-btn')?.addEventListener('click', (e) => { e.preventDefault(); go(); });
     document.getElementById('player-room-input')?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') go();
+      if (e.key === 'Enter') { e.preventDefault(); go(); }
     });
   }
 
