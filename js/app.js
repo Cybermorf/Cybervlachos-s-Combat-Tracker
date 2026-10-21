@@ -6794,49 +6794,65 @@ function rollDieExpr(expr) {
   
   function playerPersistAndSyncCombat() {
     const c = getActive();
-    if (!c) return;
+    if (!c) {
+      console.warn('playerPersist: no active workspace');
+      return;
+    }
     const combat = getCombat(c);
-    // Merge combatant HP/resources into shared localStorage workspace
+    const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '';
+    // 1) Merge into shared campaign storage
     try {
       const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const data = JSON.parse(raw);
-        const camps = data.campaigns || [];
-        const camp = camps.find(x => x.id === data.activeCampaignId) || camps[0];
-        if (camp) {
-          if (!camp.combat) camp.combat = combat;
-          else {
-            // merge by id
-            const remoteList = camp.combat.combatants || [];
-            (combat.combatants || []).forEach(local => {
-              const r = remoteList.find(x => String(x.id) === String(local.id) || x.name === local.name);
-              if (r) {
-                r.hp = local.hp;
-                r.hpMax = local.hpMax;
-                r.tempHp = local.tempHp;
-                r.conditions = local.conditions;
-                r.turnState = local.turnState;
-                r.attacksUsed = local.attacksUsed;
-                r.combatSpellSlots = local.combatSpellSlots;
-                r.combatResources = local.combatResources;
-                r.concentrating = local.concentrating;
-                r.spellSlots = local.spellSlots;
-              }
-            });
-            camp.combat.combatants = remoteList.length ? remoteList : combat.combatants;
-            if (combat.round != null) camp.combat.round = combat.round;
-            if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
-          }
-          localStorage.setItem(key, JSON.stringify(data));
-        }
+      let data;
+      try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { data = null; }
+      if (!data || !data.campaigns) {
+        data = { campaigns: [c], activeCampaignId: c.id };
       }
-    } catch (e) { console.warn(e); }
-    // Broadcast HP/resources snapshot for DM + other clients
+      const camps = data.campaigns || [];
+      let camp = camps.find(x => x.id === data.activeCampaignId) || camps.find(x => x.id === c.id) || camps[0];
+      if (!camp) {
+        camp = c;
+        camps.push(camp);
+        data.campaigns = camps;
+        data.activeCampaignId = c.id;
+      }
+      if (!camp.combat) camp.combat = { round: 1, turnIndex: 0, combatants: [] };
+      const remoteList = camp.combat.combatants || [];
+      (combat.combatants || []).forEach(local => {
+        let r = remoteList.find(x => String(x.id) === String(local.id) || x.name === local.name);
+        if (!r) {
+          remoteList.push(JSON.parse(JSON.stringify(local)));
+          return;
+        }
+        r.hp = local.hp;
+        r.hpMax = local.hpMax;
+        r.tempHp = local.tempHp;
+        r.conditions = local.conditions;
+        r.turnState = local.turnState;
+        r.turnPhase = local.turnPhase;
+        r.actionUsed = local.actionUsed;
+        r.bonusUsed = local.bonusUsed;
+        r.reactionUsed = local.reactionUsed;
+        r.moveUsed = local.moveUsed;
+        r.attacksUsed = local.attacksUsed;
+        r.combatSpellSlots = local.combatSpellSlots;
+        r.combatResources = local.combatResources;
+        r.concentrating = local.concentrating;
+        r.spellSlots = local.spellSlots;
+        r.deathSaves = local.deathSaves;
+      });
+      camp.combat.combatants = remoteList;
+      if (combat.round != null) camp.combat.round = combat.round;
+      if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
+      data.activeCampaignId = camp.id || data.activeCampaignId;
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) { console.warn('playerPersist storage', e); }
+
+    // 2) Broadcast snapshot (multiple keys so DM always sees it)
     try {
-      const payload = {
+      const snapshot = {
         type: 'vtt-state',
-        room: getVttRoomCode() || '',
+        room: room,
         reason: 'player-combat',
         at: Date.now(),
         combat: {
@@ -6847,26 +6863,34 @@ function rollDieExpr(expr) {
             id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
             init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
             tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
-            turnState: cb.turnState, attacksUsed: cb.attacksUsed,
+            turnState: cb.turnState, turnPhase: cb.turnPhase,
+            actionUsed: cb.actionUsed, bonusUsed: cb.bonusUsed, reactionUsed: cb.reactionUsed,
+            moveUsed: cb.moveUsed, attacksUsed: cb.attacksUsed,
             combatSpellSlots: cb.combatSpellSlots, combatResources: cb.combatResources,
-            spellSlots: cb.spellSlots
+            spellSlots: cb.spellSlots, deathSaves: cb.deathSaves
           }))
         },
         map: c.combatMap ? {
           tokens: c.combatMap.tokens || {},
-          fogEnabled: c.combatMap.fogEnabled,
-          fogRevealed: c.combatMap.fogRevealed || {}
+          fogEnabled: !!c.combatMap.fogEnabled,
+          fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {}),
+          gridSize: c.combatMap.gridSize,
+          gridOffsetX: c.combatMap.gridOffsetX,
+          gridOffsetY: c.combatMap.gridOffsetY
         } : null
       };
-      localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(payload));
-      const ch = getVttChannel();
-      if (ch) try { ch.postMessage(payload); } catch (e) {}
-    } catch (e) {}
+      localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(snapshot));
+      localStorage.setItem('cybervlachos_vtt_player_combat', JSON.stringify(snapshot));
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) try { ch.postMessage(snapshot); } catch (e) {}
+    } catch (e) { console.warn('playerPersist broadcast', e); }
+
     try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
     try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
     try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
   }
 
+  
   function isEnemySide(cb) {
     const side = String(cb && cb.side || '').toLowerCase();
     return side === 'enemy' || side === 'villain' || side === 'enemies';
@@ -6877,12 +6901,23 @@ function rollDieExpr(expr) {
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     if (!isEnemySide(target)) return true; // allies always listed
     const map = getCombatMap();
-    if (!map || !map.fogEnabled) {
-      // fog off: still hide precise enemy HP via label, but can list if on map
-      return !!(map && map.tokens && map.tokens[String(target.id)]);
+    if (!map) return false;
+    // Resolve token by id or name
+    const tokens = map.tokens || {};
+    let pos = tokens[String(target.id)];
+    if (!pos) {
+      const key = Object.keys(tokens).find(k => {
+        try {
+          const c = getActive();
+          const list = (c && getCombat(c).combatants) || [];
+          const cb = list.find(x => String(x.id) === String(k));
+          return cb && cb.name === target.name;
+        } catch (e) { return false; }
+      });
+      if (key) pos = tokens[key];
     }
-    const pos = map.tokens && map.tokens[String(target.id)];
-    if (!pos) return false;
+    if (!pos) return false; // not on map → hidden from players
+    if (!map.fogEnabled) return true; // fog off: visible if placed
     try {
       ensureMapFog(map);
       const cell = worldToFogCell(map, pos.x, pos.y);
@@ -10369,10 +10404,16 @@ function escapeHtml(str) {
               local.concentrating = remote.concentrating;
               local.dead = remote.dead;
               if (remote.turnState) local.turnState = remote.turnState;
+              if (remote.turnPhase != null) local.turnPhase = remote.turnPhase;
+              if (remote.actionUsed != null) local.actionUsed = remote.actionUsed;
+              if (remote.bonusUsed != null) local.bonusUsed = remote.bonusUsed;
+              if (remote.reactionUsed != null) local.reactionUsed = remote.reactionUsed;
+              if (remote.moveUsed != null) local.moveUsed = remote.moveUsed;
               if (remote.attacksUsed != null) local.attacksUsed = remote.attacksUsed;
               if (remote.combatSpellSlots) local.combatSpellSlots = remote.combatSpellSlots;
               if (remote.combatResources) local.combatResources = remote.combatResources;
               if (remote.spellSlots) local.spellSlots = remote.spellSlots;
+              if (remote.deathSaves) local.deathSaves = remote.deathSaves;
             }
           });
         }
@@ -10498,8 +10539,10 @@ function escapeHtml(str) {
       }
     });
     window.addEventListener('storage', (e) => {
-      if (e.key !== 'cybervlachos_vtt_sync' || !e.newValue) return;
-      try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
+      if (!e.newValue) return;
+      if (e.key === 'cybervlachos_vtt_sync' || e.key === 'cybervlachos_vtt_player_combat') {
+        try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
+      }
     });
     // Player/popout: poll lightly as fallback
     // All viewer windows poll; DM also can receive nothing
@@ -10753,6 +10796,13 @@ function escapeHtml(str) {
       if (idx >= 0) combat.selectedIndex = idx;
     } catch (e) {}
 
+    // Auto-activate turn for claimed PC so Action/Cast/Roll are not locked behind "Start turn"
+    try {
+      if (!me.turnPhase || me.turnPhase === 'ready' || me.turnPhase === 'pending') {
+        me.turnPhase = 'active';
+        if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(me, null);
+      }
+    } catch (e) {}
     // Full combat detail + attack/spell roller (same as DM panel)
     try {
       if (typeof showCombatDetail === 'function') {
