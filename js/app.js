@@ -894,10 +894,10 @@
         return;
       }
     } catch (e) {}
-    // Player VTT role is also view-only for full state
+    // Player: cannot rewrite full campaign, but MUST persist combat HP/resources and sync
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-        try { broadcastVttState('player-noop'); } catch (e) {}
+        try { playerPersistAndSyncCombat(); } catch (e) { console.warn('playerPersist', e); }
         return;
       }
     } catch (e) {}
@@ -6791,6 +6791,113 @@ function rollDieExpr(expr) {
   }
 
 
+  
+  function playerPersistAndSyncCombat() {
+    const c = getActive();
+    if (!c) return;
+    const combat = getCombat(c);
+    // Merge combatant HP/resources into shared localStorage workspace
+    try {
+      const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+      const raw = localStorage.getItem(key);
+      if (raw) {
+        const data = JSON.parse(raw);
+        const camps = data.campaigns || [];
+        const camp = camps.find(x => x.id === data.activeCampaignId) || camps[0];
+        if (camp) {
+          if (!camp.combat) camp.combat = combat;
+          else {
+            // merge by id
+            const remoteList = camp.combat.combatants || [];
+            (combat.combatants || []).forEach(local => {
+              const r = remoteList.find(x => String(x.id) === String(local.id) || x.name === local.name);
+              if (r) {
+                r.hp = local.hp;
+                r.hpMax = local.hpMax;
+                r.tempHp = local.tempHp;
+                r.conditions = local.conditions;
+                r.turnState = local.turnState;
+                r.attacksUsed = local.attacksUsed;
+                r.combatSpellSlots = local.combatSpellSlots;
+                r.combatResources = local.combatResources;
+                r.concentrating = local.concentrating;
+                r.spellSlots = local.spellSlots;
+              }
+            });
+            camp.combat.combatants = remoteList.length ? remoteList : combat.combatants;
+            if (combat.round != null) camp.combat.round = combat.round;
+            if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
+          }
+          localStorage.setItem(key, JSON.stringify(data));
+        }
+      }
+    } catch (e) { console.warn(e); }
+    // Broadcast HP/resources snapshot for DM + other clients
+    try {
+      const payload = {
+        type: 'vtt-state',
+        room: getVttRoomCode() || '',
+        reason: 'player-combat',
+        at: Date.now(),
+        combat: {
+          round: combat.round,
+          current: combat.current,
+          turnIndex: combat.turnIndex,
+          combatants: (combat.combatants || []).map(cb => ({
+            id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+            init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
+            tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
+            turnState: cb.turnState, attacksUsed: cb.attacksUsed,
+            combatSpellSlots: cb.combatSpellSlots, combatResources: cb.combatResources,
+            spellSlots: cb.spellSlots
+          }))
+        },
+        map: c.combatMap ? {
+          tokens: c.combatMap.tokens || {},
+          fogEnabled: c.combatMap.fogEnabled,
+          fogRevealed: c.combatMap.fogRevealed || {}
+        } : null
+      };
+      localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(payload));
+      const ch = getVttChannel();
+      if (ch) try { ch.postMessage(payload); } catch (e) {}
+    } catch (e) {}
+    try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+  }
+
+  function isEnemySide(cb) {
+    const side = String(cb && cb.side || '').toLowerCase();
+    return side === 'enemy' || side === 'villain' || side === 'enemies';
+  }
+  function playerCanSeeCombatant(viewer, target) {
+    if (!isPlayerRole()) return true;
+    if (!target) return false;
+    if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
+    if (!isEnemySide(target)) return true; // allies always listed
+    const map = getCombatMap();
+    if (!map || !map.fogEnabled) {
+      // fog off: still hide precise enemy HP via label, but can list if on map
+      return !!(map && map.tokens && map.tokens[String(target.id)]);
+    }
+    const pos = map.tokens && map.tokens[String(target.id)];
+    if (!pos) return false;
+    try {
+      ensureMapFog(map);
+      const cell = worldToFogCell(map, pos.x, pos.y);
+      return !!(map.fogRevealed && map.fogRevealed[cell]);
+    } catch (e) { return false; }
+  }
+  function formatCombatTargetLabel(x, viewer) {
+    if (isPlayerRole() && isEnemySide(x)) {
+      // No HP for enemies on player clients
+      return `${x.name || '?'} · enemy`;
+    }
+    return `${x.name || '?'} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
+  }
+
+
   function showCombatDetail(cb, panelOverride) {
     if (!cb) return;
     // Resolve linked character for Extra Attack / speed
@@ -7038,15 +7145,26 @@ function rollDieExpr(expr) {
         const c = getActive();
         combatants = (getCombat(c).combatants || []);
       } catch (e) {}
-      const opts = combatants.map((x, i) => {
-        const label = `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
-        return `<option value="${i}">${escapeHtml(label)}</option>`;
+      const opts = [];
+      combatants.forEach((x, idx) => {
+        if (typeof playerCanSeeCombatant === 'function' && !playerCanSeeCombatant(cb, x)) return;
+        const label = typeof formatCombatTargetLabel === 'function'
+          ? formatCombatTargetLabel(x, cb)
+          : `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
+        opts.push(`<option value="${idx}">${escapeHtml(label)}</option>`);
       });
-      sel.innerHTML = opts.join('') || '<option value="" disabled>No combatants</option>';
-      const selfIdx = combatants.findIndex(x => x === cb || x.id === cb.id || x.name === cb.name);
-      const enemy = combatants.findIndex((x, i) => i !== selfIdx && x.side !== (cb.side || ''));
-      if (enemy >= 0 && sel.options[enemy]) sel.options[enemy].selected = true;
-      else if (sel.options[0]) sel.options[0].selected = true;
+      sel.innerHTML = opts.join('') || '<option value="" disabled>No visible combatants</option>';
+      let picked = false;
+      for (let oi = 0; oi < sel.options.length; oi++) {
+        const idx = parseInt(sel.options[oi].value, 10);
+        const x = combatants[idx];
+        if (x && typeof isEnemySide === 'function' && isEnemySide(x) && String(x.id) !== String(cb.id)) {
+          sel.options[oi].selected = true;
+          picked = true;
+          break;
+        }
+      }
+      if (!picked && sel.options[0]) sel.options[0].selected = true;
     })();
     try { applyAoeTargetsToRoller(panel); } catch (e) {}
 
@@ -7206,7 +7324,7 @@ function rollDieExpr(expr) {
       cb.hp = Math.max(0, (cb.hp || 0) - left);
       appendLog(`Took ${amt} damage (HP now ${cb.hp})`);
       try { save(); } catch (e) {}
-      renderCombat();
+      try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
     panel.querySelector('#cd-heal')?.addEventListener('click', async () => {
       const amt = parseInt(prompt('Heal amount?', '5'), 10);
@@ -7214,7 +7332,7 @@ function rollDieExpr(expr) {
       cb.hp = Math.min(cb.hpMax || amt, (cb.hp || 0) + amt);
       appendLog(`Healed ${amt} (HP now ${cb.hp})`);
       try { save(); } catch (e) {}
-      renderCombat();
+      try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
     panel.querySelector('#cd-temp')?.addEventListener('click', async () => {
       const amt = parseInt(prompt('Temporary HP?', '5'), 10);
@@ -8032,13 +8150,16 @@ function rollDieExpr(expr) {
       if (!sel) return;
       let combatants = [];
       try { combatants = getCombat(getActive()).combatants || []; } catch (e) {}
-      const valid = profile ? filterTargetsByProfile(combatants, cb, profile) : combatants;
+      const visible = combatants.filter(x => typeof playerCanSeeCombatant !== 'function' || playerCanSeeCombatant(cb, x));
+      const valid = profile ? filterTargetsByProfile(visible, cb, profile) : visible;
       const validSet = new Set(valid.map(x => x.id || x.name));
-      sel.innerHTML = combatants.map((x, i) => {
+      sel.innerHTML = visible.map((x) => {
+        const i = combatants.indexOf(x);
         const ok = validSet.has(x.id || x.name);
-        const label = `${x.name} (${x.hp}/${x.hpMax}) · ${x.side || '?'}${ok ? '' : ' · invalid'}`;
+        const base = typeof formatCombatTargetLabel === 'function' ? formatCombatTargetLabel(x, cb) : `${x.name} (${x.hp}/${x.hpMax}) · ${x.side || '?'}`;
+        const label = base + (ok ? '' : ' · invalid');
         return `<option value="${i}" ${ok ? '' : 'disabled'}>${escapeHtml(label)}</option>`;
-      }).join('') || '<option disabled>No combatants</option>';
+      }).join('') || '<option disabled>No visible combatants</option>';
       // Auto-select all valid for aoe/sense, or single default
       [...sel.options].forEach(o => { o.selected = false; });
       if (profile && (profile.aoe || profile.targetType === 'any' || profile.effect === 'sense')) {
@@ -8560,6 +8681,13 @@ function rollDieExpr(expr) {
 
   function renderCombat() {
     ensureCombatWorkspace();
+    // Player client: keep map + personal panel, don't rebuild DM combat list
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+      try { renderPlayerCombatPanel(); } catch (e) {}
+      try { renderMapRoster(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      return;
+    }
     const c = getActive();
     if (!c) {
       console.warn('renderCombat: no active workspace');
@@ -10217,6 +10345,7 @@ function escapeHtml(str) {
             if (local) {
               local.hp = remote.hp;
               local.hpMax = remote.hpMax;
+              if (remote.tempHp != null) local.tempHp = remote.tempHp;
               if (remote.init != null) local.init = remote.init;
               if (remote.initiative != null) local.initiative = remote.initiative;
               if (remote.init != null && local.initiative == null) local.initiative = remote.init;
@@ -10224,6 +10353,11 @@ function escapeHtml(str) {
               local.hideHp = remote.hideHp;
               local.concentrating = remote.concentrating;
               local.dead = remote.dead;
+              if (remote.turnState) local.turnState = remote.turnState;
+              if (remote.attacksUsed != null) local.attacksUsed = remote.attacksUsed;
+              if (remote.combatSpellSlots) local.combatSpellSlots = remote.combatSpellSlots;
+              if (remote.combatResources) local.combatResources = remote.combatResources;
+              if (remote.spellSlots) local.spellSlots = remote.spellSlots;
             }
           });
         }
