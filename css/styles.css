@@ -3459,3 +3459,37 @@ html.map-popout .map-layout {
 .player-combat-body .pc-res { font-size: 0.85rem; color: #c4a35a; margin: 0.2rem 0; }
 .player-combat-body .pc-turn { font-size: 0.8rem; color: #aaa; margin-top: 0.4rem; }
 #player-combat-panel .btn-tiny { padding: 0.25rem 0.45rem; font-size: 0.8rem; }
+
+/* Full combat features on player panel */
+html.vtt-player .player-combat-panel,
+html.map-popout .player-combat-panel,
+body.vtt-player .player-combat-panel {
+  display: flex !important;
+  flex-direction: column;
+  min-width: min(28rem, 42vw);
+  max-width: min(36rem, 48vw);
+  max-height: calc(100dvh - 0.5rem);
+  overflow: auto;
+  z-index: 20;
+}
+html.vtt-player .player-combat-body,
+html.map-popout .player-combat-body {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+html.vtt-player .player-combat-body .combat-detail-grid,
+html.map-popout .player-combat-body .combat-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+html.vtt-player .map-layout {
+  display: flex !important;
+  flex-direction: row;
+  align-items: stretch;
+}
+html.vtt-player .map-canvas-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}

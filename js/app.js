@@ -6791,7 +6791,7 @@ function rollDieExpr(expr) {
   }
 
 
-  function showCombatDetail(cb) {
+  function showCombatDetail(cb, panelOverride) {
     if (!cb) return;
     // Resolve linked character for Extra Attack / speed
     let _ch = null;
@@ -6804,12 +6804,14 @@ function rollDieExpr(expr) {
     } catch (e) {}
     if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, _ch);
 
-    const panel = $('#combat-detail');
+    const panel = panelOverride || $('#combat-detail');
     if (!panel) return;
     if (!cb) {
       panel.innerHTML = '<div class="combat-detail-empty muted">Select a combatant to view details, traits, and actions.</div>';
       return;
     }
+    // Mark player panel for styling
+    if (panelOverride) panel.setAttribute('data-player-detail', '1');
     const best = lookupBestiary(cb.bestiaryName || cb.name);
     const partyChar = (function() {
       try {
@@ -7442,7 +7444,7 @@ function rollDieExpr(expr) {
       if (combat && sel != null && combat.combatants[sel]) {
         try {
           combat.selectedIndex = sel;
-          if (typeof showCombatDetail === 'function') showCombatDetail(combat.combatants[sel], sel);
+          if (typeof showCombatDetail === 'function') showCombatDetail(combat.combatants[sel], window.__combatDetailPanel);
         } catch (e) {}
       }
     }
@@ -10525,14 +10527,7 @@ function escapeHtml(str) {
       layout.appendChild(panel);
     }
     return panel;
-  }
-  function renderPlayerCombatPanel() {
-    if (!isPlayerRole() && !isMapPopoutMode()) {
-      const p = document.getElementById('player-combat-panel');
-      if (p) p.style.display = 'none';
-      return;
-    }
-    // Only for true player role (or popout with player role)
+  }  function renderPlayerCombatPanel() {
     if (!isPlayerRole()) {
       const p = document.getElementById('player-combat-panel');
       if (p) p.style.display = 'none';
@@ -10541,12 +10536,24 @@ function escapeHtml(str) {
     const panel = ensurePlayerCombatPanel();
     if (!panel) return;
     panel.style.display = 'flex';
-    const body = document.getElementById('player-combat-body');
-    if (!body) return;
+    let body = document.getElementById('player-combat-body');
+    if (!body) {
+      body = document.createElement('div');
+      body.id = 'player-combat-body';
+      body.className = 'player-combat-body';
+      panel.appendChild(body);
+    }
+    // Ensure header
+    let head = panel.querySelector('.map-roster-head');
+    if (!head) {
+      head = document.createElement('div');
+      head.className = 'map-roster-head';
+      panel.insertBefore(head, body);
+    }
+
     const c = getActive();
     const combat = c ? getCombat(c) : null;
     const list = (combat && combat.combatants) || [];
-    // Claim only PCs / allies by default
     const claimable = list.filter(cb => {
       const side = String(cb.side || '').toLowerCase();
       return side !== 'enemy' && side !== 'villain' && side !== 'enemies';
@@ -10555,110 +10562,56 @@ function escapeHtml(str) {
     if (me && !list.some(cb => String(cb.id) === String(me.id))) me = null;
 
     if (!me) {
+      head.innerHTML = '<strong>Your character</strong>';
       if (!claimable.length) {
         body.innerHTML = '<p class="muted small">No party members in combat yet. Ask the DM to add your character.</p>';
         return;
       }
-      body.innerHTML = '<p class="muted small">Choose your character:</p><div class="pc-claim-list">' +
+      body.innerHTML = '<p class="muted small">Choose your character to open the full combat panel:</p><div class="pc-claim-list">' +
         claimable.map(cb => {
           const hp = Number(cb.hp) || 0, hpMax = Number(cb.hpMax) || 0;
           return `<button type="button" class="btn secondary" data-claim-id="${String(cb.id).replace(/"/g,'')}">${(cb.name || 'Unknown').replace(/</g,'')} · ${hp}/${hpMax} HP</button>`;
-        }).join('') +
-        '</div>';
+        }).join('') + '</div>';
       body.querySelectorAll('[data-claim-id]').forEach(btn => {
         btn.addEventListener('click', () => {
           setClaimedId(btn.getAttribute('data-claim-id'));
+          // Select this combatant in combat state for roller targeting context
+          try {
+            const combat2 = getCombat(getActive());
+            const idx = (combat2.combatants || []).findIndex(x => String(x.id) === String(btn.getAttribute('data-claim-id')));
+            if (idx >= 0) combat2.selectedIndex = idx;
+          } catch (e) {}
           renderPlayerCombatPanel();
-          try { renderMapRoster(); } catch (e) {}
         });
       });
       return;
     }
 
-    const hp = Number(me.hp) || 0;
-    const hpMax = Math.max(1, Number(me.hpMax) || 1);
-    const temp = Number(me.tempHp) || 0;
-    const ac = me.ac != null ? me.ac : '—';
-    const init = me.init != null ? me.init : (me.initiative != null ? me.initiative : '—');
-    const ts = me.turnState || {};
-    body.innerHTML = `
-      <div class="pc-name">${(me.name || 'Character').replace(/</g,'')}</div>
-      <div class="pc-stats">AC ${ac} · Init ${init}${temp ? ' · Temp ' + temp : ''}</div>
-      <div class="pc-hp-row">
-        <strong>HP ${hp} / ${hpMax}</strong>
-      </div>
-      <div class="pc-actions">
-        <button type="button" class="btn secondary btn-tiny" data-pc="dmg1">−1</button>
-        <button type="button" class="btn secondary btn-tiny" data-pc="dmg5">−5</button>
-        <button type="button" class="btn primary btn-tiny" data-pc="heal1">+1 Heal</button>
-        <button type="button" class="btn primary btn-tiny" data-pc="heal5">+5 Heal</button>
-        <button type="button" class="btn secondary btn-tiny" data-pc="healCustom">Heal…</button>
-        <button type="button" class="btn secondary btn-tiny" data-pc="dmgCustom">Damage…</button>
-      </div>
-      <div class="pc-turn">
-        Action: <strong>${ts.actionUsed ? 'USED' : 'open'}</strong> ·
-        Bonus: <strong>${ts.bonusUsed ? 'USED' : 'open'}</strong> ·
-        Reaction: <strong>${ts.reactionUsed ? 'USED' : 'open'}</strong>
-      </div>
-      <div class="pc-actions">
-        <button type="button" class="btn secondary btn-tiny" data-pc="toggleAction">Toggle Action</button>
-        <button type="button" class="btn secondary btn-tiny" data-pc="toggleBonus">Toggle Bonus</button>
-        <button type="button" class="btn secondary btn-tiny" data-pc="toggleReaction">Toggle Reaction</button>
-      </div>
-      <div class="pc-actions" style="margin-top:0.6rem">
-        <button type="button" class="btn ghost btn-tiny" data-pc="unclaim">Switch character</button>
-      </div>
-    `;
-    const applyLocal = (kind, amount, extra) => {
-      const act = Object.assign({ kind, targetId: me.id, amount }, extra || {});
-      // Apply locally first for snappy UI
-      applyPlayerActionMessage({ type: 'vtt-player-action', room: getVttRoomCode(), action: act });
-      broadcastPlayerAction(act);
-      // Persist into shared storage if possible
-      try {
-        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
-        const raw = localStorage.getItem(key);
-        if (raw) {
-          const data = JSON.parse(raw);
-          const camps = data.campaigns || [];
-          const camp = camps.find(x => x.id === data.activeCampaignId) || camps[0];
-          if (camp && camp.combat && Array.isArray(camp.combat.combatants)) {
-            const tcb = camp.combat.combatants.find(x => String(x.id) === String(me.id));
-            if (tcb) {
-              tcb.hp = me.hp;
-              tcb.tempHp = me.tempHp;
-              tcb.turnState = me.turnState;
-              localStorage.setItem(key, JSON.stringify(data));
-            }
-          }
-        }
-      } catch (e) {}
-      renderPlayerCombatPanel();
-      try { renderBattleMap(); renderMapRoster(); } catch (e) {}
-    };
-    body.querySelector('[data-pc="heal1"]')?.addEventListener('click', () => applyLocal('heal', 1));
-    body.querySelector('[data-pc="heal5"]')?.addEventListener('click', () => applyLocal('heal', 5));
-    body.querySelector('[data-pc="dmg1"]')?.addEventListener('click', () => applyLocal('damage', 1));
-    body.querySelector('[data-pc="dmg5"]')?.addEventListener('click', () => applyLocal('damage', 5));
-    body.querySelector('[data-pc="healCustom"]')?.addEventListener('click', () => {
-      const n = prompt('Heal amount:', '10');
-      if (n == null) return;
-      applyLocal('heal', parseInt(n, 10) || 0);
-    });
-    body.querySelector('[data-pc="dmgCustom"]')?.addEventListener('click', () => {
-      const n = prompt('Damage amount:', '5');
-      if (n == null) return;
-      applyLocal('damage', parseInt(n, 10) || 0);
-    });
-    body.querySelector('[data-pc="toggleAction"]')?.addEventListener('click', () => applyLocal('markAction', 0, { value: !ts.actionUsed }));
-    body.querySelector('[data-pc="toggleBonus"]')?.addEventListener('click', () => applyLocal('markBonus', 0, { value: !ts.bonusUsed }));
-    body.querySelector('[data-pc="toggleReaction"]')?.addEventListener('click', () => applyLocal('markReaction', 0, { value: !ts.reactionUsed }));
-    body.querySelector('[data-pc="unclaim"]')?.addEventListener('click', () => {
+    head.innerHTML = `<strong>Your character</strong>
+      <button type="button" class="btn ghost btn-tiny" id="pc-switch-char" title="Claim a different character">Switch</button>`;
+    head.querySelector('#pc-switch-char')?.addEventListener('click', () => {
       setClaimedId('');
       renderPlayerCombatPanel();
     });
-  }
 
+    // Select claimed combatant so detail/roller context matches
+    try {
+      const idx = list.findIndex(x => String(x.id) === String(me.id));
+      if (idx >= 0) combat.selectedIndex = idx;
+    } catch (e) {}
+
+    // Full combat detail + attack/spell roller (same as DM panel)
+    try {
+      if (typeof showCombatDetail === 'function') {
+        showCombatDetail(me, body);
+      } else {
+        body.innerHTML = '<p class="muted">Combat detail unavailable.</p>';
+      }
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
+    }
+  }
 
   function applyPlayerShell() {
     if (!isPlayerRole()) return;
