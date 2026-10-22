@@ -12079,6 +12079,43 @@ function escapeHtml(str) {
   }
   window.__drawMapOverlays = drawMapOverlays;
 
+
+  function fitMapCanvasToWrap(canvas, srcW, srcH) {
+    if (!canvas || !srcW || !srcH) return 1;
+    const wrap = canvas.parentElement;
+    const roster = document.getElementById('map-roster');
+    const playerPanel = document.getElementById('player-combat-panel');
+    const pop = typeof isMapPopoutMode === 'function' && isMapPopoutMode();
+    let maxW, maxH;
+    if (wrap && wrap.clientWidth > 40 && wrap.clientHeight > 40) {
+      maxW = wrap.clientWidth - 8;
+      maxH = wrap.clientHeight - 8;
+    } else {
+      let side = 0;
+      if (roster && getComputedStyle(roster).display !== 'none') side += roster.offsetWidth || 260;
+      if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += playerPanel.offsetWidth || 320;
+      maxW = Math.max(320, window.innerWidth - side - (pop ? 24 : 100));
+      maxH = Math.max(240, window.innerHeight - (pop ? 16 : 120));
+    }
+    // Cap main tab a bit; popout can use full available area
+    if (!pop) {
+      maxW = Math.min(maxW, 1200);
+      maxH = Math.min(maxH, window.innerHeight - 120);
+    }
+    const scale = Math.min(maxW / srcW, maxH / srcH, 1);
+    const w = Math.max(1, Math.floor(srcW * scale));
+    const h = Math.max(1, Math.floor(srcH * scale));
+    canvas.width = w;
+    canvas.height = h;
+    // Lock CSS size to bitmap aspect — prevents stretch
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    canvas.style.maxWidth = '100%';
+    canvas.style.maxHeight = '100%';
+    canvas.style.objectFit = 'contain';
+    return scale;
+  }
+
   function renderBattleMap() {
     const canvas = document.getElementById('map-canvas');
     if (!canvas) return;
@@ -12125,11 +12162,8 @@ function escapeHtml(str) {
         }
         map.width = srcW;
         map.height = srcH;
-        const maxW = Math.min(1400, window.innerWidth - 100);
-        const scale = Math.min(1, maxW / srcW);
+        const scale = fitMapCanvasToWrap(canvas, srcW, srcH);
         map.scale = scale;
-        canvas.width = Math.floor(srcW * scale);
-        canvas.height = Math.floor(srcH * scale);
         const tick = () => {
           const m = getCombatMap();
           if (!m || m.mediaType !== 'video') return;
@@ -12163,11 +12197,8 @@ function escapeHtml(str) {
     img.onload = () => {
       map.width = img.width;
       map.height = img.height;
-      const maxW = Math.min(1200, window.innerWidth - 80);
-      const scale = Math.min(1, maxW / img.width);
+      const scale = fitMapCanvasToWrap(canvas, img.width, img.height);
       map.scale = scale;
-      canvas.width = Math.floor(img.width * scale);
-      canvas.height = Math.floor(img.height * scale);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);

@@ -3715,3 +3715,25 @@ body.map-popout #map-canvas {
   max-width: 100% !important;
   max-height: 100% !important;
 }
+
+
+/* Map canvas: never stretch — preserve aspect ratio */
+#map-canvas,
+body.map-popout #map-canvas,
+html.map-popout #map-canvas {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  display: block !important;
+}
+body.map-popout .map-canvas-wrap,
+html.map-popout .map-canvas-wrap {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+}
