@@ -10690,6 +10690,17 @@ function escapeHtml(str) {
     } catch (e) { return false; }
   }
 
+  /** Shared map / player clients: solid FoW + hide unrevealed tokens (player perspective). */
+  function usePlayerFogView() {
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return true;
+    } catch (e) {}
+    try {
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) return true;
+    } catch (e) {}
+    return false;
+  }
+
   function applyMapPopoutMode() {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
@@ -10767,8 +10778,19 @@ function escapeHtml(str) {
       try {
         initBattleMapUi();
         refreshMapTokenSelect();
+        try {
+          const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
+          if (map) ensureMapFog(map);
+        } catch (e) {}
         renderBattleMap();
         renderMapRoster();
+        // Re-draw after image decode so FoW overlays stick
+        setTimeout(function() {
+          try { renderBattleMap(); renderMapRoster(); } catch (e) {}
+        }, 200);
+        setTimeout(function() {
+          try { renderBattleMap(); } catch (e) {}
+        }, 800);
       } catch (err) { console.warn(err); }
       // Second pass strip (setView may re-show)
       strip.forEach(sel => {
@@ -10936,9 +10958,10 @@ function escapeHtml(str) {
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
       const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
-      // Players: hide enemies not revealed by FoW (or not on map when fog is on)
-      if (playerMode && isEnemy) {
-        if (typeof playerCanSeeCombatant === 'function') {
+      // Player / shared popout: hide enemies not revealed by FoW
+      const fogView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : playerMode;
+      if (fogView && isEnemy) {
+        if (typeof playerCanSeeCombatant === 'function' && playerMode) {
           const viewer = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
           if (!playerCanSeeCombatant(viewer, cb)) return '';
         } else if (map && map.fogEnabled) {
@@ -10946,11 +10969,13 @@ function escapeHtml(str) {
           if (!pos) return '';
           const cell = worldToFogCell(map, pos.x, pos.y);
           if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+        } else if (map && map.fogEnabled) {
+          return '';
         }
       }
       const hp = Number(cb.hp) || 0;
       const hpMax = Math.max(1, Number(cb.hpMax) || 1);
-      const hide = !!cb.hideHp || (playerMode && isEnemy);
+      const hide = !!cb.hideHp || ((playerMode || (typeof usePlayerFogView === 'function' && usePlayerFogView())) && isEnemy);
       const pct = hide ? 0 : Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
@@ -11086,9 +11111,9 @@ function escapeHtml(str) {
     if (g < 4) return;
     const gox = (Number(map.gridOffsetX) || 0) * scale;
     const goy = (Number(map.gridOffsetY) || 0) * scale;
-    const player = isPlayerRole();
-    // Player: solid black over unrevealed; DM: translucent
-    ctx.fillStyle = player ? 'rgba(0,0,0,0.94)' : 'rgba(0,0,0,0.72)';
+    const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
+    // Player / shared mapPopout: solid black; main DM tab: translucent so tokens remain readable
+    ctx.fillStyle = playerView ? 'rgba(0,0,0,0.94)' : 'rgba(0,0,0,0.55)';
     const cols = Math.ceil(canvas.width / g) + 2;
     const rows = Math.ceil(canvas.height / g) + 2;
     const startCol = Math.floor(-gox / g) - 1;
@@ -11330,20 +11355,23 @@ function escapeHtml(str) {
           ensureMapFog(map);
           if (id === 'map-fog-toggle') {
             map.fogEnabled = !map.fogEnabled;
-            toast(map.fogEnabled ? 'Fog ON — use Reveal on the Map tab' : 'Fog OFF');
+            toast(map.fogEnabled ? 'Fog ON — Reveal/Hide brush on map' : 'Fog OFF');
           } else if (id === 'map-fog-reset') {
             map.fogRevealed = {};
             map.fogEnabled = true;
             toast('Map fully fogged');
           } else if (id === 'map-fog-reveal') {
             window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
-            toast(window.__mapFogTool ? 'Reveal brush ON — go to Map, click/drag' : 'Reveal off');
+            if (window.__mapFogTool) map.fogEnabled = true;
+            toast(window.__mapFogTool ? 'Reveal brush ON — click/drag map' : 'Reveal off');
           } else if (id === 'map-fog-hide') {
             window.__mapFogTool = window.__mapFogTool === 'hide' ? null : 'hide';
-            toast(window.__mapFogTool ? 'Hide brush ON — go to Map, click/drag' : 'Hide off');
+            if (window.__mapFogTool) map.fogEnabled = true;
+            toast(window.__mapFogTool ? 'Hide brush ON — click/drag map' : 'Hide off');
           }
           try { save(); } catch (e) {}
           try { renderBattleMap(); } catch (e) {}
+          try { renderMapRoster(); } catch (e) {}
           try { broadcastVttState('fog'); } catch (e) {}
         }
       } catch (err) {
@@ -11887,10 +11915,11 @@ function escapeHtml(str) {
       const id = String(cb.id || idx);
       const pos = map.tokens[id];
       if (!pos) return;
-      // Players: hide tokens in unrevealed fog cells
-      if (playerMode && map.fogEnabled) {
+      // Player / shared popout: hide tokens in unrevealed fog cells
+      const fogView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : playerMode;
+      if (fogView && map.fogEnabled) {
         const cell = worldToFogCell(map, pos.x, pos.y);
-        if (!map.fogRevealed[cell]) return;
+        if (!map.fogRevealed || !map.fogRevealed[cell]) return;
       }
       const x = pos.x * scale, y = pos.y * scale;
       const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
@@ -12406,7 +12435,10 @@ function escapeHtml(str) {
           if (!map0) return;
           paintFog(map0, x, y, fogMode === 'reveal');
           window.__fogDrag = fogMode;
+          try { save(); } catch (e) {}
           try { renderBattleMap(); } catch (e) {}
+          try { renderMapRoster(); } catch (e) {}
+          try { broadcastVttState('fog-paint'); } catch (e) {}
           return;
         }
         if (tool === 'grid-offset') {
