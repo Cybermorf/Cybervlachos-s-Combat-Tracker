@@ -10766,6 +10766,31 @@ function escapeHtml(str) {
     try {
       document.querySelectorAll('#menu-toggle, button.menu-toggle, #sidebar-collapse-btn').forEach(el => el.remove());
     } catch (e) {}
+    // Full-bleed layout: drop sidebar grid column
+    try {
+      const appEl = document.getElementById('app');
+      if (appEl) {
+        appEl.style.setProperty('display', 'grid', 'important');
+        appEl.style.setProperty('grid-template-columns', '1fr', 'important');
+        appEl.style.setProperty('grid-template-rows', '1fr', 'important');
+        appEl.style.setProperty('width', '100%', 'important');
+        appEl.style.setProperty('height', '100dvh', 'important');
+        appEl.style.setProperty('margin', '0', 'important');
+        appEl.style.setProperty('padding', '0', 'important');
+      }
+      const mainEl = document.getElementById('main');
+      if (mainEl) {
+        mainEl.style.setProperty('grid-column', '1 / -1', 'important');
+        mainEl.style.setProperty('grid-row', '1 / -1', 'important');
+        mainEl.style.setProperty('margin', '0', 'important');
+        mainEl.style.setProperty('padding', '0', 'important');
+        mainEl.style.setProperty('width', '100%', 'important');
+        mainEl.style.setProperty('max-width', 'none', 'important');
+        mainEl.style.setProperty('height', '100dvh', 'important');
+        mainEl.style.setProperty('padding-left', '0', 'important');
+      }
+      document.body.classList.add('sidebar-collapsed', 'map-popout');
+    } catch (e) {}
     // Force Combatants roster visible on popouts
     try {
       const roster = document.getElementById('map-roster');
