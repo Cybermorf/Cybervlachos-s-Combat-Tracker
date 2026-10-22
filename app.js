@@ -10709,9 +10709,11 @@ function escapeHtml(str) {
     // Physically remove chrome so it cannot reappear or stay clickable
     // DM share popout: KEEP .map-toolbar so FoW tools work; player popout: strip toolbar
     const strip = [
-      '.app-header', 'header', '#menu-toggle', '#sidebar', '.sidebar',
+      '.app-header', 'header', '#menu-toggle', '.menu-toggle',
+      '#sidebar-collapse-btn', '.sidebar-collapse-btn',
+      '#sidebar', '.sidebar', 'aside',
       '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
-      '.view-desc', '#view-map .view-header'
+      '.view-desc', '#view-map .view-header', '#dice-toggle', '#dice-panel'
     ];
     if (playerPop) {
       strip.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush');
@@ -11793,18 +11795,25 @@ function escapeHtml(str) {
     document.title = 'Battle Map (Player)' + (getVttRoomCode() ? ' · ' + getVttRoomCode() : '');
 
     const hideSel = [
-      '#view-combat', '#view-tools', '#sidebar', '#menu-toggle',
-      '.app-header', 'header.app-header', '.view-desc',
+      '#view-combat', '#view-tools', '#sidebar', '#menu-toggle', '.menu-toggle',
+      '#sidebar-collapse-btn', '.sidebar-collapse-btn',
+      '.app-header', 'header.app-header', 'header', '.view-desc',
       '#vtt-create-room', '#vtt-join-player', '#vtt-room-code',
       '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush',
-      '#map-file-image', '#map-file-uvtt', '#map-import-image', '#map-import-uvtt'
+      '#map-file-image', '#map-file-uvtt', '#map-import-image', '#map-import-uvtt',
+      '#dice-toggle', '#dice-panel', '.map-toolbar', 'nav', '.app-nav'
     ];
     hideSel.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
         try {
-          el.style.setProperty('display', 'none', 'important');
-          el.setAttribute('data-player-hidden', '1');
-        } catch (e) {}
+          el.remove();
+        } catch (e) {
+          try {
+            el.style.setProperty('display', 'none', 'important');
+            el.style.pointerEvents = 'none';
+            el.setAttribute('data-player-hidden', '1');
+          } catch (e2) {}
+        }
       });
     });
 

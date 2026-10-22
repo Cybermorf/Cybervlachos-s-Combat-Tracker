@@ -3530,3 +3530,55 @@ body.map-popout .map-toolbar [data-popout-hidden="1"] {
 body.map-popout.vtt-player .map-toolbar {
   display: none !important;
 }
+
+
+/* ═══ Shared map / player popout: map + combatants (+ your character) only ═══ */
+html.map-popout #menu-toggle,
+html.map-popout .menu-toggle,
+html.map-popout #sidebar-collapse-btn,
+html.map-popout .sidebar-collapse-btn,
+html.map-popout #sidebar,
+html.map-popout .sidebar,
+html.map-popout .app-header,
+html.map-popout header.app-header,
+html.map-popout #dice-toggle,
+html.map-popout #dice-panel,
+html.map-popout #view-combat,
+html.map-popout #view-tools,
+html.map-popout nav.app-nav,
+html.map-popout .app-nav,
+body.map-popout #menu-toggle,
+body.map-popout .menu-toggle,
+body.map-popout #sidebar-collapse-btn,
+body.map-popout .sidebar-collapse-btn,
+body.map-popout #sidebar,
+body.map-popout .sidebar,
+body.map-popout .app-header,
+body.map-popout header,
+body.map-popout #dice-toggle,
+body.map-popout #view-combat,
+body.map-popout #view-tools,
+body.vtt-player #menu-toggle,
+body.vtt-player #sidebar-collapse-btn,
+body.vtt-player #sidebar,
+body.vtt-player .app-header {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  opacity: 0 !important;
+  position: absolute !important;
+  left: -9999px !important;
+}
+html.map-popout .app-shell,
+body.map-popout .app-shell {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+html.map-popout #view-map,
+body.map-popout #view-map {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  min-height: 100dvh !important;
+}

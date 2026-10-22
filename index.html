@@ -12,22 +12,45 @@
       document.documentElement.classList.add('vtt-landing');
     }
     if ((isPlayer && room) || isPop) {
-      document.documentElement.classList.add('vtt-player', 'map-popout');
+      document.documentElement.classList.add('map-popout');
+      if (isPlayer) document.documentElement.classList.add('vtt-player');
       document.documentElement.style.background = '#0e0c0a';
       function killChrome(){
+        // Always strip nav chrome on shared/player maps — keep only map + combatants (+ player panel)
         var sels = [
-          '#menu-toggle','.menu-toggle','button[aria-label="Menu"]','button[title="Menu"]',
-          '#sidebar','.sidebar','#view-combat','#view-tools',
-          '.app-header','header','.header-left','.header-right','#dice-toggle',
-          '.map-toolbar','#view-map .view-header','.view-desc','nav','.app-nav',
-          '#player-landing'
+          '#menu-toggle', '.menu-toggle', 'button[aria-label="Menu"]', 'button[title="Menu"]',
+          '#sidebar-collapse-btn', '.sidebar-collapse-btn',
+          '#sidebar', '.sidebar', 'aside.sidebar',
+          '#view-combat', '#view-tools', '#view-campaigns',
+          '.app-header', 'header.app-header', 'header',
+          '.header-left', '.header-right', '#dice-toggle', '#dice-panel', '.dice-panel',
+          '#view-map .view-header', '.view-desc', 'nav', '.app-nav',
+          '#player-landing', '.app-footer', 'footer'
         ];
+        // Player: no map edit toolbar / fog tools. DM mapPopout keeps fog controls only (handled in app.js).
+        if (isPlayer) {
+          sels.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush');
+        }
+        // DM share (mapPopout only): do not strip entire map-toolbar here
         sels.forEach(function(sel){
-          document.querySelectorAll(sel).forEach(function(el){ try { el.remove(); } catch(e) {} });
+          document.querySelectorAll(sel).forEach(function(el){
+            try { el.remove(); } catch(e) {
+              try { el.style.setProperty('display','none','important'); el.style.pointerEvents='none'; } catch(e2) {}
+            }
+          });
         });
+        try { document.body && document.body.classList.add('map-popout'); } catch(e) {}
+        if (isPlayer) try { document.body && document.body.classList.add('vtt-player'); } catch(e) {}
       }
       document.addEventListener('DOMContentLoaded', killChrome);
-      setInterval(killChrome, 200);
+      // Observe DOM mutations so later app init cannot restore the menu button
+      var obs = new MutationObserver(function(){ killChrome(); });
+      if (document.documentElement) {
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+      }
+      setInterval(killChrome, 500);
+      // Run ASAP if body already exists
+      if (document.body) killChrome();
     }
   })();
   </script>
