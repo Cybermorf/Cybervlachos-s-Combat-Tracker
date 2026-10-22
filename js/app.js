@@ -2409,8 +2409,8 @@
     const out = [];
     const seen = new Set();
     function add(label, kind) {
-      const name = String(label || '').trim();
-      if (!name) return;
+      const name = typeof spellLabelName === 'function' ? spellLabelName(label) : String(label || '').trim();
+      if (!name || /^\[object object\]$/i.test(name)) return;
       const sp = lookupSpellByName(name);
       const displayName = sp ? sp.name : name.replace(/\s*\(\d+\w*\)\s*$/, '').trim();
       const dedupeKey = (sp && sp.id) ? String(sp.id).toLowerCase() : displayName.toLowerCase().replace(/\s+/g, ' ');
@@ -2435,13 +2435,17 @@
         raw: sp
       });
     }
-    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : String(ch.cantrips || '').split(/[,;\n]+/)).forEach(s => add(s, 'cantrip'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : []).forEach(s => add(s, 'cantrip'));
     const prepared = ch.spellPrepMode === 'prepared' && ch.preparedSpells
       ? ch.preparedSpells
       : ch.spells;
-    (typeof splitSpellNames === 'function' ? splitSpellNames(prepared) : String(prepared || '').split(/[,;\n]+/)).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(prepared) : []).forEach(s => add(s, 'spell'));
+    // Additional common fields from imports / combatants
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.knownSpells) : []).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.preparedSpells) : []).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spellList) : []).forEach(s => add(s, 'spell'));
     (ch.spellIds || []).forEach(id => {
-      const sp = (window.SPELLS || []).find(x => x.id === id);
+      const sp = (window.SPELLS || []).find(x => x.id === id || x.name === id);
       if (sp) add(sp.name, sp.level === 0 ? 'cantrip' : 'spell');
     });
     out.sort((a, b) => (a.level - b.level) || a.name.localeCompare(b.name));
@@ -6653,11 +6657,22 @@ function parseAttackLines(ch) {
     try {
       const c = getActive();
       if (!c) return { ok: false, reasons: [] };
-      const id = cb.charId || cb.sourceId;
+      const id = cb.charId || cb.sourceId || cb.id;
       let ch = null;
-      if (id) ch = [...(c.party||[]), ...(c.villains||[])].find(x => x.id === id);
+      const pool = [...(c.party||[]), ...(c.villains||[])];
+      if (id) ch = pool.find(x => x.id === id);
+      if (!ch) ch = pool.find(x => x.name === cb.name) || null;
       // Also check combatant-carried spells/inventory
-      const spells = (ch && (ch.spells || ch.cantrips)) || (cb.spells || cb.cantrips) || '';
+      const spellBag = (src) => {
+        if (!src) return '';
+        const parts = []
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.cantrips) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.spells) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.knownSpells) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.preparedSpells) : []);
+        return parts.join(', ');
+      };
+      const spells = spellBag(ch) || spellBag(cb) || '';
       const inv = (ch && ch.inventory) || cb.inventory || [];
       const healSpellRe = /cure wounds|healing word|heal\b|mass heal|prayer of healing|aura of vitality|goodberry|preservation|revivify|regenerate|spare the dying/i;
       const hasSpell = healSpellRe.test(String(spells));
@@ -8413,7 +8428,7 @@ function rollDieExpr(expr) {
     // ── Spellcasting panel ──
     (function wireSpellcastingPanel() {
       const spellList = (typeof listCharacterSpellsForCombat === 'function')
-        ? listCharacterSpellsForCombat(partyChar || null)
+        ? listCharacterSpellsForCombat(partyChar || cb)
         : [];
       const stats = (typeof getSpellAttackAndDC === 'function')
         ? getSpellAttackAndDC(partyChar || cb)
@@ -8813,7 +8828,7 @@ const hp = Number(target.hp) || 0;
       let shape = 'sphere';
       const sp = panel.querySelector('#cr-spell-pick');
       if (sp && sp.value !== '' && typeof listCharacterSpellsForCombat === 'function') {
-        const list = listCharacterSpellsForCombat(partyChar || null);
+        const list = listCharacterSpellsForCombat(partyChar || cb);
         const entry = list[Number(sp.value)];
         if (entry && entry.range) {
           const m = String(entry.range).match(/(\\d+)\\s*(foot|feet|ft)/i);
@@ -9086,10 +9101,27 @@ const hp = Number(target.hp) || 0;
     }
   }
 
+  function spellLabelName(label) {
+    if (label == null) return '';
+    if (typeof label === 'object') {
+      return String(label.name || label.label || label.title || label.spell || '').trim();
+    }
+    return String(label).trim();
+  }
+
   function splitSpellNames(raw) {
-    return String(raw || '')
-      .replace(/\\n/g, '\n')
-      .split(/\n|;|,/)
+    if (raw == null || raw === '') return [];
+    if (Array.isArray(raw)) {
+      return raw.map(spellLabelName).filter(Boolean).map(s => s.replace(/\s+/g, ' '));
+    }
+    if (typeof raw === 'object') {
+      // single spell object
+      const one = spellLabelName(raw);
+      return one ? [one] : [];
+    }
+    return String(raw)
+      .replace(/\r/g, '')
+      .split(/[\n;,]+/)
       .map(s => s.trim())
       .filter(Boolean)
       .map(s => s.replace(/\s+/g, ' '));
@@ -9128,8 +9160,8 @@ const hp = Number(target.hp) || 0;
     const out = { action: [], bonus: [], reaction: [], legendary: [], spell: [], ability: [] };
     const _pcSide = cb && (cb.side === 'party' || cb.side === 'ally');
     function push(section, name, toHit, damage, text, extra) {
-      const cleanName = String(name || '').replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
-      if (!cleanName) return;
+      const cleanName = (typeof spellLabelName === 'function' ? spellLabelName(name) : String(name || '')).replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!cleanName || /^\[object object\]$/i.test(cleanName)) return;
       const key = ['action','bonus','reaction','legendary','spell','ability'].includes(section) ? section : 'action';
       const profile = inferTargetProfile(cleanName, text || '', extra || {});
       const item = Object.assign({
