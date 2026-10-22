@@ -4363,8 +4363,301 @@
    * Fetch CritterDB JSON (direct only — no third-party proxies).
    * Browsers usually block this via CORS; use tools/critterdb-bulk-crawl.mjs or JSON export.
    */
-  async function critterDbFetchJson() { /* stripped */ return null; }
+  async function critterDbFetchJson(url) {
+    const res = await fetch(url, { credentials: 'omit' });
+    if (!res.ok) throw new Error('CritterDB ' + res.status);
+    return res.json();
+  }
 
+
+  async function fetchCritterDbPublishedBestiary(bestiaryId, { onPage, maxPages = 40 } = {}) {
+    const id = parseCritterDbBestiaryId(bestiaryId);
+    if (!id) throw new Error('Invalid CritterDB bestiary id or URL');
+    const all = [];
+    let page = 1;
+    while (page <= maxPages) {
+      const url = `https://critterdb.com/api/publishedbestiaries/${id}/creatures/${page}`;
+      let batch;
+      try {
+        batch = await critterDbFetchJson(url);
+      } catch (err) {
+        if (page === 1) throw err;
+        break;
+      }
+      if (!Array.isArray(batch) || !batch.length) break;
+      all.push(...batch);
+      if (typeof onPage === 'function') onPage(page, all.length);
+      // CritterDB pages typically return up to 25; stop when short page
+      if (batch.length < 20) break;
+      page += 1;
+    }
+    return all;
+  }
+
+  async function fetchCritterDbBestiaryIndex({ lists = ['recent', 'popular'], maxPagesPerList = 80, onProgress } = {}) {
+    const byId = new Map();
+    for (const list of lists) {
+      for (let page = 1; page <= maxPagesPerList; page++) {
+        const url = `https://critterdb.com/api/publishedbestiaries/${list}/${page}`;
+        let batch;
+        try {
+          batch = await critterDbFetchJson(url);
+        } catch (err) {
+          if (page === 1) throw new Error(`Network error listing ${list} p${page}: ${err.message || err}`);
+          break;
+        }
+        if (!Array.isArray(batch) || !batch.length) break;
+        batch.forEach(b => {
+          const id = b._id || b.id;
+          if (id) byId.set(id, { id, name: b.name || id, description: b.description || '' });
+        });
+        if (typeof onProgress === 'function') {
+          onProgress({ phase: 'index', list, page, bestiaries: byId.size });
+        }
+        if (batch.length < 5) break; // likely last page
+        await sleepMs(120);
+      }
+    }
+    // most popular (single payload if available)
+    try {
+      const data = await critterDbFetchJson('https://critterdb.com/api/publishedbestiaries/mostpopular');
+      const arr = Array.isArray(data) ? data : (data.bestiaries || data.results || []);
+      arr.forEach(b => {
+        const id = b._id || b.id;
+        if (id) byId.set(id, { id, name: b.name || id, description: b.description || '' });
+      });
+    } catch (e) { /* optional */ }
+    return [...byId.values()];
+  }
+
+  /**
+   * Bulk crawl all discoverable public bestiaries (recent + popular feeds)
+   * and merge creatures into the user compendium.
+   */
+  async function syncCritterDb({ bestiaryIdOrUrl, statusEl } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    setStatus('Fetching CritterDB bestiary…');
+    const rows = await fetchCritterDbPublishedBestiary(bestiaryIdOrUrl, {
+      onPage: (p, n) => setStatus(`CritterDB page ${p} — ${n} creatures…`)
+    });
+    if (!rows.length) {
+      setStatus('No creatures returned.');
+      return { creatures: 0 };
+    }
+    const mapped = rows.map(r => mapCritterDbCreature(r, 'CritterDB')).filter(Boolean);
+    const pack = {
+      creatures: mapped,
+      meta: {
+        edition: '5e-critterdb',
+        source: 'CritterDB',
+        attribution: 'Imported from CritterDB (https://critterdb.com). Respect original authors’ licenses.',
+        bestiaryId: parseCritterDbBestiaryId(bestiaryIdOrUrl),
+        syncedAt: new Date().toISOString()
+      }
+    };
+    setStatus(`Merging ${mapped.length} creatures…`);
+    const res = importCompendiumPack(pack);
+    setStatus(`Done — +${res.creaturesAdded ?? res.creatures} new, ${res.creaturesUpdated || 0} updated, ${res.creaturesSkipped || 0} duplicates skipped (bestiary total ${res.totalCreatures}).`);
+    return res;
+  }
+
+  async function syncCritterDbCatalog({
+    statusEl,
+    maxBestiaries = 500,
+    maxPagesPerList = 100,
+    delayMs = 150,
+    abortSignal
+  } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    setStatus('Indexing published bestiaries (recent + popular)…');
+    const index = await fetchCritterDbBestiaryIndex({
+      lists: ['recent', 'popular'],
+      maxPagesPerList,
+      onProgress: ({ list, page, bestiaries }) => {
+        setStatus(`Indexing ${list} p${page} — ${bestiaries} unique bestiaries…`);
+      }
+    });
+    if (!index.length) {
+      setStatus('No published bestiaries found (API empty or blocked).');
+      return { bestiaries: 0, creatures: 0 };
+    }
+    const slice = index.slice(0, maxBestiaries);
+    setStatus(`Found ${index.length} bestiaries — importing up to ${slice.length}…`);
+
+    let totalMapped = 0;
+    let bestiariesOk = 0;
+    let bestiariesFail = 0;
+    const allMapped = [];
+
+    for (let i = 0; i < slice.length; i++) {
+      if (abortSignal?.aborted) {
+        setStatus(`Aborted after ${bestiariesOk} bestiaries / ${totalMapped} creatures.`);
+        break;
+      }
+      const b = slice[i];
+      setStatus(`Bestiary ${i + 1}/${slice.length}: ${b.name}…`);
+      try {
+        const rows = await fetchCritterDbPublishedBestiary(b.id, {
+          maxPages: 60,
+          onPage: (p, n) => setStatus(`Bestiary ${i + 1}/${slice.length}: ${b.name} — creature page ${p} (${n})`)
+        });
+        const mapped = rows
+          .map(r => mapCritterDbCreature(r, `CritterDB: ${b.name}`))
+          .filter(Boolean);
+        allMapped.push(...mapped);
+        totalMapped += mapped.length;
+        bestiariesOk++;
+      } catch (err) {
+        console.warn('CritterDB bestiary failed', b.id, err);
+        bestiariesFail++;
+      }
+      // Merge in chunks so progress is saved if the tab dies mid-crawl
+      if (allMapped.length >= 80 || i === slice.length - 1) {
+        if (allMapped.length) {
+          importCompendiumPack({
+            creatures: allMapped.splice(0, allMapped.length),
+            meta: {
+              edition: '5e-critterdb-bulk',
+              source: 'CritterDB public catalog',
+              attribution: 'Bulk import from CritterDB published bestiaries (https://critterdb.com). Respect authors’ licenses.',
+              syncedAt: new Date().toISOString()
+            }
+          });
+        }
+      }
+      await sleepMs(delayMs);
+    }
+
+    applyCompendiumToRuntime();
+    const totalCreatures = (window.BESTIARY_MERGED || []).length;
+    setStatus(`Done — ${bestiariesOk} bestiaries OK, ${bestiariesFail} failed, ~${totalMapped} creatures merged (runtime bestiary ${totalCreatures}).`);
+    return { bestiaries: bestiariesOk, failed: bestiariesFail, creatures: totalMapped, totalCreatures };
+  }
+
+
+  function importCritterDbText(text) {
+    const data = JSON.parse(text);
+    // Normalize to pack
+    let creatures = [];
+    if (Array.isArray(data)) creatures = data;
+    else if (data.creatures) creatures = data.creatures;
+    else if (data.stats && data.name) creatures = [data];
+    else throw new Error('Unrecognized CritterDB JSON (need creature or bestiary with creatures[])');
+    const mapped = creatures.map(r => mapCritterDbCreature(r, data.name ? `CritterDB: ${data.name}` : 'CritterDB')).filter(Boolean);
+    return importCompendiumPack({
+      creatures: mapped,
+      meta: {
+        edition: '5e-critterdb',
+        source: data.name || 'CritterDB JSON',
+        attribution: 'Imported from CritterDB JSON export.'
+      }
+    });
+  }
+
+  async function syncOpen5e({
+    srdOnly = true,
+    spells = true,
+    equipment = true,
+    items = true,
+    magicItems = true,
+    feats = false,
+    creatures = false,
+    statusEl
+  } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    const params = srdOnly ? { document__key: 'srd-2024' } : {};
+    const pack = {
+      spells: [],
+      equipment: [],
+      creatures: [],
+      meta: {
+        edition: srdOnly ? '5e-srd-2024-open5e' : '5e-open5e-v2-all',
+        source: 'Open5e API v2',
+        attribution: 'Data from Open5e API v2 (https://api.open5e.com). Documents retain their original licenses.',
+        syncedAt: new Date().toISOString()
+      }
+    };
+
+    try {
+      if (spells) {
+        setStatus('Fetching spells…');
+        const rows = await open5eFetchAll('/spells/', params, {
+          maxPages: 120,
+          onPage: (p, n, total) => setStatus(`Spells page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.spells = rows.map(mapOpen5eSpell).filter(Boolean);
+        setStatus(`Mapped ${pack.spells.length} spells`);
+      }
+
+      if (equipment) {
+        setStatus('Fetching weapons…');
+        const weapons = await open5eFetchAll('/weapons/', params, {
+          maxPages: 40,
+          onPage: (p, n, total) => setStatus(`Weapons page ${p} — ${n}/${total || '?'}`)
+        });
+        setStatus('Fetching armor…');
+        const armor = await open5eFetchAll('/armor/', params, {
+          maxPages: 20,
+          onPage: (p, n, total) => setStatus(`Armor page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...weapons.map(mapOpen5eWeapon).filter(Boolean));
+        pack.equipment.push(...armor.map(mapOpen5eArmor).filter(Boolean));
+      }
+
+      if (items) {
+        setStatus('Fetching adventuring gear (items)…');
+        const rows = await open5eFetchAll('/items/', params, {
+          maxPages: 80,
+          onPage: (p, n, total) => setStatus(`Items page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...rows.map(mapOpen5eItem).filter(Boolean));
+      }
+
+      if (magicItems) {
+        setStatus('Fetching magic items…');
+        // Full catalog (SRD filter alone misses many +1 weapons / wondrous items)
+        let magicRows = await open5eFetchAll('/magicitems/', {}, {
+          maxPages: 50,
+          onPage: (p, n, total) => setStatus(`Magic items page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...magicRows.map(mapOpen5eMagicItem).filter(Boolean));
+        setStatus(`Mapped ${magicRows.length} magic items`);
+      }
+
+      if (feats) {
+        setStatus('Fetching feats…');
+        const rows = await open5eFetchAll('/feats/', params, {
+          maxPages: 40,
+          onPage: (p, n, total) => setStatus(`Feats page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...rows.map(mapOpen5eFeat).filter(Boolean));
+      }
+
+
+      if (creatures) {
+        setStatus('Fetching creatures (bestiary)…');
+        try {
+          const rows = await open5eFetchAll('/creatures/', params, {
+            maxPages: 150,
+            onPage: (p, n, total) => setStatus(`Creatures page ${p} — ${n}/${total || '?'}`)
+          });
+          pack.creatures = rows.map(mapOpen5eCreature).filter(Boolean);
+        } catch (err) {
+          console.warn('Creature sync failed', err);
+          setStatus('Creature sync failed (API may rate-limit). Spells/equipment still saved.');
+        }
+      }
+
+      setStatus(`Merging ${pack.spells.length} spells, ${pack.equipment.length} equipment…`);
+      const res = importCompendiumPack(pack);
+      setStatus(`Done — +${res.spells} spells, +${res.equipment} equipment${res.creatures ? ', +' + res.creatures + ' creatures' : ''}. Runtime: ${res.totalSpells} spells / ${res.totalEquipment} equipment.`);
+      return res;
+    } catch (err) {
+      console.warn(err);
+      setStatus('Error: ' + (err.message || err));
+      throw err;
+    }
+  }
 
   function resolveFeaturePlaceholders(text, ch) {
     if (!text) return '';
@@ -6174,6 +6467,134 @@ function parseAttackLines(ch) {
   }
 
   // ─── Tools (generators + reference) ──────────────────────────────────────
+  
+  function renderCompendiumTools() {
+    const root = document.getElementById('compendium-tools');
+    if (!root) return;
+    let extra = { spells: [], equipment: [], creatures: [] };
+    try { extra = getUserCompendium() || extra; } catch (e) {}
+    const sN = (extra.spells || []).length;
+    const eN = (extra.equipment || []).length;
+    const cN = (extra.creatures || []).length;
+    root.innerHTML = `
+      <div class="card tool-card" style="margin-bottom:1rem">
+        <h3>Open5e Sync</h3>
+        <p class="muted small">Pull SRD spells, equipment, and monsters into this Combat Tracker (browser storage).</p>
+        <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn primary" id="open5e-sync-srd">Sync Open5e SRD (spells + equipment)</button>
+          <button type="button" class="btn secondary" id="open5e-sync-monsters">Sync Open5e monsters</button>
+        </div>
+        <p class="muted small" id="open5e-status">User pack: ${sN} spells · ${eN} equipment · ${cN} creatures</p>
+      </div>
+      <div class="card tool-card" style="margin-bottom:1rem">
+        <h3>CritterDB</h3>
+        <p class="muted small">Import a published CritterDB bestiary by ID or URL, or paste JSON.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+          <input type="text" id="critterdb-id" placeholder="Bestiary ID or critterdb.com URL" style="flex:1;min-width:12rem">
+          <button type="button" class="btn primary" id="critterdb-sync-btn">Import bestiary</button>
+        </div>
+        <div class="tool-btns" style="margin-top:0.5rem;flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn secondary" id="critterdb-json-btn">Import CritterDB JSON file</button>
+          <input type="file" id="critterdb-json-file" accept=".json,application/json" hidden>
+        </div>
+        <p class="muted small" id="critterdb-status">—</p>
+      </div>
+      <div class="card tool-card">
+        <h3>Compendium file</h3>
+        <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn secondary" id="comp-export-btn">Export user pack</button>
+          <button type="button" class="btn secondary" id="comp-import-btn">Import JSON pack</button>
+          <input type="file" id="comp-import-file" accept=".json,application/json" hidden>
+        </div>
+      </div>`;
+
+    const oStatus = root.querySelector('#open5e-status');
+    const cStatus = root.querySelector('#critterdb-status');
+    root.querySelector('#open5e-sync-srd')?.addEventListener('click', async () => {
+      if (typeof syncOpen5e !== 'function') { toast('Open5e sync not available'); return; }
+      try {
+        oStatus.textContent = 'Syncing SRD…';
+        await syncOpen5e({ srdOnly: true, spells: true, equipment: true, creatures: false, statusEl: oStatus });
+        toast('Open5e SRD sync done');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        oStatus.textContent = 'Error: ' + (e.message || e);
+        toast('Open5e sync failed');
+      }
+    });
+    root.querySelector('#open5e-sync-monsters')?.addEventListener('click', async () => {
+      if (typeof syncOpen5e !== 'function') { toast('Open5e sync not available'); return; }
+      try {
+        oStatus.textContent = 'Syncing monsters…';
+        await syncOpen5e({ srdOnly: true, spells: false, equipment: false, creatures: true, statusEl: oStatus });
+        toast('Open5e monsters synced');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        oStatus.textContent = 'Error: ' + (e.message || e);
+      }
+    });
+    root.querySelector('#critterdb-sync-btn')?.addEventListener('click', async () => {
+      const id = root.querySelector('#critterdb-id')?.value?.trim();
+      if (!id) { toast('Enter CritterDB bestiary ID or URL'); return; }
+      if (typeof syncCritterDb !== 'function') { toast('CritterDB not available'); return; }
+      try {
+        await syncCritterDb({ bestiaryIdOrUrl: id, statusEl: cStatus });
+        toast('CritterDB import done');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        if (cStatus) cStatus.textContent = 'Error: ' + (e.message || e);
+        toast('CritterDB failed (CORS/network)');
+      }
+    });
+    root.querySelector('#critterdb-json-btn')?.addEventListener('click', () => root.querySelector('#critterdb-json-file')?.click());
+    root.querySelector('#critterdb-json-file')?.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        if (typeof importCritterDbText === 'function') {
+          const n = importCritterDbText(text);
+          if (cStatus) cStatus.textContent = 'Imported from file';
+          toast('Imported CritterDB JSON');
+          renderCompendiumTools();
+        }
+      } catch (e) { toast('Import failed: ' + (e.message || e)); }
+      ev.target.value = '';
+    });
+    root.querySelector('#comp-export-btn')?.addEventListener('click', () => {
+      try {
+        const pack = getUserCompendium();
+        const blob = new Blob([JSON.stringify(pack, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'combat-compendium.json';
+        a.click();
+      } catch (e) { toast('Export failed'); }
+    });
+    root.querySelector('#comp-import-btn')?.addEventListener('click', () => root.querySelector('#comp-import-file')?.click());
+    root.querySelector('#comp-import-file')?.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const data = JSON.parse(await f.text());
+        const cur = getUserCompendium() || {};
+        const merged = {
+          spells: [].concat(cur.spells || [], data.spells || []),
+          equipment: [].concat(cur.equipment || [], data.equipment || []),
+          creatures: [].concat(cur.creatures || [], data.creatures || data.monsters || []),
+          meta: Object.assign({}, cur.meta || {}, data.meta || {}, { importedAt: Date.now() })
+        };
+        if (typeof saveUserCompendium === 'function') await saveUserCompendium(merged);
+        toast('Compendium imported');
+        renderCompendiumTools();
+      } catch (e) { toast('Import failed'); }
+      ev.target.value = '';
+    });
+  }
+
   function renderTools() {
     try { renderClassTablesTools(); } catch (e) {}
     try { if (typeof renderCompendiumTools === 'function') renderCompendiumTools(); } catch (e) {}
@@ -6403,6 +6824,105 @@ function parseAttackLines(ch) {
   }
   function isAutoHitSpellName(name) {
     return /magic missile|magic missle/i.test(String(name || ''));
+  }
+  function isPowerWordKillName(name) {
+    return /power word kill|power word: kill/i.test(String(name || ''));
+  }
+  function isPowerWordStunName(name) {
+    return /power word stun|power word: stun/i.test(String(name || ''));
+  }
+  function isPowerWordHealName(name) {
+    return /power word heal|power word: heal/i.test(String(name || ''));
+  }
+  function isPowerWordBlindName(name) {
+    return /power word blind|power word: blind/i.test(String(name || ''));
+  }
+  function resolveSpecialSpellOnCast(sp, panel, cb, getSelectedTargets, appendLog, toast, escapeHtml) {
+    const name = (sp && sp.name) || '';
+    const packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+    if (typeof isPowerWordKillName === 'function' && isPowerWordKillName(name)) {
+      if (!packs.length) { toast('Power Word Kill — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 100) {
+          target.hp = 0; target.dead = true; target.concentrating = false;
+          lines.push(target.name + ' (' + hp + ' HP ≤ 100) → DIES (no save)');
+          appendLog('Power Word Kill: ' + target.name + ' dies');
+        } else {
+          lines.push(target.name + ' (' + hp + ' HP > 100) → no effect');
+          appendLog('Power Word Kill: ' + target.name + ' unaffected');
+        }
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordStunName(name)) {
+      if (!packs.length) { toast('Power Word Stun — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 150) {
+          const cond = String(target.conditions || '');
+          if (!/stunned/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'stunned';
+          lines.push(target.name + ' (' + hp + ' HP ≤ 150) → Stunned');
+        } else lines.push(target.name + ' (' + hp + ' HP > 150) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordHealName(name)) {
+      if (!packs.length) { toast('Power Word Heal — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        const max = Number(target.hpMax) || hp;
+        if (hp <= 100) {
+          target.hp = max;
+          target.dead = false;
+          lines.push(target.name + ' → healed to full ' + max);
+        } else lines.push(target.name + ' (' + hp + ' HP > 100) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordBlindName(name)) {
+      if (!packs.length) { toast('Power Word Blind — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 200) {
+          const cond = String(target.conditions || '');
+          if (!/blinded/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'blinded';
+          lines.push(target.name + ' → Blinded');
+        } else lines.push(target.name + ' (' + hp + ' HP > 200) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (/^sleep$/i.test(String(name).trim())) {
+      if (!packs.length) { toast('Sleep — select targets in area first'); return true; }
+      let budget = 0;
+      for (let i = 0; i < 5; i++) budget += 1 + Math.floor(Math.random() * 8);
+      const sorted = packs.map(p => p.target).slice().sort((a, b) => (Number(a.hp)||0) - (Number(b.hp)||0));
+      const lines = ['Sleep pool: ' + budget + ' HP'];
+      for (const target of sorted) {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 0) continue;
+        if (budget >= hp) {
+          budget -= hp;
+          const cond = String(target.conditions || '');
+          if (!/unconscious/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'unconscious';
+          lines.push(target.name + ' → unconscious');
+        } else {
+          lines.push(target.name + ' not enough pool (' + budget + ' left)');
+          break;
+        }
+      }
+      toast(lines.join(' · '));
+      return true;
+    }
+    return false;
   }
   function spellHealDice(sp, slotLevel, abilityMod) {
     const name = (sp && sp.name) || '';
@@ -7419,7 +7939,12 @@ function rollDieExpr(expr) {
             target.tempHp = temp - absorb;
             left -= absorb;
           }
-          target.hp = Math.max(0, (target.hp || 0) - left);
+          const fromSpell = (window.__lastCombatRoll && window.__lastCombatRoll.name) || '';
+          if (/^harm$/i.test(String(fromSpell).trim())) {
+            target.hp = Math.max(1, (target.hp || 0) - left);
+          } else {
+            target.hp = Math.max(0, (target.hp || 0) - left);
+          }
           if (target.concentrating && left > 0) {
             const dc = Math.max(10, Math.floor(left / 2));
             const roll = 1 + Math.floor(Math.random() * 20);
@@ -8087,6 +8612,56 @@ function rollDieExpr(expr) {
             } else {
               toast(sp.name + ' damage ' + rolled.total + ' — select target(s), then Apply Damage');
             }
+          }
+        } else if (typeof isPowerWordKillName === 'function' && isPowerWordKillName(sp.name)) {
+          // Official rule: no save, no damage — if current HP ≤ 100, creature dies; else no effect
+          const packs = getSelectedTargets();
+          if (!packs.length) {
+            toast('Power Word Kill — select a target first, then Cast again');
+          } else {
+            const lines = [];
+            packs.forEach(({ target }) => {
+              const hp = Number(target.hp) || 0;
+              if (hp <= 100) {
+                target.hp = 0;
+                target.dead = true;
+                target.concentrating = false;
+                if (!target.combatLog) target.combatLog = [];
+                target.combatLog.push('Slain by Power Word Kill');
+                try { syncLinkedCharacterHp(target); } catch (e) {}
+                lines.push(target.name + ' had ' + hp + ' HP ≤ 100 → DIES (no save)');
+                appendLog('Power Word Kill: ' + target.name + ' dies (had ' + hp + ' HP)');
+              } else {
+                lines.push(target.name + ' has ' + hp + ' HP > 100 → no effect (no save, no damage)');
+                appendLog('Power Word Kill: ' + target.name + ' unaffected (' + hp + ' HP)');
+              }
+            });
+            toast(lines.join(' · '));
+            const resEl = panel.querySelector('#combat-roll-result') || panel.querySelector('#cr-result');
+            if (resEl) resEl.innerHTML = '<strong>Power Word Kill</strong><br>' + lines.map(l => escapeHtml(l)).join('<br>');
+          }
+        } else if (typeof isPowerWordStunName === 'function' && isPowerWordStunName(sp.name)) {
+          // Power Word Stun: if ≤150 HP, stunned (CON save ends); else no effect — no damage
+          const packs = getSelectedTargets();
+          if (!packs.length) {
+            toast('Power Word Stun — select a target first, then Cast again');
+          } else {
+            const lines = [];
+            packs.forEach(({ target }) => {
+const hp = Number(target.hp) || 0;
+              if (hp <= 150) {
+                const cond = target.conditions ? String(target.conditions) : '';
+                if (!/stunned/i.test(cond)) {
+                  target.conditions = (cond ? cond + ', ' : '') + 'stunned';
+                }
+                lines.push(target.name + ' (' + hp + ' HP ≤ 150) → Stunned (CON save each turn to end)');
+                appendLog('Power Word Stun: ' + target.name + ' stunned');
+              } else {
+                lines.push(target.name + ' has ' + hp + ' HP > 150 → no effect');
+                appendLog('Power Word Stun: ' + target.name + ' unaffected');
+              }
+            });
+            toast(lines.join(' · '));
           }
         } else {
           const expr = spellDamageDice(sp, slotNeed || sp.level || 1);
