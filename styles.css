@@ -3513,3 +3513,20 @@ body.vtt-player #cr-result {
   min-height: 2.5rem;
   white-space: pre-wrap;
 }
+
+
+/* Map popout: no app chrome; DM keeps fog tools only */
+body.map-popout #menu-toggle,
+body.map-popout .app-header,
+body.map-popout #sidebar,
+html.map-popout #menu-toggle {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+body.map-popout .map-toolbar [data-popout-hidden="1"] {
+  display: none !important;
+}
+body.map-popout.vtt-player .map-toolbar {
+  display: none !important;
+}

@@ -10694,14 +10694,19 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
+    const playerPop = typeof isPlayerRole === 'function' && isPlayerRole();
     // Physically remove chrome so it cannot reappear or stay clickable
+    // DM share popout: KEEP .map-toolbar so FoW tools work; player popout: strip toolbar
     const strip = [
       '.app-header', 'header', '#menu-toggle', '#sidebar', '.sidebar',
       '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
-      '.view-desc', '.map-toolbar', '#view-map .view-header'
+      '.view-desc', '#view-map .view-header'
     ];
+    if (playerPop) {
+      strip.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush');
+    }
     // DM share map: no player combat panel. Player clients use role=player.
-    if (!isPlayerRole()) {
+    if (!playerPop) {
       strip.push('#player-combat-panel', '.player-combat-panel');
     }
     // Keep #map-roster for both
@@ -10710,6 +10715,40 @@ function escapeHtml(str) {
         try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
       });
     });
+    // DM popout: hide non-FoW toolbar chrome (import/video/etc.) but keep fog controls
+    if (!playerPop) {
+      try {
+        const tb = document.querySelector('.map-toolbar');
+        if (tb) {
+          tb.querySelectorAll('button, label, input, select, a').forEach(el => {
+            const id = el.id || '';
+            const fog = /fog/i.test(id) || /fog/i.test(el.className || '') || /fog/i.test(el.textContent || '');
+            if (!fog) {
+              el.style.setProperty('display', 'none', 'important');
+              el.setAttribute('data-popout-hidden', '1');
+            }
+          });
+          // keep fog-related visible
+          ['map-fog-toggle','map-fog-reveal','map-fog-hide','map-fog-reset','map-fog-brush'].forEach(fid => {
+            const el = document.getElementById(fid);
+            if (el) {
+              el.style.removeProperty('display');
+              el.removeAttribute('data-popout-hidden');
+              // show parent label if any
+              let p = el.parentElement;
+              while (p && p !== tb) {
+                p.style.removeProperty('display');
+                p = p.parentElement;
+              }
+            }
+          });
+        }
+      } catch (e) {}
+    }
+    // Hard-remove menu toggle if it resurfaces
+    try {
+      document.querySelectorAll('#menu-toggle, button.menu-toggle').forEach(el => el.remove());
+    } catch (e) {}
     // Keep only map view content
     const mapView = document.getElementById('view-map');
     if (mapView) {
@@ -10916,9 +10955,13 @@ function escapeHtml(str) {
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
       const init = (cb.init != null && cb.init !== '') ? cb.init : (cb.initiative != null ? cb.initiative : '—');
+      const popout = typeof isMapPopoutMode === 'function' && isMapPopoutMode();
+      // Shared/player popouts: never show enemy AC (and hideHp already covers HP)
+      const hideAc = isEnemy && (playerMode || popout);
+      const acPart = hideAc ? '' : (' · AC ' + (cb.ac != null ? cb.ac : '—'));
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
-        <div class="mr-meta">Init ${escapeHtml(String(init))} · AC ${cb.ac != null ? cb.ac : '—'} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
+        <div class="mr-meta">Init ${escapeHtml(String(init))}${acPart} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
         <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '' : (hp + '/' + hpMax + ' HP')}</div>
         <div class="mr-bar">${hide ? '' : `<span style="width:${pct}%"></span>`}</div>
         <div class="tool-btns" style="margin-top:0.3rem">
