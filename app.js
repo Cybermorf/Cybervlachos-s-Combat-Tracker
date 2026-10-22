@@ -12145,47 +12145,90 @@ function escapeHtml(str) {
     if (hasVideo && videoEl) {
       videoEl.style.display = 'none';
       const want = map.videoObjectUrl;
+      videoEl.muted = true;
+      videoEl.defaultMuted = true;
+      videoEl.loop = true;
+      videoEl.playsInline = true;
+      videoEl.setAttribute('muted', '');
+      videoEl.setAttribute('loop', '');
+      videoEl.setAttribute('playsinline', '');
+      videoEl.preload = 'auto';
       if (videoEl.getAttribute('data-src') !== want) {
         videoEl.setAttribute('data-src', want);
         videoEl.src = want;
+        try { videoEl.load(); } catch (e) {}
       }
-      videoEl.muted = true;
-      videoEl.loop = true;
-      videoEl.playsInline = true;
+      let started = false;
+      let waitFrames = 0;
       const startVideoDraw = () => {
-        const srcW = videoEl.videoWidth || 1280;
-        const srcH = videoEl.videoHeight || 720;
-        if (!videoEl.videoWidth) {
-          // still decoding
-          window.__mapRaf = requestAnimationFrame(() => startVideoDraw());
+        if (started) return;
+        const srcW = videoEl.videoWidth;
+        const srcH = videoEl.videoHeight;
+        if (!srcW || !srcH) {
+          waitFrames++;
+          if (waitFrames < 180) {
+            window.__mapRaf = requestAnimationFrame(() => startVideoDraw());
+          } else if (status) {
+            status.textContent = 'Video still loading… click map to retry play';
+          }
           return;
         }
+        started = true;
         map.width = srcW;
         map.height = srcH;
         const scale = fitMapCanvasToWrap(canvas, srcW, srcH);
         map.scale = scale;
+        const ensurePlaying = () => {
+          try {
+            videoEl.muted = true;
+            videoEl.loop = true;
+            if (videoEl.paused || videoEl.ended) {
+              const p = videoEl.play();
+              if (p && p.catch) p.catch(() => {});
+            }
+          } catch (e) {}
+        };
+        ensurePlaying();
         const tick = () => {
           const m = getCombatMap();
           if (!m || m.mediaType !== 'video') return;
+          // Keep looping even if browser cleared loop flag
+          if (videoEl.ended || (videoEl.duration && videoEl.currentTime >= videoEl.duration - 0.05)) {
+            try { videoEl.currentTime = 0; } catch (e) {}
+            ensurePlaying();
+          } else {
+            ensurePlaying();
+          }
           ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
           try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || scale); } catch (e) {}
           window.__mapRaf = requestAnimationFrame(tick);
         };
-        videoEl.play().catch((e) => {
-          console.warn('video play', e);
-          toast('Click the map once if video is paused (browser autoplay)');
-        });
         tick();
-        if (status) status.textContent = `Video ${srcW}×${srcH} · grid ${map.gridSize}px`;
+        if (status) status.textContent = `Video ${srcW}×${srcH} · looping · grid ${map.gridSize}px · FoW ${map.fogEnabled ? 'ON' : 'off'}`;
         try { renderMapRoster(); } catch (e) {}
       };
+      videoEl.onloadedmetadata = startVideoDraw;
+      videoEl.onloadeddata = startVideoDraw;
+      videoEl.oncanplay = startVideoDraw;
+      videoEl.onerror = () => {
+        const err = videoEl.error;
+        toast('Video failed to decode — use H.264 MP4 or WebM (' + (err && err.message ? err.message : 'unknown') + ')');
+        if (status) status.textContent = 'Video decode failed';
+      };
+      // Click-to-play fallback (autoplay policies)
+      canvas.onclick = (ev) => {
+        if (map.mediaType === 'video') {
+          try {
+            videoEl.muted = true;
+            videoEl.loop = true;
+            videoEl.play().then(() => startVideoDraw()).catch(() => {});
+          } catch (e) {}
+        }
+      };
       if (videoEl.readyState >= 2 && videoEl.videoWidth) startVideoDraw();
-      else {
-        videoEl.onloadeddata = startVideoDraw;
-        videoEl.onerror = () => toast('Video failed to decode — try WebM or another MP4');
-      }
+      else startVideoDraw(); // begins wait loop
       return;
     }
 
@@ -12494,26 +12537,45 @@ function escapeHtml(str) {
           if (!f) return;
           try {
             ensureCombatWorkspace();
+            let c = getActive();
+            if (!c) c = ensureCombatWorkspace() || getActive();
             const map = getCombatMap();
-            if (!map) { toast('No workspace'); return; }
-            const c = getActive();
+            if (!map) { toast('No workspace — open Map tab first'); return; }
+            const mime = f.type || (/\.webm$/i.test(f.name) ? 'video/webm' : 'video/mp4');
             const buf = await f.arrayBuffer();
-            const blob = new Blob([buf], { type: f.type || 'video/mp4' });
-            await idbSetMapVideo(c.id, blob);
+            const blob = new Blob([buf], { type: mime });
             if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
               try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
             }
+            // Blob URL first so playback works even if IDB fails
             map.videoObjectUrl = URL.createObjectURL(blob);
             map.mediaType = 'video';
-            map.hasVideoInIdb = true;
-            map.imageDataUrl = null; // prefer video
+            map.imageDataUrl = null;
             map.aoe = null;
+            map.videoName = f.name || 'map-video';
+            map.hasVideoInIdb = false;
+            if (c && c.id) {
+              try {
+                await idbSetMapVideo(c.id, blob);
+                map.hasVideoInIdb = true;
+              } catch (e) {
+                console.warn('video IDB', e);
+              }
+            }
             try { save(); } catch (e) {}
+            // Reset video element so new src always reloads
+            const videoEl = document.getElementById('map-video');
+            if (videoEl) {
+              try { videoEl.pause(); } catch (e) {}
+              videoEl.removeAttribute('data-src');
+              videoEl.removeAttribute('src');
+              try { videoEl.load(); } catch (e) {}
+            }
             renderBattleMap();
-            toast('Video map loaded (loops muted)');
+            toast('Video map loaded — loops muted (' + (f.name || mime) + ')');
           } catch (err) {
             console.warn(err);
-            toast('Could not load video');
+            toast('Could not load video: ' + (err && err.message ? err.message : err));
           }
           el.value = '';
         }
