@@ -3427,10 +3427,9 @@ html.vtt-player button[aria-label="Menu"] {
 html.vtt-landing #player-landing { z-index: 100000; }
 
 /* Player personal combat panel */
+/* Player clients only — not DM mapPopout share */
 body.vtt-player .player-combat-panel,
-html.vtt-player .player-combat-panel,
-body.map-popout .player-combat-panel,
-html.map-popout .player-combat-panel {
+html.vtt-player .player-combat-panel {
   display: flex !important;
   flex-direction: column;
   min-width: 16rem;
@@ -3492,4 +3491,25 @@ html.vtt-player .map-layout {
 html.vtt-player .map-canvas-wrap {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+
+/* DM shared map: never show player combat controls */
+body.map-popout:not(.vtt-player) .player-combat-panel,
+html.map-popout:not(.vtt-player) .player-combat-panel {
+  display: none !important;
+}
+body.vtt-player .combat-roll-result,
+body.vtt-player #cr-result {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  color: #f0e6d0 !important;
+  background: #2a2218;
+  border: 1px solid #c4a35a55;
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  margin-top: 0.4rem;
+  min-height: 2.5rem;
+  white-space: pre-wrap;
 }

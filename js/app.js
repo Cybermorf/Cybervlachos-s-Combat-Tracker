@@ -6862,13 +6862,21 @@ function parseAttackLines(ch) {
         const hp = Number(target.hp) || 0;
         if (hp <= 100) {
           target.hp = 0; target.dead = true; target.concentrating = false;
-          lines.push(target.name + ' (' + hp + ' HP ≤ 100) → DIES (no save)');
+          target.tempHp = 0;
+          if (!target.combatLog) target.combatLog = [];
+          target.combatLog.push('Slain by Power Word Kill');
+          try { if (typeof syncLinkedCharacterHp === 'function') syncLinkedCharacterHp(target); } catch (e) {}
+          lines.push(target.name + ' (' + hp + ' HP ≤ 100) → DIES (no save, no damage)');
           appendLog('Power Word Kill: ' + target.name + ' dies');
         } else {
-          lines.push(target.name + ' (' + hp + ' HP > 100) → no effect');
-          appendLog('Power Word Kill: ' + target.name + ' unaffected');
+          lines.push(target.name + ' (' + hp + ' HP > 100) → no effect (no save, no damage)');
+          appendLog('Power Word Kill: ' + target.name + ' unaffected (' + hp + ' HP)');
         }
       });
+      // Prevent a later Apply Damage from using a stale roll
+      window.__lastCombatRoll = { damage: 0, heal: 0, hit: false, name: 'Power Word Kill', isSpecial: true };
+      const applyAmt = panel && panel.querySelector('#cr-apply-amt');
+      if (applyAmt) applyAmt.value = '';
       toast(lines.join(' · '));
       return true;
     }
@@ -7433,7 +7441,7 @@ function rollDieExpr(expr) {
     return side === 'enemy' || side === 'villain' || side === 'enemies';
   }
   function playerCanSeeCombatant(viewer, target) {
-    if (!isPlayerRole()) return true;
+    if (typeof isPlayerFacingView === 'function' ? !isPlayerFacingView() : !isPlayerRole()) return true;
     if (!target) return false;
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     if (!isEnemySide(target)) return true; // allies always listed
@@ -7761,10 +7769,33 @@ function rollDieExpr(expr) {
     });
     panel.querySelector('#cr-roll-btn')?.addEventListener('click', () => {
       const mode = panel.querySelector('#cr-mode')?.value || 'attack';
-      const box = panel.querySelector('#cr-result');
+      const box = panel.querySelector('#cr-result') || panel.querySelector('#combat-roll-result');
       const atkName = (list[parseInt(atkSel?.value, 10) || 0] || {}).name || 'Attack';
+      function showRollHtml(html) {
+        if (box) {
+          box.classList.remove('muted');
+          box.style.display = 'block';
+          box.style.visibility = 'visible';
+          box.style.opacity = '1';
+          box.innerHTML = html;
+        }
+        // Duplicate into any secondary result area
+        panel.querySelectorAll('#cr-result, #combat-roll-result, .combat-roll-result').forEach(el => {
+          if (el !== box) {
+            el.classList.remove('muted');
+            el.style.display = 'block';
+            el.innerHTML = html;
+          }
+        });
+        try {
+          const plain = (box && box.innerText) ? box.innerText.replace(/\s+/g, ' ').trim() : '';
+          if (plain && typeof isPlayerRole === 'function' && isPlayerRole()) {
+            toast(plain.slice(0, 120));
+          }
+        } catch (e) {}
+      }
       if (mode === 'utility') {
-        if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — utility (no attack roll).</div>`;
+        showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — utility (no attack roll).</div>`);
         appendLog(`${atkName}: utility`);
         return;
       }
@@ -7774,13 +7805,13 @@ function rollDieExpr(expr) {
         const total = dmg.total + bonus;
         const asHeal = isHealingSpellName(atkName) || (window.__lastCombatRoll && window.__lastCombatRoll.isHeal);
         if (asHeal) {
-          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — healing</div><div>Heal: <strong>${total}</strong></div>`;
+          showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — healing</div><div>Heal: <strong>${total}</strong></div>`);
           window.__lastCombatRoll = { damage: 0, heal: total, healDice: dmgEl?.value || '', hit: true, isHeal: true, name: atkName };
           const applyAmt = panel.querySelector('#cr-apply-amt');
           if (applyAmt) applyAmt.value = String(total);
           appendLog(`${atkName}: heal ${total}`);
         } else {
-          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${total}</strong></div>`;
+          showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${total}</strong></div>`);
           window.__lastCombatRoll = { damage: total, heal: 0, hit: true, isHeal: false, name: atkName };
           const applyAmt = panel.querySelector('#cr-apply-amt');
           if (applyAmt) applyAmt.value = String(total);
@@ -7807,8 +7838,8 @@ function rollDieExpr(expr) {
         } else if (dmgEl?.value && ok) {
           dmgLine = `<div class="muted">Saved — no damage (or half if the effect allows)</div>`;
         }
-        if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> · Save vs DC ${dc}</div>
-          <div>Roll: <strong>${total}</strong> → <strong style="color:${ok?'#8d8':'#c66'}">${ok?'SUCCESS':'FAIL'}</strong></div>${dmgLine}`;
+        showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> · Save vs DC ${dc}</div>
+          <div>Roll: <strong>${total}</strong> → <strong style="color:${ok?'#8d8':'#c66'}">${ok?'SUCCESS':'FAIL'}</strong></div>${dmgLine}`);
         if (!ok && dmgEl?.value) {
           const dmg = rollDieExpr(dmgEl.value);
           const db = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
@@ -7856,7 +7887,7 @@ function rollDieExpr(expr) {
       const dmg = rollDieExpr(dmgEl?.value || '1d8');
       const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
       const box = panel.querySelector('#cr-result');
-      if (box) box.innerHTML = `<div>Damage: <strong>${dmg.total + bonus}</strong> (${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</div>`;
+      showRollHtml(`<div>Damage: <strong>${dmg.total + bonus}</strong> (${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</div>`);
       appendLog(`Damage only: ${dmg.total + bonus}`);
     });
     panel.querySelector('#cr-roll-save')?.addEventListener('click', () => {
@@ -7871,7 +7902,7 @@ function rollDieExpr(expr) {
       const total = used + bonus;
       const ok = total >= dc;
       const box = panel.querySelector('#cr-result');
-      if (box) box.innerHTML = `<div>Save: <strong>${used}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''} = ${total}</strong> vs DC ${dc} → <strong style="color:${ok ? '#8d8' : '#c66'}">${ok ? 'SUCCESS' : 'FAIL'}</strong></div>`;
+      showRollHtml(`<div>Save: <strong>${used}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''} = ${total}</strong> vs DC ${dc} → <strong style="color:${ok ? '#8d8' : '#c66'}">${ok ? 'SUCCESS' : 'FAIL'}</strong></div>`);
       appendLog(`Save ${total} vs DC ${dc}: ${ok ? 'SUCCESS' : 'FAIL'}`);
     });
 
@@ -8119,8 +8150,10 @@ function rollDieExpr(expr) {
       syncCombatResourcesToCharacter(cb); save(); renderCombat();
     });
     panel.querySelector('#cr-cast-slot')?.addEventListener('click', () => {
-      const L = panel.querySelector('#cr-upcast-level')?.value;
-      if (!L || !cb.combatSpellSlots || !cb.combatSpellSlots[L]) { toast('No slot available'); return; }
+      const L = panel.querySelector('#cr-upcast-level')?.value
+        || panel.querySelector('#cr-spell-slot')?.value
+        || '';
+      if (!L || L === '0' || !cb.combatSpellSlots || !cb.combatSpellSlots[L]) { toast('No slot available at that level'); return; }
       const s = cb.combatSpellSlots[L];
       if ((s.used || 0) >= s.max) { toast('No slots left at this level'); return; }
       s.used = (s.used || 0) + 1;
@@ -8716,9 +8749,27 @@ const hp = Number(target.hp) || 0;
 
       panel.querySelector('#cr-spell-cast')?.addEventListener('click', () => {
         const sp = currentSpell();
-        const slot = slotSel ? Number(slotSel.value) || 0 : 0;
+        const up = panel.querySelector('#cr-upcast-level');
+        const fromSlot = slotSel ? Number(slotSel.value) || 0 : 0;
+        const fromUp = up ? Number(up.value) || 0 : 0;
+        let slot = Math.max(fromSlot, fromUp);
+        if (sp && sp.level > 0) slot = Math.max(slot, Number(sp.level) || 0);
+        // Keep both selects in sync
+        if (slotSel && slot) slotSel.value = String(slot);
+        if (up && slot) up.value = String(slot);
         doCast(sp, slot);
       });
+      // Keep upcast + cast-with-slot selects synchronized
+      function syncSlotSelects(from) {
+        const a = panel.querySelector('#cr-spell-slot');
+        const b = panel.querySelector('#cr-upcast-level');
+        if (!a || !b) return;
+        if (from === 'a' && a.value && a.value !== '0') b.value = a.value;
+        if (from === 'b' && b.value) a.value = b.value;
+      }
+      panel.querySelector('#cr-spell-slot')?.addEventListener('change', () => syncSlotSelects('a'));
+      panel.querySelector('#cr-upcast-level')?.addEventListener('change', () => syncSlotSelects('b'));
+
 
       // Channel Divinity
       panel.querySelectorAll('.cd-option-btn').forEach(btn => {
@@ -10519,7 +10570,11 @@ function escapeHtml(str) {
       '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
       '.view-desc', '.map-toolbar', '#view-map .view-header'
     ];
-    // Keep #player-combat-panel and #map-roster
+    // DM share map: no player combat panel. Player clients use role=player.
+    if (!isPlayerRole()) {
+      strip.push('#player-combat-panel', '.player-combat-panel');
+    }
+    // Keep #map-roster for both
     strip.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
         try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
@@ -10782,14 +10837,16 @@ function escapeHtml(str) {
   function getVttRole() {
     try {
       const q = new URLSearchParams(location.search);
-      // ONLY the URL decides role — never sessionStorage (that was flipping the DM tab to player)
+      // ONLY role=player is a player client (not mapPopout alone — that is the DM shared map)
       if (String(q.get('role') || '').toLowerCase() === 'player') return 'player';
-      // Shared map pop-out is a viewer (player-facing fog/HP rules)
-      if (q.get('mapPopout') === '1' || q.get('mapPopout') === 'true') return 'player';
       return 'dm';
     } catch (e) { return 'dm'; }
   }
   function isPlayerRole() { return getVttRole() === 'player'; }
+  /** Shared map or player client: fog / hide enemy HP rules */
+  function isPlayerFacingView() {
+    return isPlayerRole() || (typeof isMapPopoutMode === 'function' && isMapPopoutMode());
+  }
   function isDmRole() { return getVttRole() === 'dm'; }
   function getVttRoomCode() {
     try {
@@ -11435,9 +11492,10 @@ function escapeHtml(str) {
     }
     return panel;
   }  function renderPlayerCombatPanel() {
+    // Combat controls only for role=player (not DM mapPopout share window)
     if (!isPlayerRole()) {
       const p = document.getElementById('player-combat-panel');
-      if (p) p.style.display = 'none';
+      if (p) { p.style.display = 'none'; p.setAttribute('hidden', ''); }
       return;
     }
     const panel = ensurePlayerCombatPanel();
