@@ -34,6 +34,12 @@
         // DM share (mapPopout only): do not strip entire map-toolbar here
         sels.forEach(function(sel){
           document.querySelectorAll(sel).forEach(function(el){
+            // Never remove map combatants list or player combat panel
+            if (!el) return;
+            if (el.id === 'map-roster' || el.id === 'map-roster-list' || (el.classList && el.classList.contains('map-roster'))) return;
+            if (el.id === 'player-combat-panel' || (el.classList && el.classList.contains('player-combat-panel'))) return;
+            if (el.id === 'map-canvas' || el.id === 'view-map' || el.id === 'map-layout') return;
+            if (el.closest && (el.closest('#map-roster') || el.closest('#player-combat-panel') || el.closest('.map-canvas-wrap'))) return;
             try { el.remove(); } catch(e) {
               try { el.style.setProperty('display','none','important'); el.style.pointerEvents='none'; } catch(e2) {}
             }

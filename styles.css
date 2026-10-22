@@ -3582,3 +3582,55 @@ body.map-popout #view-map {
   flex: 1 1 auto !important;
   min-height: 100dvh !important;
 }
+
+
+/* FORCE map-roster visible on popout (never hide with sidebar rules) */
+html.map-popout #map-roster,
+html.map-popout aside.map-roster,
+body.map-popout #map-roster,
+body.map-popout aside.map-roster,
+html.vtt-player #map-roster,
+body.vtt-player #map-roster {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  position: relative !important;
+  left: auto !important;
+  width: 260px !important;
+  min-width: 220px !important;
+  max-width: 300px !important;
+  flex: 0 0 260px !important;
+  height: auto !important;
+  max-height: 100dvh !important;
+  overflow-y: auto !important;
+  z-index: 5 !important;
+}
+html.map-popout .map-layout,
+body.map-popout .map-layout {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
+  gap: 0.5rem !important;
+}
+html.map-popout .map-canvas-wrap,
+body.map-popout .map-canvas-wrap {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+html.map-popout #player-combat-panel,
+body.map-popout.vtt-player #player-combat-panel,
+body.vtt-player #player-combat-panel {
+  display: block !important;
+  visibility: visible !important;
+  min-width: 280px !important;
+  max-width: 360px !important;
+  flex: 0 0 320px !important;
+  overflow-y: auto !important;
+  max-height: 100dvh !important;
+}
+/* DM share popout: no player panel */
+body.map-popout:not(.vtt-player) #player-combat-panel {
+  display: none !important;
+}

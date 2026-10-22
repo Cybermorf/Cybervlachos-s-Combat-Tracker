@@ -10711,8 +10711,8 @@ function escapeHtml(str) {
     const strip = [
       '.app-header', 'header', '#menu-toggle', '.menu-toggle',
       '#sidebar-collapse-btn', '.sidebar-collapse-btn',
-      '#sidebar', '.sidebar', 'aside',
-      '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
+      '#sidebar', 'aside.sidebar', '.sidebar',
+      '.app-nav', 'nav.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
       '.view-desc', '#view-map .view-header', '#dice-toggle', '#dice-panel'
     ];
     if (playerPop) {
@@ -10725,6 +10725,10 @@ function escapeHtml(str) {
     // Keep #map-roster for both
     strip.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
+        if (!el) return;
+        if (el.id === 'map-roster' || el.id === 'map-roster-list' || el.classList.contains('map-roster')) return;
+        if (el.id === 'player-combat-panel' || el.classList.contains('player-combat-panel')) return;
+        if (el.closest && (el.closest('#map-roster') || el.closest('#player-combat-panel'))) return;
         try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
       });
     });
@@ -10760,7 +10764,29 @@ function escapeHtml(str) {
     }
     // Hard-remove menu toggle if it resurfaces
     try {
-      document.querySelectorAll('#menu-toggle, button.menu-toggle').forEach(el => el.remove());
+      document.querySelectorAll('#menu-toggle, button.menu-toggle, #sidebar-collapse-btn').forEach(el => el.remove());
+    } catch (e) {}
+    // Force Combatants roster visible on popouts
+    try {
+      const roster = document.getElementById('map-roster');
+      if (roster) {
+        roster.style.setProperty('display', 'block', 'important');
+        roster.style.setProperty('visibility', 'visible', 'important');
+        roster.style.setProperty('min-width', '240px', 'important');
+        roster.style.setProperty('max-width', '300px', 'important');
+        roster.style.setProperty('flex', '0 0 260px', 'important');
+        roster.style.removeProperty('opacity');
+        roster.style.removeProperty('position');
+        roster.style.removeProperty('left');
+        roster.style.removeProperty('height');
+        roster.style.removeProperty('width');
+      }
+      const layout = document.querySelector('.map-layout');
+      if (layout) {
+        layout.style.setProperty('display', 'flex', 'important');
+        layout.style.setProperty('flex-direction', 'row', 'important');
+        layout.style.setProperty('align-items', 'stretch', 'important');
+      }
     } catch (e) {}
     // Keep only map view content
     const mapView = document.getElementById('view-map');
