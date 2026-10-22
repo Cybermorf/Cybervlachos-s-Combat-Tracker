@@ -887,17 +887,17 @@
   }
 
   function save() {
-    // Pop-out window is view-only — never write state (prevents wiping main workspace)
+    // Player (including player+mapPopout): persist combat mutations + sync to DM
     try {
-      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
-        try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        try { playerPersistAndSyncCombat(); } catch (e) { console.warn('playerPersist', e); }
         return;
       }
     } catch (e) {}
-    // Player VTT role is also view-only for full state
+    // Map pop-out (DM share window without player role): view-only
     try {
-      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-        try { broadcastVttState('player-noop'); } catch (e) {}
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+        try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
         return;
       }
     } catch (e) {}
@@ -1122,10 +1122,51 @@
           c.villains = Array.from(vm.values());
         }
         c.updatedAt = new Date().toISOString();
+        // P0: optional push imported roster into combat tracker
+        let addedCombat = 0;
+        const addToCombat = (window._rosterImportAddToCombat !== false);
+        if (addToCombat && typeof combatantFromChar === 'function') {
+          try {
+            const combat = getCombat(c);
+            if (!combat.combatants) combat.combatants = [];
+            const existingIds = new Set(
+              (combat.combatants || []).map(cb => String(cb.charId || cb.sourceId || ''))
+            );
+            const existingNames = new Set(
+              (combat.combatants || []).map(cb => String(cb.name || '').toLowerCase())
+            );
+            const upsertSide = (list, side) => {
+              (list || []).forEach(ch => {
+                if (!ch || !ch.name) return;
+                const cid = String(ch.characterId || ch.id || '');
+                const nm = String(ch.name || '').toLowerCase();
+                if (cid && existingIds.has(cid)) return;
+                if (nm && existingNames.has(nm)) return;
+                try {
+                  const row = combatantFromChar(ch, side);
+                  if (row && row.name) {
+                    combat.combatants.push(row);
+                    if (cid) existingIds.add(cid);
+                    if (nm) existingNames.add(nm);
+                    addedCombat++;
+                  }
+                } catch (err) { console.warn('add to combat', ch && ch.name, err); }
+              });
+            };
+            upsertSide(party, 'party');
+            upsertSide(villains, 'enemy');
+            if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
+          } catch (err) { console.warn('roster add-to-combat', err); }
+        }
         save();
-        toast('Roster imported: ' + party.length + ' party, ' + villains.length + ' villains');
+        let msg = 'Roster imported: ' + party.length + ' party, ' + villains.length + ' villains';
+        if (addToCombat) msg += (addedCombat ? (' · ' + addedCombat + ' added to combat') : ' · combat unchanged');
+        toast(msg);
         try { if (typeof renderParty === 'function' && $('#view-party')?.classList.contains('active')) renderParty(); } catch (e) {}
-        try { if (typeof renderCombat === 'function' && $('#view-combat')?.classList.contains('active')) renderCombat(); } catch (e) {}
+        try {
+          if (typeof setView === 'function' && addToCombat && addedCombat) setView('combat');
+        } catch (e) {}
+        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
         try { renderTools(); } catch (e) {}
       } catch (e) {
         console.warn(e);
@@ -2192,7 +2233,45 @@
     return m ? Math.max(0, Number(m[1])) : 30;
   }
 
-  function ensureCombatantTurnState(cb, ch) {
+  
+  function resourceRemaining(r) {
+    if (!r) return 0;
+    if (r.current != null && !isNaN(Number(r.current))) return Math.max(0, Number(r.current));
+    const max = Number(r.max) || 0;
+    const used = Number(r.used) || 0;
+    return Math.max(0, max - used);
+  }
+  function spendCombatResource(cb, id, amount) {
+    amount = Math.max(1, Number(amount) || 1);
+    if (!cb) return false;
+    if (!cb.combatResources) cb.combatResources = {};
+    let r = cb.combatResources[id];
+    if (!r) return false;
+    const max = Number(r.max) || 0;
+    let left = resourceRemaining(r);
+    if (left < amount) return false;
+    left -= amount;
+    r.current = left;
+    r.used = Math.max(0, max - left);
+    r.max = max;
+    return true;
+  }
+  function legendaryResistRemaining(cb) {
+    if (!cb) return 0;
+    if (cb.legendaryResist != null) return Math.max(0, Number(cb.legendaryResist) || 0);
+    if (cb.legendaryResistLeft != null) return Math.max(0, Number(cb.legendaryResistLeft) || 0);
+    return Math.max(0, Number(cb.legendaryResistMax) || 0);
+  }
+  function spendLegendaryResist(cb) {
+    if (!cb) return false;
+    const left = legendaryResistRemaining(cb);
+    if (left <= 0) return false;
+    cb.legendaryResist = left - 1;
+    cb.legendaryResistLeft = cb.legendaryResist;
+    return true;
+  }
+
+function ensureCombatantTurnState(cb, ch) {
     if (!cb) return;
     // Recalc from class levels unless DM locked the budget
     if (!cb.attacksMaxLocked) {
@@ -2217,13 +2296,27 @@
       const fromChar = (ch.resourceUsed && typeof ch.resourceUsed === 'object') ? ch.resourceUsed : {};
       const next = {};
       pools.forEach(function(r) {
-        const prevUsed = prev[r.id] && prev[r.id].used != null ? Number(prev[r.id].used) : null;
+        const prevR = prev[r.id] || {};
+        const prevUsed = prevR.used != null ? Number(prevR.used) : null;
+        const prevCur = prevR.current != null ? Number(prevR.current) : null;
         const charUsed = fromChar[r.id] != null ? Number(fromChar[r.id]) : null;
-        const u = prevUsed != null ? prevUsed : (charUsed != null ? charUsed : 0);
+        let used;
+        if (prevCur != null && !isNaN(prevCur)) {
+          used = Math.max(0, (Number(r.max) || 0) - prevCur);
+        } else if (prevUsed != null) {
+          used = Math.max(0, prevUsed);
+        } else if (charUsed != null) {
+          used = Math.max(0, charUsed);
+        } else {
+          used = 0;
+        }
+        const max = Number(r.max) || 0;
+        if (used > max) used = max;
         next[r.id] = {
           label: r.label,
-          max: r.max,
-          used: Math.max(0, u),
+          max: max,
+          used: used,
+          current: Math.max(0, max - used),
           recover: r.recover || '',
           className: r.className || ''
         };
@@ -2409,8 +2502,8 @@
     const out = [];
     const seen = new Set();
     function add(label, kind) {
-      const name = String(label || '').trim();
-      if (!name) return;
+      const name = typeof spellLabelName === 'function' ? spellLabelName(label) : String(label || '').trim();
+      if (!name || /^\[object object\]$/i.test(name)) return;
       const sp = lookupSpellByName(name);
       const displayName = sp ? sp.name : name.replace(/\s*\(\d+\w*\)\s*$/, '').trim();
       const dedupeKey = (sp && sp.id) ? String(sp.id).toLowerCase() : displayName.toLowerCase().replace(/\s+/g, ' ');
@@ -2435,13 +2528,28 @@
         raw: sp
       });
     }
-    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : String(ch.cantrips || '').split(/[,;\n]+/)).forEach(s => add(s, 'cantrip'));
-    const prepared = ch.spellPrepMode === 'prepared' && ch.preparedSpells
-      ? ch.preparedSpells
-      : ch.spells;
-    (typeof splitSpellNames === 'function' ? splitSpellNames(prepared) : String(prepared || '').split(/[,;\n]+/)).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : []).forEach(s => add(s, 'cantrip'));
+    // Always include known spells; if prepared mode, still show prepared (and known as fallback if prepared empty)
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spells) : []).forEach(s => add(s, 'spell'));
+    if (ch.spellPrepMode === 'prepared' && ch.preparedSpells) {
+      (typeof splitSpellNames === 'function' ? splitSpellNames(ch.preparedSpells) : []).forEach(s => add(s, 'spell'));
+    }
+    // Additional common fields from imports / combatants
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.knownSpells) : []).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.preparedSpells) : []).forEach(s => add(s, 'spell'));
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spellList) : []).forEach(s => add(s, 'spell'));
+    if (Array.isArray(ch.spellIds)) {
+      ch.spellIds.forEach(function(id) {
+        try {
+          const sp = (typeof lookupSpellById === 'function') ? lookupSpellById(id) : null;
+          if (sp) add(sp.name || sp, Number(sp.level) === 0 ? 'cantrip' : 'spell');
+          else add(String(id), 'spell');
+        } catch (e) {}
+      });
+    }
+    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spellList) : []).forEach(s => add(s, 'spell'));
     (ch.spellIds || []).forEach(id => {
-      const sp = (window.SPELLS || []).find(x => x.id === id);
+      const sp = (window.SPELLS || []).find(x => x.id === id || x.name === id);
       if (sp) add(sp.name, sp.level === 0 ? 'cantrip' : 'spell');
     });
     out.sort((a, b) => (a.level - b.level) || a.name.localeCompare(b.name));
@@ -2909,7 +3017,7 @@
         <div class="combat-res-row" style="margin-top:0.35rem">
           <span class="muted small">Legendary Resistance</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-lr-dec">−</button>
-          <span class="combat-res-val"><strong>${cb.legendaryResistLeft != null ? cb.legendaryResistLeft : (cb.legendaryResistMax != null ? cb.legendaryResistMax : 0)}</strong>/${cb.legendaryResistMax != null ? cb.legendaryResistMax : 0}</span>
+          <span class="combat-res-val"><strong>${typeof legendaryResistRemaining === 'function' ? legendaryResistRemaining(cb) : (cb.legendaryResist != null ? cb.legendaryResist : (cb.legendaryResistMax || 0))}</strong>/${cb.legendaryResistMax != null ? cb.legendaryResistMax : 0}</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-lr-use" title="Succeed on a save">Use LR</button>
         </div>
       </section>` : ''}
@@ -4363,8 +4471,301 @@
    * Fetch CritterDB JSON (direct only — no third-party proxies).
    * Browsers usually block this via CORS; use tools/critterdb-bulk-crawl.mjs or JSON export.
    */
-  async function critterDbFetchJson() { /* stripped */ return null; }
+  async function critterDbFetchJson(url) {
+    const res = await fetch(url, { credentials: 'omit' });
+    if (!res.ok) throw new Error('CritterDB ' + res.status);
+    return res.json();
+  }
 
+
+  async function fetchCritterDbPublishedBestiary(bestiaryId, { onPage, maxPages = 40 } = {}) {
+    const id = parseCritterDbBestiaryId(bestiaryId);
+    if (!id) throw new Error('Invalid CritterDB bestiary id or URL');
+    const all = [];
+    let page = 1;
+    while (page <= maxPages) {
+      const url = `https://critterdb.com/api/publishedbestiaries/${id}/creatures/${page}`;
+      let batch;
+      try {
+        batch = await critterDbFetchJson(url);
+      } catch (err) {
+        if (page === 1) throw err;
+        break;
+      }
+      if (!Array.isArray(batch) || !batch.length) break;
+      all.push(...batch);
+      if (typeof onPage === 'function') onPage(page, all.length);
+      // CritterDB pages typically return up to 25; stop when short page
+      if (batch.length < 20) break;
+      page += 1;
+    }
+    return all;
+  }
+
+  async function fetchCritterDbBestiaryIndex({ lists = ['recent', 'popular'], maxPagesPerList = 80, onProgress } = {}) {
+    const byId = new Map();
+    for (const list of lists) {
+      for (let page = 1; page <= maxPagesPerList; page++) {
+        const url = `https://critterdb.com/api/publishedbestiaries/${list}/${page}`;
+        let batch;
+        try {
+          batch = await critterDbFetchJson(url);
+        } catch (err) {
+          if (page === 1) throw new Error(`Network error listing ${list} p${page}: ${err.message || err}`);
+          break;
+        }
+        if (!Array.isArray(batch) || !batch.length) break;
+        batch.forEach(b => {
+          const id = b._id || b.id;
+          if (id) byId.set(id, { id, name: b.name || id, description: b.description || '' });
+        });
+        if (typeof onProgress === 'function') {
+          onProgress({ phase: 'index', list, page, bestiaries: byId.size });
+        }
+        if (batch.length < 5) break; // likely last page
+        await sleepMs(120);
+      }
+    }
+    // most popular (single payload if available)
+    try {
+      const data = await critterDbFetchJson('https://critterdb.com/api/publishedbestiaries/mostpopular');
+      const arr = Array.isArray(data) ? data : (data.bestiaries || data.results || []);
+      arr.forEach(b => {
+        const id = b._id || b.id;
+        if (id) byId.set(id, { id, name: b.name || id, description: b.description || '' });
+      });
+    } catch (e) { /* optional */ }
+    return [...byId.values()];
+  }
+
+  /**
+   * Bulk crawl all discoverable public bestiaries (recent + popular feeds)
+   * and merge creatures into the user compendium.
+   */
+  async function syncCritterDb({ bestiaryIdOrUrl, statusEl } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    setStatus('Fetching CritterDB bestiary…');
+    const rows = await fetchCritterDbPublishedBestiary(bestiaryIdOrUrl, {
+      onPage: (p, n) => setStatus(`CritterDB page ${p} — ${n} creatures…`)
+    });
+    if (!rows.length) {
+      setStatus('No creatures returned.');
+      return { creatures: 0 };
+    }
+    const mapped = rows.map(r => mapCritterDbCreature(r, 'CritterDB')).filter(Boolean);
+    const pack = {
+      creatures: mapped,
+      meta: {
+        edition: '5e-critterdb',
+        source: 'CritterDB',
+        attribution: 'Imported from CritterDB (https://critterdb.com). Respect original authors’ licenses.',
+        bestiaryId: parseCritterDbBestiaryId(bestiaryIdOrUrl),
+        syncedAt: new Date().toISOString()
+      }
+    };
+    setStatus(`Merging ${mapped.length} creatures…`);
+    const res = importCompendiumPack(pack);
+    setStatus(`Done — +${res.creaturesAdded ?? res.creatures} new, ${res.creaturesUpdated || 0} updated, ${res.creaturesSkipped || 0} duplicates skipped (bestiary total ${res.totalCreatures}).`);
+    return res;
+  }
+
+  async function syncCritterDbCatalog({
+    statusEl,
+    maxBestiaries = 500,
+    maxPagesPerList = 100,
+    delayMs = 150,
+    abortSignal
+  } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    setStatus('Indexing published bestiaries (recent + popular)…');
+    const index = await fetchCritterDbBestiaryIndex({
+      lists: ['recent', 'popular'],
+      maxPagesPerList,
+      onProgress: ({ list, page, bestiaries }) => {
+        setStatus(`Indexing ${list} p${page} — ${bestiaries} unique bestiaries…`);
+      }
+    });
+    if (!index.length) {
+      setStatus('No published bestiaries found (API empty or blocked).');
+      return { bestiaries: 0, creatures: 0 };
+    }
+    const slice = index.slice(0, maxBestiaries);
+    setStatus(`Found ${index.length} bestiaries — importing up to ${slice.length}…`);
+
+    let totalMapped = 0;
+    let bestiariesOk = 0;
+    let bestiariesFail = 0;
+    const allMapped = [];
+
+    for (let i = 0; i < slice.length; i++) {
+      if (abortSignal?.aborted) {
+        setStatus(`Aborted after ${bestiariesOk} bestiaries / ${totalMapped} creatures.`);
+        break;
+      }
+      const b = slice[i];
+      setStatus(`Bestiary ${i + 1}/${slice.length}: ${b.name}…`);
+      try {
+        const rows = await fetchCritterDbPublishedBestiary(b.id, {
+          maxPages: 60,
+          onPage: (p, n) => setStatus(`Bestiary ${i + 1}/${slice.length}: ${b.name} — creature page ${p} (${n})`)
+        });
+        const mapped = rows
+          .map(r => mapCritterDbCreature(r, `CritterDB: ${b.name}`))
+          .filter(Boolean);
+        allMapped.push(...mapped);
+        totalMapped += mapped.length;
+        bestiariesOk++;
+      } catch (err) {
+        console.warn('CritterDB bestiary failed', b.id, err);
+        bestiariesFail++;
+      }
+      // Merge in chunks so progress is saved if the tab dies mid-crawl
+      if (allMapped.length >= 80 || i === slice.length - 1) {
+        if (allMapped.length) {
+          importCompendiumPack({
+            creatures: allMapped.splice(0, allMapped.length),
+            meta: {
+              edition: '5e-critterdb-bulk',
+              source: 'CritterDB public catalog',
+              attribution: 'Bulk import from CritterDB published bestiaries (https://critterdb.com). Respect authors’ licenses.',
+              syncedAt: new Date().toISOString()
+            }
+          });
+        }
+      }
+      await sleepMs(delayMs);
+    }
+
+    applyCompendiumToRuntime();
+    const totalCreatures = (window.BESTIARY_MERGED || []).length;
+    setStatus(`Done — ${bestiariesOk} bestiaries OK, ${bestiariesFail} failed, ~${totalMapped} creatures merged (runtime bestiary ${totalCreatures}).`);
+    return { bestiaries: bestiariesOk, failed: bestiariesFail, creatures: totalMapped, totalCreatures };
+  }
+
+
+  function importCritterDbText(text) {
+    const data = JSON.parse(text);
+    // Normalize to pack
+    let creatures = [];
+    if (Array.isArray(data)) creatures = data;
+    else if (data.creatures) creatures = data.creatures;
+    else if (data.stats && data.name) creatures = [data];
+    else throw new Error('Unrecognized CritterDB JSON (need creature or bestiary with creatures[])');
+    const mapped = creatures.map(r => mapCritterDbCreature(r, data.name ? `CritterDB: ${data.name}` : 'CritterDB')).filter(Boolean);
+    return importCompendiumPack({
+      creatures: mapped,
+      meta: {
+        edition: '5e-critterdb',
+        source: data.name || 'CritterDB JSON',
+        attribution: 'Imported from CritterDB JSON export.'
+      }
+    });
+  }
+
+  async function syncOpen5e({
+    srdOnly = true,
+    spells = true,
+    equipment = true,
+    items = true,
+    magicItems = true,
+    feats = false,
+    creatures = false,
+    statusEl
+  } = {}) {
+    const setStatus = (msg) => { if (statusEl) statusEl.textContent = msg; };
+    const params = srdOnly ? { document__key: 'srd-2024' } : {};
+    const pack = {
+      spells: [],
+      equipment: [],
+      creatures: [],
+      meta: {
+        edition: srdOnly ? '5e-srd-2024-open5e' : '5e-open5e-v2-all',
+        source: 'Open5e API v2',
+        attribution: 'Data from Open5e API v2 (https://api.open5e.com). Documents retain their original licenses.',
+        syncedAt: new Date().toISOString()
+      }
+    };
+
+    try {
+      if (spells) {
+        setStatus('Fetching spells…');
+        const rows = await open5eFetchAll('/spells/', params, {
+          maxPages: 120,
+          onPage: (p, n, total) => setStatus(`Spells page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.spells = rows.map(mapOpen5eSpell).filter(Boolean);
+        setStatus(`Mapped ${pack.spells.length} spells`);
+      }
+
+      if (equipment) {
+        setStatus('Fetching weapons…');
+        const weapons = await open5eFetchAll('/weapons/', params, {
+          maxPages: 40,
+          onPage: (p, n, total) => setStatus(`Weapons page ${p} — ${n}/${total || '?'}`)
+        });
+        setStatus('Fetching armor…');
+        const armor = await open5eFetchAll('/armor/', params, {
+          maxPages: 20,
+          onPage: (p, n, total) => setStatus(`Armor page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...weapons.map(mapOpen5eWeapon).filter(Boolean));
+        pack.equipment.push(...armor.map(mapOpen5eArmor).filter(Boolean));
+      }
+
+      if (items) {
+        setStatus('Fetching adventuring gear (items)…');
+        const rows = await open5eFetchAll('/items/', params, {
+          maxPages: 80,
+          onPage: (p, n, total) => setStatus(`Items page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...rows.map(mapOpen5eItem).filter(Boolean));
+      }
+
+      if (magicItems) {
+        setStatus('Fetching magic items…');
+        // Full catalog (SRD filter alone misses many +1 weapons / wondrous items)
+        let magicRows = await open5eFetchAll('/magicitems/', {}, {
+          maxPages: 50,
+          onPage: (p, n, total) => setStatus(`Magic items page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...magicRows.map(mapOpen5eMagicItem).filter(Boolean));
+        setStatus(`Mapped ${magicRows.length} magic items`);
+      }
+
+      if (feats) {
+        setStatus('Fetching feats…');
+        const rows = await open5eFetchAll('/feats/', params, {
+          maxPages: 40,
+          onPage: (p, n, total) => setStatus(`Feats page ${p} — ${n}/${total || '?'}`)
+        });
+        pack.equipment.push(...rows.map(mapOpen5eFeat).filter(Boolean));
+      }
+
+
+      if (creatures) {
+        setStatus('Fetching creatures (bestiary)…');
+        try {
+          const rows = await open5eFetchAll('/creatures/', params, {
+            maxPages: 150,
+            onPage: (p, n, total) => setStatus(`Creatures page ${p} — ${n}/${total || '?'}`)
+          });
+          pack.creatures = rows.map(mapOpen5eCreature).filter(Boolean);
+        } catch (err) {
+          console.warn('Creature sync failed', err);
+          setStatus('Creature sync failed (API may rate-limit). Spells/equipment still saved.');
+        }
+      }
+
+      setStatus(`Merging ${pack.spells.length} spells, ${pack.equipment.length} equipment…`);
+      const res = importCompendiumPack(pack);
+      setStatus(`Done — +${res.spells} spells, +${res.equipment} equipment${res.creatures ? ', +' + res.creatures + ' creatures' : ''}. Runtime: ${res.totalSpells} spells / ${res.totalEquipment} equipment.`);
+      return res;
+    } catch (err) {
+      console.warn(err);
+      setStatus('Error: ' + (err.message || err));
+      throw err;
+    }
+  }
 
   function resolveFeaturePlaceholders(text, ch) {
     if (!text) return '';
@@ -6174,6 +6575,134 @@ function parseAttackLines(ch) {
   }
 
   // ─── Tools (generators + reference) ──────────────────────────────────────
+  
+  function renderCompendiumTools() {
+    const root = document.getElementById('compendium-tools');
+    if (!root) return;
+    let extra = { spells: [], equipment: [], creatures: [] };
+    try { extra = getUserCompendium() || extra; } catch (e) {}
+    const sN = (extra.spells || []).length;
+    const eN = (extra.equipment || []).length;
+    const cN = (extra.creatures || []).length;
+    root.innerHTML = `
+      <div class="card tool-card" style="margin-bottom:1rem">
+        <h3>Open5e Sync</h3>
+        <p class="muted small">Pull SRD spells, equipment, and monsters into this Combat Tracker (browser storage).</p>
+        <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn primary" id="open5e-sync-srd">Sync Open5e SRD (spells + equipment)</button>
+          <button type="button" class="btn secondary" id="open5e-sync-monsters">Sync Open5e monsters</button>
+        </div>
+        <p class="muted small" id="open5e-status">User pack: ${sN} spells · ${eN} equipment · ${cN} creatures</p>
+      </div>
+      <div class="card tool-card" style="margin-bottom:1rem">
+        <h3>CritterDB</h3>
+        <p class="muted small">Import a published CritterDB bestiary by ID or URL, or paste JSON.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+          <input type="text" id="critterdb-id" placeholder="Bestiary ID or critterdb.com URL" style="flex:1;min-width:12rem">
+          <button type="button" class="btn primary" id="critterdb-sync-btn">Import bestiary</button>
+        </div>
+        <div class="tool-btns" style="margin-top:0.5rem;flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn secondary" id="critterdb-json-btn">Import CritterDB JSON file</button>
+          <input type="file" id="critterdb-json-file" accept=".json,application/json" hidden>
+        </div>
+        <p class="muted small" id="critterdb-status">—</p>
+      </div>
+      <div class="card tool-card">
+        <h3>Compendium file</h3>
+        <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem">
+          <button type="button" class="btn secondary" id="comp-export-btn">Export user pack</button>
+          <button type="button" class="btn secondary" id="comp-import-btn">Import JSON pack</button>
+          <input type="file" id="comp-import-file" accept=".json,application/json" hidden>
+        </div>
+      </div>`;
+
+    const oStatus = root.querySelector('#open5e-status');
+    const cStatus = root.querySelector('#critterdb-status');
+    root.querySelector('#open5e-sync-srd')?.addEventListener('click', async () => {
+      if (typeof syncOpen5e !== 'function') { toast('Open5e sync not available'); return; }
+      try {
+        oStatus.textContent = 'Syncing SRD…';
+        await syncOpen5e({ srdOnly: true, spells: true, equipment: true, creatures: false, statusEl: oStatus });
+        toast('Open5e SRD sync done');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        oStatus.textContent = 'Error: ' + (e.message || e);
+        toast('Open5e sync failed');
+      }
+    });
+    root.querySelector('#open5e-sync-monsters')?.addEventListener('click', async () => {
+      if (typeof syncOpen5e !== 'function') { toast('Open5e sync not available'); return; }
+      try {
+        oStatus.textContent = 'Syncing monsters…';
+        await syncOpen5e({ srdOnly: true, spells: false, equipment: false, creatures: true, statusEl: oStatus });
+        toast('Open5e monsters synced');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        oStatus.textContent = 'Error: ' + (e.message || e);
+      }
+    });
+    root.querySelector('#critterdb-sync-btn')?.addEventListener('click', async () => {
+      const id = root.querySelector('#critterdb-id')?.value?.trim();
+      if (!id) { toast('Enter CritterDB bestiary ID or URL'); return; }
+      if (typeof syncCritterDb !== 'function') { toast('CritterDB not available'); return; }
+      try {
+        await syncCritterDb({ bestiaryIdOrUrl: id, statusEl: cStatus });
+        toast('CritterDB import done');
+        renderCompendiumTools();
+      } catch (e) {
+        console.error(e);
+        if (cStatus) cStatus.textContent = 'Error: ' + (e.message || e);
+        toast('CritterDB failed (CORS/network)');
+      }
+    });
+    root.querySelector('#critterdb-json-btn')?.addEventListener('click', () => root.querySelector('#critterdb-json-file')?.click());
+    root.querySelector('#critterdb-json-file')?.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        if (typeof importCritterDbText === 'function') {
+          const n = importCritterDbText(text);
+          if (cStatus) cStatus.textContent = 'Imported from file';
+          toast('Imported CritterDB JSON');
+          renderCompendiumTools();
+        }
+      } catch (e) { toast('Import failed: ' + (e.message || e)); }
+      ev.target.value = '';
+    });
+    root.querySelector('#comp-export-btn')?.addEventListener('click', () => {
+      try {
+        const pack = getUserCompendium();
+        const blob = new Blob([JSON.stringify(pack, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'combat-compendium.json';
+        a.click();
+      } catch (e) { toast('Export failed'); }
+    });
+    root.querySelector('#comp-import-btn')?.addEventListener('click', () => root.querySelector('#comp-import-file')?.click());
+    root.querySelector('#comp-import-file')?.addEventListener('change', async (ev) => {
+      const f = ev.target.files && ev.target.files[0];
+      if (!f) return;
+      try {
+        const data = JSON.parse(await f.text());
+        const cur = getUserCompendium() || {};
+        const merged = {
+          spells: [].concat(cur.spells || [], data.spells || []),
+          equipment: [].concat(cur.equipment || [], data.equipment || []),
+          creatures: [].concat(cur.creatures || [], data.creatures || data.monsters || []),
+          meta: Object.assign({}, cur.meta || {}, data.meta || {}, { importedAt: Date.now() })
+        };
+        if (typeof saveUserCompendium === 'function') await saveUserCompendium(merged);
+        toast('Compendium imported');
+        renderCompendiumTools();
+      } catch (e) { toast('Import failed'); }
+      ev.target.value = '';
+    });
+  }
+
   function renderTools() {
     try { renderClassTablesTools(); } catch (e) {}
     try { if (typeof renderCompendiumTools === 'function') renderCompendiumTools(); } catch (e) {}
@@ -6198,6 +6727,8 @@ function parseAttackLines(ch) {
       impFile.addEventListener('change', function() {
         const f = impFile.files && impFile.files[0];
         window._rosterImportMode = (document.querySelector('#roster-import-mode') || {}).value || 'merge';
+        const addCb = document.querySelector('#roster-import-add-combat');
+        window._rosterImportAddToCombat = addCb ? !!addCb.checked : true;
         if (f) importPartyRoster(f);
         impFile.value = '';
       });
@@ -6232,11 +6763,22 @@ function parseAttackLines(ch) {
     try {
       const c = getActive();
       if (!c) return { ok: false, reasons: [] };
-      const id = cb.charId || cb.sourceId;
+      const id = cb.charId || cb.sourceId || cb.id;
       let ch = null;
-      if (id) ch = [...(c.party||[]), ...(c.villains||[])].find(x => x.id === id);
+      const pool = [...(c.party||[]), ...(c.villains||[])];
+      if (id) ch = pool.find(x => x.id === id);
+      if (!ch) ch = pool.find(x => x.name === cb.name) || null;
       // Also check combatant-carried spells/inventory
-      const spells = (ch && (ch.spells || ch.cantrips)) || (cb.spells || cb.cantrips) || '';
+      const spellBag = (src) => {
+        if (!src) return '';
+        const parts = []
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.cantrips) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.spells) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.knownSpells) : [])
+          .concat(typeof splitSpellNames === 'function' ? splitSpellNames(src.preparedSpells) : []);
+        return parts.join(', ');
+      };
+      const spells = spellBag(ch) || spellBag(cb) || '';
       const inv = (ch && ch.inventory) || cb.inventory || [];
       const healSpellRe = /cure wounds|healing word|heal\b|mass heal|prayer of healing|aura of vitality|goodberry|preservation|revivify|regenerate|spare the dying/i;
       const hasSpell = healSpellRe.test(String(spells));
@@ -6301,51 +6843,135 @@ function parseAttackLines(ch) {
   }
 
   function combatantFromChar(ch, side) {
-    const n = normalizeCharacter(ch);
+    const raw = ch || {};
+    const n = normalizeCharacter(raw);
     const dexMod = abilityMod(n.dex);
-    return {
-      id: uid(),
-      sourceId: n.id || null,
-      charId: n.id || null,
-      name: n.name,
+    const sideNorm = (function() {
+      const s = String(side || n.type || 'party').toLowerCase();
+      if (s === 'villain' || s === 'enemy' || s === 'enemies') return 'enemy';
+      if (s === 'ally' || s === 'allies') return 'ally';
+      return 'party';
+    })();
+    // Preserve string/array spell + attack lists for the combat UI
+    function asSpellText(v) {
+      if (v == null || v === '') return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        return v.map(function(x) {
+          if (typeof x === 'string') return x;
+          if (x && typeof x === 'object') {
+            const nm = x.name || x.label || '';
+            const lv = x.level;
+            if (lv != null && Number(lv) > 0) {
+              const o = {1:'1st',2:'2nd',3:'3rd',4:'4th',5:'5th',6:'6th',7:'7th',8:'8th',9:'9th'};
+              return nm + ' (' + (o[Number(lv)] || (lv + 'th')) + ')';
+            }
+            return nm;
+          }
+          return '';
+        }).filter(Boolean).join('\n');
+      }
+      if (typeof v === 'object') return String(v.name || v.label || '');
+      return String(v);
+    }
+    function asAttackText(v) {
+      if (v == null || v === '') return '';
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) {
+        return v.map(function(x) {
+          if (typeof x === 'string') return x;
+          if (x && typeof x === 'object') {
+            const nm = x.name || 'Attack';
+            const th = x.toHit; const d = x.damage || '';
+            return th != null ? (nm + ': +' + th + ' to hit, ' + d) : (nm + (d ? ': ' + d : ''));
+          }
+          return '';
+        }).filter(Boolean).join('\n');
+      }
+      return String(v);
+    }
+    function normSlots(slots, usedMap) {
+      if (!slots || typeof slots !== 'object') return null;
+      const out = {};
+      let any = false;
+      Object.keys(slots).forEach(function(k) {
+        const v = slots[k];
+        if (v == null) return;
+        any = true;
+        if (typeof v === 'object' && (v.max != null || v.used != null)) {
+          out[String(k)] = { max: Math.max(0, Number(v.max) || 0), used: Math.max(0, Number(v.used) || 0) };
+        } else {
+          const used = usedMap && usedMap[k] != null ? Number(usedMap[k]) || 0 : 0;
+          out[String(k)] = { max: Math.max(0, Number(v) || 0), used: used };
+        }
+      });
+      return any ? out : null;
+    }
+    const atkText = asAttackText(raw.attacks != null ? raw.attacks : n.attacks);
+    const spellText = asSpellText(raw.spells != null ? raw.spells : n.spells);
+    const cantripText = asSpellText(raw.cantrips != null ? raw.cantrips : n.cantrips);
+    const slots = normSlots(raw.combatSpellSlots || raw.spellSlots || n.spellSlots, raw.spellSlotsUsed || n.spellSlotsUsed);
+    const isEnemy = sideNorm === 'enemy' || n.type === 'enemy' || n.type === 'villain';
+    const leg = !!(raw.legendary || n.legendary);
+    const cb = {
+      id: typeof uid === 'function' ? uid() : ('cb' + Date.now()),
+      sourceId: n.id || raw.characterId || null,
+      charId: n.id || raw.characterId || null,
+      name: n.name || raw.name || 'Unknown',
       init: 10 + dexMod,
-      hp: n.hp,
-      hpMax: n.hpMax || n.hp,
-      ac: n.ac,
+      hp: Number(n.hp) || 0,
+      hpMax: Number(n.hpMax) || Number(n.hp) || 0,
+      ac: Number(n.ac) || 10,
       conditions: '',
-      side: side || 'party',
-      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : (Number(n.speed) || 30)),
+      side: sideNorm,
+      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : 30) || 30,
       moveUsed: 0,
       actionUsed: false,
       bonusUsed: false,
       objectInteractUsed: false,
       reactionUsed: false,
       attacksUsed: 0,
-      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1),
+      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1) || 1,
       turnPhase: 'ready',
-      notes: n.attacks || '',
-      attacks: n.attacks || '',
-      cantrips: n.cantrips || '',
-      spells: n.spells || '',
-      isUmbrarian: !!n.isUmbrarian,
-      umbrarianStage: n.umbrarianStage || '',
-      shard: n.shard || '',
-      shardAbility: n.shardAbility || '',
-      inventory: n.inventory || [],
-      actions: n.actions || [],
-      bonusActions: n.bonusActions || [],
-      reactions: n.reactions || [],
-      legendaryActions: n.legendaryActions || [],
-      legendary: !!(n.legendary && (side === 'enemy' || side === 'villain' || n.type === 'enemy' || n.type === 'villain')),
-      legendaryResist: n.legendaryResist,
-      legendaryResistMax: n.legendaryResistMax,
-      resistances: n.resistances || '',
-      immunities: n.immunities || '',
-      speed: n.speed || '30 ft.',
-      tempHp: 0,
+      notes: atkText,
+      attacks: atkText,
+      cantrips: cantripText,
+      spells: spellText,
+      spellcastingAbility: n.spellcastingAbility || raw.spellcastingAbility || '',
+      preparedSpells: asSpellText(raw.preparedSpells || n.preparedSpells),
+      spellPrepMode: n.spellPrepMode || raw.spellPrepMode || 'known',
+      combatSpellSlots: slots,
+      combatResources: raw.combatResources || null,
+      isUmbrarian: !!(n.isUmbrarian || raw.isUmbrarian),
+      umbrarianStage: n.umbrarianStage || raw.umbrarianStage || '',
+      shard: n.shard || raw.shard || '',
+      shardAbility: n.shardAbility || raw.shardAbility || '',
+      inventory: n.inventory || raw.inventory || [],
+      actions: raw.actions || n.actions || [],
+      bonusActions: raw.bonusActions || n.bonusActions || [],
+      reactions: raw.reactions || n.reactions || [],
+      legendaryActions: raw.legendaryActions || n.legendaryActions || [],
+      legendary: !!(leg && isEnemy),
+      legendaryResist: raw.legendaryResist != null ? raw.legendaryResist : n.legendaryResist,
+      legendaryResistMax: raw.legendaryResistMax != null ? raw.legendaryResistMax : n.legendaryResistMax,
+      legendaryActionsMax: raw.legendaryActionsMax != null ? raw.legendaryActionsMax : (raw.legendaryActions && raw.legendaryActions.length ? 3 : null),
+      legendaryActionsUsed: 0,
+      legendaryActionsLeft: raw.legendaryActionsMax != null ? raw.legendaryActionsMax : (raw.legendaryActions && raw.legendaryActions.length ? 3 : undefined),
+      resistances: raw.resistances || n.resistances || '',
+      immunities: raw.immunities || n.immunities || '',
+      vulnerabilities: raw.vulnerabilities || '',
+      tempHp: Number(raw.tempHp) || 0,
       concentrating: false,
-      combatLog: []
+      combatLog: [],
+      class: n.class || '',
+      level: n.level || 1,
+      features: n.features || raw.features || '',
+      hideHp: false
     };
+    try {
+      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, n);
+    } catch (e) {}
+    return cb;
   }
 
   function lookupBestiary(name) {
@@ -6403,6 +7029,113 @@ function parseAttackLines(ch) {
   }
   function isAutoHitSpellName(name) {
     return /magic missile|magic missle/i.test(String(name || ''));
+  }
+  function isPowerWordKillName(name) {
+    return /power\s*word\s*:?\s*kill/i.test(String(name || ''));
+  }
+  function isPowerWordStunName(name) {
+    return /power word stun|power word: stun/i.test(String(name || ''));
+  }
+  function isPowerWordHealName(name) {
+    return /power word heal|power word: heal/i.test(String(name || ''));
+  }
+  function isPowerWordBlindName(name) {
+    return /power word blind|power word: blind/i.test(String(name || ''));
+  }
+  function resolveSpecialSpellOnCast(sp, panel, cb, getSelectedTargets, appendLog, toast, escapeHtml) {
+    const name = (sp && sp.name) || '';
+    const packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+    if (typeof isPowerWordKillName === 'function' && isPowerWordKillName(name)) {
+      if (!packs.length) { toast('Power Word Kill — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 100) {
+          target.hp = 0; target.dead = true; target.concentrating = false;
+          target.tempHp = 0;
+          if (!target.combatLog) target.combatLog = [];
+          target.combatLog.push('Slain by Power Word Kill');
+          try { if (typeof syncLinkedCharacterHp === 'function') syncLinkedCharacterHp(target); } catch (e) {}
+          lines.push(target.name + ' (' + hp + ' HP ≤ 100) → DIES (no save, no damage)');
+          appendLog('Power Word Kill: ' + target.name + ' dies');
+        } else {
+          lines.push(target.name + ' (' + hp + ' HP > 100) → no effect (no save, no damage)');
+          appendLog('Power Word Kill: ' + target.name + ' unaffected (' + hp + ' HP)');
+        }
+      });
+      // Prevent a later Apply Damage from using a stale roll
+      window.__lastCombatRoll = { damage: 0, heal: 0, hit: false, name: 'Power Word Kill', isSpecial: true };
+      const applyAmt = panel && panel.querySelector('#cr-apply-amt');
+      if (applyAmt) applyAmt.value = '';
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordStunName(name)) {
+      if (!packs.length) { toast('Power Word Stun — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 150) {
+          const cond = String(target.conditions || '');
+          if (!/stunned/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'stunned';
+          lines.push(target.name + ' (' + hp + ' HP ≤ 150) → Stunned');
+        } else lines.push(target.name + ' (' + hp + ' HP > 150) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordHealName(name)) {
+      if (!packs.length) { toast('Power Word Heal — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        const max = Number(target.hpMax) || hp;
+        if (hp <= 100) {
+          target.hp = max;
+          target.dead = false;
+          lines.push(target.name + ' → healed to full ' + max);
+        } else lines.push(target.name + ' (' + hp + ' HP > 100) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (isPowerWordBlindName(name)) {
+      if (!packs.length) { toast('Power Word Blind — select a target first'); return true; }
+      const lines = [];
+      packs.forEach(({ target }) => {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 200) {
+          const cond = String(target.conditions || '');
+          if (!/blinded/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'blinded';
+          lines.push(target.name + ' → Blinded');
+        } else lines.push(target.name + ' (' + hp + ' HP > 200) → no effect');
+      });
+      toast(lines.join(' · '));
+      return true;
+    }
+    if (/^sleep$/i.test(String(name).trim())) {
+      if (!packs.length) { toast('Sleep — select targets in area first'); return true; }
+      let budget = 0;
+      for (let i = 0; i < 5; i++) budget += 1 + Math.floor(Math.random() * 8);
+      const sorted = packs.map(p => p.target).slice().sort((a, b) => (Number(a.hp)||0) - (Number(b.hp)||0));
+      const lines = ['Sleep pool: ' + budget + ' HP'];
+      for (const target of sorted) {
+        const hp = Number(target.hp) || 0;
+        if (hp <= 0) continue;
+        if (budget >= hp) {
+          budget -= hp;
+          const cond = String(target.conditions || '');
+          if (!/unconscious/i.test(cond)) target.conditions = (cond ? cond + ', ' : '') + 'unconscious';
+          lines.push(target.name + ' → unconscious');
+        } else {
+          lines.push(target.name + ' not enough pool (' + budget + ' left)');
+          break;
+        }
+      }
+      toast(lines.join(' · '));
+      return true;
+    }
+    return false;
   }
   function spellHealDice(sp, slotLevel, abilityMod) {
     const name = (sp && sp.name) || '';
@@ -6791,7 +7524,170 @@ function rollDieExpr(expr) {
   }
 
 
-  function showCombatDetail(cb) {
+  
+  function playerPersistAndSyncCombat() {
+    const c = getActive();
+    if (!c) {
+      console.warn('playerPersist: no active workspace');
+      return;
+    }
+    const combat = getCombat(c);
+    const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '';
+    // 1) Merge into shared campaign storage
+    try {
+      const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+      let data;
+      try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { data = null; }
+      if (!data || !data.campaigns) {
+        data = { campaigns: [c], activeCampaignId: c.id };
+      }
+      const camps = data.campaigns || [];
+      let camp = camps.find(x => x.id === data.activeCampaignId) || camps.find(x => x.id === c.id) || camps[0];
+      if (!camp) {
+        camp = c;
+        camps.push(camp);
+        data.campaigns = camps;
+        data.activeCampaignId = c.id;
+      }
+      if (!camp.combat) camp.combat = { round: 1, turnIndex: 0, combatants: [] };
+      const remoteList = camp.combat.combatants || [];
+      (combat.combatants || []).forEach(local => {
+        let r = remoteList.find(x => String(x.id) === String(local.id) || x.name === local.name);
+        if (!r) {
+          remoteList.push(JSON.parse(JSON.stringify(local)));
+          return;
+        }
+        r.hp = local.hp;
+        r.hpMax = local.hpMax;
+        r.tempHp = local.tempHp;
+        r.conditions = local.conditions;
+        r.turnState = local.turnState;
+        r.turnPhase = local.turnPhase;
+        r.actionUsed = local.actionUsed;
+        r.bonusUsed = local.bonusUsed;
+        r.reactionUsed = local.reactionUsed;
+        r.moveUsed = local.moveUsed;
+        r.objectInteractUsed = local.objectInteractUsed;
+        r.attacksUsed = local.attacksUsed;
+        r.attacksMax = local.attacksMax;
+        r.combatSpellSlots = local.combatSpellSlots;
+        r.combatResources = local.combatResources;
+        r.concentrating = local.concentrating;
+        r.spellSlots = local.spellSlots;
+        r.spellSlotsUsed = local.spellSlotsUsed;
+        r.deathSaves = local.deathSaves;
+        r.combatLog = local.combatLog;
+        r.legendaryResist = local.legendaryResist;
+        r.legendaryActionsUsed = local.legendaryActionsUsed;
+        r.legendaryActionsLeft = local.legendaryActionsLeft;
+        r.resourceUsed = local.resourceUsed;
+        r.ac = local.ac;
+        r.init = local.init;
+        r.hideHp = local.hideHp;
+        r.notes = local.notes;
+        r.attacks = local.attacks;
+        r.cantrips = local.cantrips;
+        r.spells = local.spells;
+      });
+      camp.combat.combatants = remoteList;
+      if (combat.round != null) camp.combat.round = combat.round;
+      if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
+      data.activeCampaignId = camp.id || data.activeCampaignId;
+      localStorage.setItem(key, JSON.stringify(data));
+    } catch (e) { console.warn('playerPersist storage', e); }
+
+    // 2) Broadcast snapshot (multiple keys so DM always sees it)
+    try {
+      const snapshot = {
+        type: 'vtt-state',
+        from: 'player',
+        clientId: window.__vttClientId || null,
+        room: room,
+        reason: 'player-combat',
+        at: Date.now(),
+        combat: {
+          round: combat.round,
+          current: combat.current,
+          turnIndex: combat.turnIndex,
+          combatants: (combat.combatants || []).map(cb => ({
+            id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+            init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
+            tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
+            turnState: cb.turnState, turnPhase: cb.turnPhase,
+            actionUsed: cb.actionUsed, bonusUsed: cb.bonusUsed, reactionUsed: cb.reactionUsed,
+            moveUsed: cb.moveUsed, objectInteractUsed: cb.objectInteractUsed,
+            attacksUsed: cb.attacksUsed, attacksMax: cb.attacksMax,
+            combatSpellSlots: cb.combatSpellSlots, combatResources: cb.combatResources,
+            spellSlots: cb.spellSlots, spellSlotsUsed: cb.spellSlotsUsed,
+            deathSaves: cb.deathSaves, spells: cb.spells, cantrips: cb.cantrips,
+            legendaryResist: cb.legendaryResist, legendaryActionsUsed: cb.legendaryActionsUsed,
+            legendaryActionsLeft: cb.legendaryActionsLeft, resourceUsed: cb.resourceUsed
+          }))
+        },
+        map: c.combatMap ? {
+          tokens: c.combatMap.tokens || {},
+          fogEnabled: !!c.combatMap.fogEnabled,
+          fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {}),
+          gridSize: c.combatMap.gridSize,
+          gridOffsetX: c.combatMap.gridOffsetX,
+          gridOffsetY: c.combatMap.gridOffsetY
+        } : null
+      };
+      localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(snapshot));
+      localStorage.setItem('cybervlachos_vtt_player_combat', JSON.stringify(snapshot));
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) try { ch.postMessage(snapshot); } catch (e) {}
+    } catch (e) { console.warn('playerPersist broadcast', e); }
+
+    try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+  }
+
+  
+  function isEnemySide(cb) {
+    const side = String(cb && cb.side || '').toLowerCase();
+    return side === 'enemy' || side === 'villain' || side === 'enemies';
+  }
+  function playerCanSeeCombatant(viewer, target) {
+    if (typeof isPlayerFacingView === 'function' ? !isPlayerFacingView() : !isPlayerRole()) return true;
+    if (!target) return false;
+    if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
+    if (!isEnemySide(target)) return true; // allies always listed
+    const map = getCombatMap();
+    if (!map) return false;
+    // Resolve token by id or name
+    const tokens = map.tokens || {};
+    let pos = tokens[String(target.id)];
+    if (!pos) {
+      const key = Object.keys(tokens).find(k => {
+        try {
+          const c = getActive();
+          const list = (c && getCombat(c).combatants) || [];
+          const cb = list.find(x => String(x.id) === String(k));
+          return cb && cb.name === target.name;
+        } catch (e) { return false; }
+      });
+      if (key) pos = tokens[key];
+    }
+    if (!pos) return false; // not on map → hidden from players
+    if (!map.fogEnabled) return true; // fog off: visible if placed
+    try {
+      ensureMapFog(map);
+      const cell = worldToFogCell(map, pos.x, pos.y);
+      return !!(map.fogRevealed && map.fogRevealed[cell]);
+    } catch (e) { return false; }
+  }
+  function formatCombatTargetLabel(x, viewer) {
+    if (isPlayerRole() && isEnemySide(x)) {
+      // No HP for enemies on player clients
+      return `${x.name || '?'} · enemy`;
+    }
+    return `${x.name || '?'} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
+  }
+
+
+  function showCombatDetail(cb, panelOverride) {
     if (!cb) return;
     // Resolve linked character for Extra Attack / speed
     let _ch = null;
@@ -6804,12 +7700,14 @@ function rollDieExpr(expr) {
     } catch (e) {}
     if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, _ch);
 
-    const panel = $('#combat-detail');
+    const panel = panelOverride || $('#combat-detail');
     if (!panel) return;
     if (!cb) {
       panel.innerHTML = '<div class="combat-detail-empty muted">Select a combatant to view details, traits, and actions.</div>';
       return;
     }
+    // Mark player panel for styling
+    if (panelOverride) panel.setAttribute('data-player-detail', '1');
     const best = lookupBestiary(cb.bestiaryName || cb.name);
     const partyChar = (function() {
       try {
@@ -7036,15 +7934,26 @@ function rollDieExpr(expr) {
         const c = getActive();
         combatants = (getCombat(c).combatants || []);
       } catch (e) {}
-      const opts = combatants.map((x, i) => {
-        const label = `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
-        return `<option value="${i}">${escapeHtml(label)}</option>`;
+      const opts = [];
+      combatants.forEach((x, idx) => {
+        if (typeof playerCanSeeCombatant === 'function' && !playerCanSeeCombatant(cb, x)) return;
+        const label = typeof formatCombatTargetLabel === 'function'
+          ? formatCombatTargetLabel(x, cb)
+          : `${x.name} (${x.hp}/${x.hpMax} HP)${x.side ? ' · ' + x.side : ''}`;
+        opts.push(`<option value="${idx}">${escapeHtml(label)}</option>`);
       });
-      sel.innerHTML = opts.join('') || '<option value="" disabled>No combatants</option>';
-      const selfIdx = combatants.findIndex(x => x === cb || x.id === cb.id || x.name === cb.name);
-      const enemy = combatants.findIndex((x, i) => i !== selfIdx && x.side !== (cb.side || ''));
-      if (enemy >= 0 && sel.options[enemy]) sel.options[enemy].selected = true;
-      else if (sel.options[0]) sel.options[0].selected = true;
+      sel.innerHTML = opts.join('') || '<option value="" disabled>No visible combatants</option>';
+      let picked = false;
+      for (let oi = 0; oi < sel.options.length; oi++) {
+        const idx = parseInt(sel.options[oi].value, 10);
+        const x = combatants[idx];
+        if (x && typeof isEnemySide === 'function' && isEnemySide(x) && String(x.id) !== String(cb.id)) {
+          sel.options[oi].selected = true;
+          picked = true;
+          break;
+        }
+      }
+      if (!picked && sel.options[0]) sel.options[0].selected = true;
     })();
     try { applyAoeTargetsToRoller(panel); } catch (e) {}
 
@@ -7069,10 +7978,33 @@ function rollDieExpr(expr) {
     });
     panel.querySelector('#cr-roll-btn')?.addEventListener('click', () => {
       const mode = panel.querySelector('#cr-mode')?.value || 'attack';
-      const box = panel.querySelector('#cr-result');
+      const box = panel.querySelector('#cr-result') || panel.querySelector('#combat-roll-result');
       const atkName = (list[parseInt(atkSel?.value, 10) || 0] || {}).name || 'Attack';
+      function showRollHtml(html) {
+        if (box) {
+          box.classList.remove('muted');
+          box.style.display = 'block';
+          box.style.visibility = 'visible';
+          box.style.opacity = '1';
+          box.innerHTML = html;
+        }
+        // Duplicate into any secondary result area
+        panel.querySelectorAll('#cr-result, #combat-roll-result, .combat-roll-result').forEach(el => {
+          if (el !== box) {
+            el.classList.remove('muted');
+            el.style.display = 'block';
+            el.innerHTML = html;
+          }
+        });
+        try {
+          const plain = (box && box.innerText) ? box.innerText.replace(/\s+/g, ' ').trim() : '';
+          if (plain && typeof isPlayerRole === 'function' && isPlayerRole()) {
+            toast(plain.slice(0, 120));
+          }
+        } catch (e) {}
+      }
       if (mode === 'utility') {
-        if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — utility (no attack roll).</div>`;
+        showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — utility (no attack roll).</div>`);
         appendLog(`${atkName}: utility`);
         return;
       }
@@ -7082,13 +8014,13 @@ function rollDieExpr(expr) {
         const total = dmg.total + bonus;
         const asHeal = isHealingSpellName(atkName) || (window.__lastCombatRoll && window.__lastCombatRoll.isHeal);
         if (asHeal) {
-          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — healing</div><div>Heal: <strong>${total}</strong></div>`;
+          showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — healing</div><div>Heal: <strong>${total}</strong></div>`);
           window.__lastCombatRoll = { damage: 0, heal: total, healDice: dmgEl?.value || '', hit: true, isHeal: true, name: atkName };
           const applyAmt = panel.querySelector('#cr-apply-amt');
           if (applyAmt) applyAmt.value = String(total);
           appendLog(`${atkName}: heal ${total}`);
         } else {
-          if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${total}</strong></div>`;
+          showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — auto-hit</div><div>Damage: <strong>${total}</strong></div>`);
           window.__lastCombatRoll = { damage: total, heal: 0, hit: true, isHeal: false, name: atkName };
           const applyAmt = panel.querySelector('#cr-apply-amt');
           if (applyAmt) applyAmt.value = String(total);
@@ -7115,8 +8047,8 @@ function rollDieExpr(expr) {
         } else if (dmgEl?.value && ok) {
           dmgLine = `<div class="muted">Saved — no damage (or half if the effect allows)</div>`;
         }
-        if (box) box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> · Save vs DC ${dc}</div>
-          <div>Roll: <strong>${total}</strong> → <strong style="color:${ok?'#8d8':'#c66'}">${ok?'SUCCESS':'FAIL'}</strong></div>${dmgLine}`;
+        showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> · Save vs DC ${dc}</div>
+          <div>Roll: <strong>${total}</strong> → <strong style="color:${ok?'#8d8':'#c66'}">${ok?'SUCCESS':'FAIL'}</strong></div>${dmgLine}`);
         if (!ok && dmgEl?.value) {
           const dmg = rollDieExpr(dmgEl.value);
           const db = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
@@ -7164,7 +8096,7 @@ function rollDieExpr(expr) {
       const dmg = rollDieExpr(dmgEl?.value || '1d8');
       const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
       const box = panel.querySelector('#cr-result');
-      if (box) box.innerHTML = `<div>Damage: <strong>${dmg.total + bonus}</strong> (${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</div>`;
+      showRollHtml(`<div>Damage: <strong>${dmg.total + bonus}</strong> (${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</div>`);
       appendLog(`Damage only: ${dmg.total + bonus}`);
     });
     panel.querySelector('#cr-roll-save')?.addEventListener('click', () => {
@@ -7179,7 +8111,7 @@ function rollDieExpr(expr) {
       const total = used + bonus;
       const ok = total >= dc;
       const box = panel.querySelector('#cr-result');
-      if (box) box.innerHTML = `<div>Save: <strong>${used}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''} = ${total}</strong> vs DC ${dc} → <strong style="color:${ok ? '#8d8' : '#c66'}">${ok ? 'SUCCESS' : 'FAIL'}</strong></div>`;
+      showRollHtml(`<div>Save: <strong>${used}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''} = ${total}</strong> vs DC ${dc} → <strong style="color:${ok ? '#8d8' : '#c66'}">${ok ? 'SUCCESS' : 'FAIL'}</strong></div>`);
       appendLog(`Save ${total} vs DC ${dc}: ${ok ? 'SUCCESS' : 'FAIL'}`);
     });
 
@@ -7204,7 +8136,7 @@ function rollDieExpr(expr) {
       cb.hp = Math.max(0, (cb.hp || 0) - left);
       appendLog(`Took ${amt} damage (HP now ${cb.hp})`);
       try { save(); } catch (e) {}
-      renderCombat();
+      try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
     panel.querySelector('#cd-heal')?.addEventListener('click', async () => {
       const amt = parseInt(prompt('Heal amount?', '5'), 10);
@@ -7212,7 +8144,7 @@ function rollDieExpr(expr) {
       cb.hp = Math.min(cb.hpMax || amt, (cb.hp || 0) + amt);
       appendLog(`Healed ${amt} (HP now ${cb.hp})`);
       try { save(); } catch (e) {}
-      renderCombat();
+      try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
     panel.querySelector('#cd-temp')?.addEventListener('click', async () => {
       const amt = parseInt(prompt('Temporary HP?', '5'), 10);
@@ -7234,6 +8166,10 @@ function rollDieExpr(expr) {
       return idxs.map(idx => ({ combat, idx, target: combat.combatants[idx] })).filter(x => x.target);
     }
     function applyToTarget(kind) {
+      if (window.__lastCombatRoll && window.__lastCombatRoll.isSpecial && kind === 'damage') {
+        toast('That effect already resolved (no damage roll)');
+        return;
+      }
       const packs = getSelectedTargets();
       if (!packs.length) { toast('Choose one or more targets'); return; }
       if (kind === 'heal') {
@@ -7262,7 +8198,12 @@ function rollDieExpr(expr) {
             target.tempHp = temp - absorb;
             left -= absorb;
           }
-          target.hp = Math.max(0, (target.hp || 0) - left);
+          const fromSpell = (window.__lastCombatRoll && window.__lastCombatRoll.name) || '';
+          if (/^harm$/i.test(String(fromSpell).trim())) {
+            target.hp = Math.max(1, (target.hp || 0) - left);
+          } else {
+            target.hp = Math.max(0, (target.hp || 0) - left);
+          }
           if (target.concentrating && left > 0) {
             const dc = Math.max(10, Math.floor(left / 2));
             const roll = 1 + Math.floor(Math.random() * 20);
@@ -7371,8 +8312,26 @@ function rollDieExpr(expr) {
         save(); renderCombat();
       });
       panel.querySelector('#cd-spend-lr')?.addEventListener('click', () => {
-        cb.legendaryResist = Math.max(0, (cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) - 1);
-        save(); renderCombat();
+        if (typeof spendLegendaryResist === 'function') spendLegendaryResist(cb);
+        else cb.legendaryResist = Math.max(0, (cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) - 1);
+        try { save(); } catch (e) {}
+        try { renderCombat(); } catch (e) {}
+        try { if (typeof showCombatDetail === 'function') showCombatDetail(cb, window.__combatDetailPanel); } catch (e) {}
+      });
+      panel.querySelector('#cd-lr-use')?.addEventListener('click', () => {
+        const ok = typeof spendLegendaryResist === 'function' ? spendLegendaryResist(cb) : false;
+        if (!ok && (cb.legendaryResist == null || cb.legendaryResist <= 0)) { toast('No Legendary Resistances left'); return; }
+        if (!ok) cb.legendaryResist = Math.max(0, (Number(cb.legendaryResist) || 0) - 1);
+        toast('Legendary Resistance used (' + (cb.legendaryResist || 0) + ' left)');
+        try { save(); } catch (e) {}
+        try { renderCombat(); } catch (e) {}
+        try { if (typeof showCombatDetail === 'function') showCombatDetail(cb, window.__combatDetailPanel); } catch (e) {}
+      });
+      panel.querySelector('#cd-lr-dec')?.addEventListener('click', () => {
+        if (typeof spendLegendaryResist === 'function') spendLegendaryResist(cb);
+        else cb.legendaryResist = Math.max(0, (Number(cb.legendaryResist) || 0) - 1);
+        try { save(); } catch (e) {}
+        try { renderCombat(); } catch (e) {}
       });
     })();
 
@@ -7422,8 +8381,10 @@ function rollDieExpr(expr) {
       syncCombatResourcesToCharacter(cb); save(); renderCombat();
     });
     panel.querySelector('#cr-cast-slot')?.addEventListener('click', () => {
-      const L = panel.querySelector('#cr-upcast-level')?.value;
-      if (!L || !cb.combatSpellSlots || !cb.combatSpellSlots[L]) { toast('No slot available'); return; }
+      const L = panel.querySelector('#cr-upcast-level')?.value
+        || panel.querySelector('#cr-spell-slot')?.value
+        || '';
+      if (!L || L === '0' || !cb.combatSpellSlots || !cb.combatSpellSlots[L]) { toast('No slot available at that level'); return; }
       const s = cb.combatSpellSlots[L];
       if ((s.used || 0) >= s.max) { toast('No slots left at this level'); return; }
       s.used = (s.used || 0) + 1;
@@ -7434,6 +8395,11 @@ function rollDieExpr(expr) {
     });
     function refreshCombatDetail() {
       try { save(); } catch(e) {}
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
+          playerPersistAndSyncCombat();
+        }
+      } catch (e) {}
       const c = getActive();
       const combat = c ? getCombat(c) : null;
       const sel = combat && combat.selectedIndex;
@@ -7442,7 +8408,7 @@ function rollDieExpr(expr) {
       if (combat && sel != null && combat.combatants[sel]) {
         try {
           combat.selectedIndex = sel;
-          if (typeof showCombatDetail === 'function') showCombatDetail(combat.combatants[sel], sel);
+          if (typeof showCombatDetail === 'function') showCombatDetail(combat.combatants[sel], window.__combatDetailPanel);
         } catch (e) {}
       }
     }
@@ -7730,9 +8696,20 @@ function rollDieExpr(expr) {
     
     // ── Spellcasting panel ──
     (function wireSpellcastingPanel() {
-      const spellList = (typeof listCharacterSpellsForCombat === 'function')
-        ? listCharacterSpellsForCombat(partyChar || null)
-        : [];
+      const spellList = (function() {
+        if (typeof listCharacterSpellsForCombat !== 'function') return [];
+        const a = listCharacterSpellsForCombat(cb) || [];
+        const b = partyChar ? (listCharacterSpellsForCombat(partyChar) || []) : [];
+        const seen = new Set();
+        const out = [];
+        a.concat(b).forEach(function(s) {
+          const k = String((s && s.name) || '').toLowerCase().replace(/\s+/g, ' ').trim();
+          if (!k || seen.has(k)) return;
+          seen.add(k);
+          out.push(s);
+        });
+        return out;
+      })();
       const stats = (typeof getSpellAttackAndDC === 'function')
         ? getSpellAttackAndDC(partyChar || cb)
         : { attack: 0, dc: 10, ability: 'WIS' };
@@ -7875,8 +8852,31 @@ function rollDieExpr(expr) {
         const applyAmt = panel.querySelector('#cr-apply-amt');
         const slotNeed = Math.max(sp.level || 0, Number(slotLevel) || sp.level || 0);
         const cls = typeof classifySpellAction === 'function' ? classifySpellAction(sp.name, sp.description || '') : { kind: 'utility' };
-        const isHeal = isHealingSpellName(sp.name);
-        const isAuto = isAutoHitSpellName(sp.name) || /missile/i.test(sp.name);
+        const spellName = String(sp.name || sp.label || '').trim();
+        const isHeal = isHealingSpellName(spellName);
+        const isAuto = isAutoHitSpellName(spellName) || (/missile/i.test(spellName) && !/power\s*word/i.test(spellName));
+
+        // Special threshold spells (PWK etc.) — before heal/auto damage paths
+        if (typeof resolveSpecialSpellOnCast === 'function') {
+          const handled = resolveSpecialSpellOnCast(
+            Object.assign({}, sp, { name: spellName }),
+            panel, cb, getSelectedTargets, appendLog, toast, escapeHtml
+          );
+          if (handled) {
+            window.__lastCombatRoll = window.__lastCombatRoll || { damage: 0, heal: 0, hit: false, name: spellName, isSpecial: true };
+            try { save(); } catch (e) {}
+            try { renderCombat(); } catch (e) {}
+            try {
+              const c2 = getActive();
+              const combat2 = getCombat(c2);
+              if (combat2) {
+                combat2.selectedIndex = (combat2.combatants || []).findIndex(x => x.id === cb.id || x.name === cb.name);
+              }
+            } catch (e) {}
+            try { refreshCombatDetail(); } catch (e) {}
+            return;
+          }
+        }
 
         if (mode) {
           if (isHeal) mode.value = 'auto';
@@ -7969,9 +8969,27 @@ function rollDieExpr(expr) {
 
       panel.querySelector('#cr-spell-cast')?.addEventListener('click', () => {
         const sp = currentSpell();
-        const slot = slotSel ? Number(slotSel.value) || 0 : 0;
+        const up = panel.querySelector('#cr-upcast-level');
+        const fromSlot = slotSel ? Number(slotSel.value) || 0 : 0;
+        const fromUp = up ? Number(up.value) || 0 : 0;
+        let slot = Math.max(fromSlot, fromUp);
+        if (sp && sp.level > 0) slot = Math.max(slot, Number(sp.level) || 0);
+        // Keep both selects in sync
+        if (slotSel && slot) slotSel.value = String(slot);
+        if (up && slot) up.value = String(slot);
         doCast(sp, slot);
       });
+      // Keep upcast + cast-with-slot selects synchronized
+      function syncSlotSelects(from) {
+        const a = panel.querySelector('#cr-spell-slot');
+        const b = panel.querySelector('#cr-upcast-level');
+        if (!a || !b) return;
+        if (from === 'a' && a.value && a.value !== '0') b.value = a.value;
+        if (from === 'b' && b.value) a.value = b.value;
+      }
+      panel.querySelector('#cr-spell-slot')?.addEventListener('change', () => syncSlotSelects('a'));
+      panel.querySelector('#cr-upcast-level')?.addEventListener('change', () => syncSlotSelects('b'));
+
 
       // Channel Divinity
       panel.querySelectorAll('.cd-option-btn').forEach(btn => {
@@ -8030,13 +9048,16 @@ function rollDieExpr(expr) {
       if (!sel) return;
       let combatants = [];
       try { combatants = getCombat(getActive()).combatants || []; } catch (e) {}
-      const valid = profile ? filterTargetsByProfile(combatants, cb, profile) : combatants;
+      const visible = combatants.filter(x => typeof playerCanSeeCombatant !== 'function' || playerCanSeeCombatant(cb, x));
+      const valid = profile ? filterTargetsByProfile(visible, cb, profile) : visible;
       const validSet = new Set(valid.map(x => x.id || x.name));
-      sel.innerHTML = combatants.map((x, i) => {
+      sel.innerHTML = visible.map((x) => {
+        const i = combatants.indexOf(x);
         const ok = validSet.has(x.id || x.name);
-        const label = `${x.name} (${x.hp}/${x.hpMax}) · ${x.side || '?'}${ok ? '' : ' · invalid'}`;
+        const base = typeof formatCombatTargetLabel === 'function' ? formatCombatTargetLabel(x, cb) : `${x.name} (${x.hp}/${x.hpMax}) · ${x.side || '?'}`;
+        const label = base + (ok ? '' : ' · invalid');
         return `<option value="${i}" ${ok ? '' : 'disabled'}>${escapeHtml(label)}</option>`;
-      }).join('') || '<option disabled>No combatants</option>';
+      }).join('') || '<option disabled>No visible combatants</option>';
       // Auto-select all valid for aoe/sense, or single default
       [...sel.options].forEach(o => { o.selected = false; });
       if (profile && (profile.aoe || profile.targetType === 'any' || profile.effect === 'sense')) {
@@ -8078,7 +9099,7 @@ function rollDieExpr(expr) {
       let shape = 'sphere';
       const sp = panel.querySelector('#cr-spell-pick');
       if (sp && sp.value !== '' && typeof listCharacterSpellsForCombat === 'function') {
-        const list = listCharacterSpellsForCombat(partyChar || null);
+        const list = listCharacterSpellsForCombat(partyChar || cb);
         const entry = list[Number(sp.value)];
         if (entry && entry.range) {
           const m = String(entry.range).match(/(\\d+)\\s*(foot|feet|ft)/i);
@@ -8351,10 +9372,27 @@ function rollDieExpr(expr) {
     }
   }
 
+  function spellLabelName(label) {
+    if (label == null) return '';
+    if (typeof label === 'object') {
+      return String(label.name || label.label || label.title || label.spell || '').trim();
+    }
+    return String(label).trim();
+  }
+
   function splitSpellNames(raw) {
-    return String(raw || '')
-      .replace(/\\n/g, '\n')
-      .split(/\n|;|,/)
+    if (raw == null || raw === '') return [];
+    if (Array.isArray(raw)) {
+      return raw.map(spellLabelName).filter(Boolean).map(s => s.replace(/\s+/g, ' '));
+    }
+    if (typeof raw === 'object') {
+      // single spell object
+      const one = spellLabelName(raw);
+      return one ? [one] : [];
+    }
+    return String(raw)
+      .replace(/\r/g, '')
+      .split(/[\n;,]+/)
       .map(s => s.trim())
       .filter(Boolean)
       .map(s => s.replace(/\s+/g, ' '));
@@ -8393,8 +9431,8 @@ function rollDieExpr(expr) {
     const out = { action: [], bonus: [], reaction: [], legendary: [], spell: [], ability: [] };
     const _pcSide = cb && (cb.side === 'party' || cb.side === 'ally');
     function push(section, name, toHit, damage, text, extra) {
-      const cleanName = String(name || '').replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
-      if (!cleanName) return;
+      const cleanName = (typeof spellLabelName === 'function' ? spellLabelName(name) : String(name || '')).replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!cleanName || /^\[object object\]$/i.test(cleanName)) return;
       const key = ['action','bonus','reaction','legendary','spell','ability'].includes(section) ? section : 'action';
       const profile = inferTargetProfile(cleanName, text || '', extra || {});
       const item = Object.assign({
@@ -8558,6 +9596,13 @@ function rollDieExpr(expr) {
 
   function renderCombat() {
     ensureCombatWorkspace();
+    // Player client: keep map + personal panel, don't rebuild DM combat list
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+      try { renderPlayerCombatPanel(); } catch (e) {}
+      try { renderMapRoster(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      return;
+    }
     const c = getActive();
     if (!c) {
       console.warn('renderCombat: no active workspace');
@@ -8776,16 +9821,22 @@ function rollDieExpr(expr) {
       next.bonusUsed = false;
       next.objectInteractUsed = false;
       next.reactionUsed = false; // refreshes at start of their turn
-      if (next.legendary) {
-        next.legendaryActionsLeft = next.legendaryActionsPerRound != null ? next.legendaryActionsPerRound : 3;
-      }
+      // Legendary actions are per-round (refreshed when round advances), not per-turn
+
     }
     if (combat.turnIndex === 0) {
       combat.round = (combat.round || 1) + 1;
       tickConditionDurations(combat);
-      // Refresh legendary actions budget each round
+      // Refresh legendary actions budget each round (NOT legendary resistances — those are /day)
       combat.combatants.forEach(cb => {
-        if (cb.legendary) cb.legendaryActionsLeft = cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3;
+        if (cb.legendary || cb.legendaryActionsMax || (cb.legendaryActions && cb.legendaryActions.length)) {
+          const max = cb.legendaryActionsMax != null ? cb.legendaryActionsMax
+            : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3);
+          cb.legendaryActionsMax = max;
+          cb.legendaryActionsLeft = max;
+          cb.legendaryActionsUsed = 0;
+        }
+        // Do not reset legendaryResist here
       });
     }
     const cur = combat.combatants[combat.turnIndex];
@@ -9116,6 +10167,49 @@ function rollDieExpr(expr) {
       if (!c) return;
       combatPickFromList(c.party, 'party', 'Add from Party');
     });
+    // P0: one-click add entire roster to combat (no modal)
+    if (!$('#combat-add-all-roster-btn')?.dataset?.wiredP0) {
+      const allBtn = $('#combat-add-all-roster-btn');
+      if (allBtn) {
+        allBtn.dataset.wiredP0 = '1';
+        allBtn.addEventListener('click', () => {
+          const c = getActive();
+          if (!c) { toast('No workspace'); return; }
+          ensureCampaignShape(c);
+          const combat = getCombat(c);
+          if (!combat.combatants) combat.combatants = [];
+          const existingIds = new Set((combat.combatants || []).map(cb => String(cb.charId || cb.sourceId || '')));
+          const existingNames = new Set((combat.combatants || []).map(cb => String(cb.name || '').toLowerCase()));
+          let added = 0;
+          const pushList = (list, side) => {
+            (list || []).forEach(ch => {
+              if (!ch || !ch.name) return;
+              const cid = String(ch.characterId || ch.id || '');
+              const nm = String(ch.name || '').toLowerCase();
+              if (cid && existingIds.has(cid)) return;
+              if (nm && existingNames.has(nm)) return;
+              try {
+                const row = combatantFromChar(ch, side);
+                if (row && row.name) {
+                  combat.combatants.push(row);
+                  if (cid) existingIds.add(cid);
+                  if (nm) existingNames.add(nm);
+                  added++;
+                }
+              } catch (err) { console.warn(err); }
+            });
+          };
+          pushList(c.party, 'party');
+          pushList(c.villains, 'enemy');
+          if (!added) { toast('No new combatants to add (roster empty or already in combat)'); return; }
+          if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
+          c.updatedAt = new Date().toISOString();
+          save();
+          toast('Added ' + added + ' to combat');
+          try { renderCombat(); } catch (e) {}
+        });
+      }
+    }
     $('#combat-add-villain-btn')?.addEventListener('click', () => {
       const c = getActive();
       if (!c) return;
@@ -9745,6 +10839,11 @@ function escapeHtml(str) {
       '.app-nav', 'nav', '#view-combat', '#view-tools', '#view-campaigns',
       '.view-desc', '.map-toolbar', '#view-map .view-header'
     ];
+    // DM share map: no player combat panel. Player clients use role=player.
+    if (!isPlayerRole()) {
+      strip.push('#player-combat-panel', '.player-combat-panel');
+    }
+    // Keep #map-roster for both
     strip.forEach(sel => {
       document.querySelectorAll(sel).forEach(el => {
         try { el.remove(); } catch (e) { try { el.style.display = 'none'; } catch (e2) {} }
@@ -9930,13 +11029,28 @@ function escapeHtml(str) {
       listEl.innerHTML = '<p class="muted small">No combatants. Add them in Combat, then place tokens here.</p>';
       return;
     }
+    const playerMode = typeof isPlayerRole === 'function' && isPlayerRole();
+    if (map) try { ensureMapFog(map); } catch (e) {}
     listEl.innerHTML = list.map((cb, idx) => {
       const id = String(cb.id != null ? cb.id : idx);
       const side = String(cb.side || '').toLowerCase();
-      const sideClass = (side === 'enemy' || side === 'villain') ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
+      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+      const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
+      // Players: hide enemies not revealed by FoW (or not on map when fog is on)
+      if (playerMode && isEnemy) {
+        if (typeof playerCanSeeCombatant === 'function') {
+          const viewer = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          if (!playerCanSeeCombatant(viewer, cb)) return '';
+        } else if (map && map.fogEnabled) {
+          const pos = map.tokens && map.tokens[id];
+          if (!pos) return '';
+          const cell = worldToFogCell(map, pos.x, pos.y);
+          if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+        }
+      }
       const hp = Number(cb.hp) || 0;
       const hpMax = Math.max(1, Number(cb.hpMax) || 1);
-      const hide = !!cb.hideHp;
+      const hide = !!cb.hideHp || (playerMode && isEnemy);
       const pct = hide ? 0 : Math.max(0, Math.min(100, Math.round(100 * hp / hpMax)));
       const placed = map && map.tokens && map.tokens[id];
       const sel = idx === selectedIdx ? ' selected' : '';
@@ -9992,14 +11106,16 @@ function escapeHtml(str) {
   function getVttRole() {
     try {
       const q = new URLSearchParams(location.search);
-      // ONLY the URL decides role — never sessionStorage (that was flipping the DM tab to player)
+      // ONLY role=player is a player client (not mapPopout alone — that is the DM shared map)
       if (String(q.get('role') || '').toLowerCase() === 'player') return 'player';
-      // Shared map pop-out is a viewer (player-facing fog/HP rules)
-      if (q.get('mapPopout') === '1' || q.get('mapPopout') === 'true') return 'player';
       return 'dm';
     } catch (e) { return 'dm'; }
   }
   function isPlayerRole() { return getVttRole() === 'player'; }
+  /** Shared map or player client: fog / hide enemy HP rules */
+  function isPlayerFacingView() {
+    return isPlayerRole() || (typeof isMapPopoutMode === 'function' && isMapPopoutMode());
+  }
   function isDmRole() { return getVttRole() === 'dm'; }
   function getVttRoomCode() {
     try {
@@ -10112,6 +11228,8 @@ function escapeHtml(str) {
     } : null;
     return {
       type: 'vtt-state',
+      from: 'dm',
+      clientId: window.__vttClientId || null,
       room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
       reason: reason || 'update',
       at: Date.now(),
@@ -10214,6 +11332,7 @@ function escapeHtml(str) {
             if (local) {
               local.hp = remote.hp;
               local.hpMax = remote.hpMax;
+              if (remote.tempHp != null) local.tempHp = remote.tempHp;
               if (remote.init != null) local.init = remote.init;
               if (remote.initiative != null) local.initiative = remote.initiative;
               if (remote.init != null && local.initiative == null) local.initiative = remote.init;
@@ -10221,6 +11340,17 @@ function escapeHtml(str) {
               local.hideHp = remote.hideHp;
               local.concentrating = remote.concentrating;
               local.dead = remote.dead;
+              if (remote.turnState) local.turnState = remote.turnState;
+              if (remote.turnPhase != null) local.turnPhase = remote.turnPhase;
+              if (remote.actionUsed != null) local.actionUsed = remote.actionUsed;
+              if (remote.bonusUsed != null) local.bonusUsed = remote.bonusUsed;
+              if (remote.reactionUsed != null) local.reactionUsed = remote.reactionUsed;
+              if (remote.moveUsed != null) local.moveUsed = remote.moveUsed;
+              if (remote.attacksUsed != null) local.attacksUsed = remote.attacksUsed;
+              if (remote.combatSpellSlots) local.combatSpellSlots = remote.combatSpellSlots;
+              if (remote.combatResources) local.combatResources = remote.combatResources;
+              if (remote.spellSlots) local.spellSlots = remote.spellSlots;
+              if (remote.deathSaves) local.deathSaves = remote.deathSaves;
             }
           });
         }
@@ -10240,9 +11370,12 @@ function escapeHtml(str) {
       }
       try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
       try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
-      if (typeof renderCombat === 'function' && document.getElementById('view-combat')?.classList.contains('active')) {
-        try { renderCombat(); } catch (e) {}
-      }
+      try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
+      try {
+        if (typeof renderCombat === 'function' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          renderCombat();
+        }
+      } catch (e) {}
     } catch (e) { console.warn('applyVttState', e); }
   }
   
@@ -10327,51 +11460,160 @@ function escapeHtml(str) {
   function bindVttSync() {
     if (window.__vttSyncBound) return;
     window.__vttSyncBound = true;
+
     const ch = getVttChannel();
     if (ch) {
       ch.onmessage = (ev) => {
         try {
-          if (ev.data && ev.data.type === 'vtt-tokens') applyTokenMessage(ev.data);
-          else applyVttStateMessage(ev.data);
-        } catch (e) {}
+          const msg = ev.data;
+          if (!msg || !msg.type) return;
+          // Ignore our own echoes
+          if (msg.clientId && msg.clientId === window.__vttClientId) return;
+
+          if (msg.type === 'vtt-tokens') {
+            applyTokenMessage(msg);
+            return;
+          }
+          if (msg.type === 'vtt-player-action') {
+            if (!isPlayerRole()) applyPlayerActionMessage(msg);
+            return;
+          }
+          if (msg.type === 'vtt-state') {
+            // DM only accepts player-originated combat patches
+            if (!isPlayerRole() && msg.from === 'player') {
+              applyPlayerCombatPatch(msg);
+              return;
+            }
+            // Players accept DM (or unknown) full/partial state
+            if (isPlayerRole() && msg.from !== 'player') {
+              applyVttStateMessage(msg);
+            }
+          }
+        } catch (e) { console.warn('vtt bc', e); }
       };
     }
+
+    // storage events only fire in *other* documents — ideal for DM↔player
     window.addEventListener('storage', (e) => {
-      if (e.key === 'cybervlachos_vtt_tokens' && e.newValue) {
-        try { applyTokenMessage(JSON.parse(e.newValue)); } catch (err) {}
-      }
+      if (!e.newValue) return;
+      try {
+        if (e.key === 'cybervlachos_vtt_tokens') {
+          applyTokenMessage(JSON.parse(e.newValue));
+          return;
+        }
+        if (e.key === 'cybervlachos_vtt_player_combat') {
+          // Player → DM only
+          if (!isPlayerRole()) {
+            applyPlayerCombatPatch(JSON.parse(e.newValue));
+          }
+          return;
+        }
+        if (e.key === 'cybervlachos_vtt_sync') {
+          // DM → player only (players apply; DM ignores to avoid fighting local UI)
+          if (isPlayerRole()) {
+            applyVttStateMessage(JSON.parse(e.newValue));
+          }
+          return;
+        }
+      } catch (err) { console.warn('vtt storage', err); }
     });
-    window.addEventListener('storage', (e) => {
-      if (e.key !== 'cybervlachos_vtt_sync' || !e.newValue) return;
-      try { applyVttStateMessage(JSON.parse(e.newValue)); } catch (err) {}
-    });
-    // Player/popout: poll lightly as fallback
-    // All viewer windows poll; DM also can receive nothing
-    let lastAt = 0, lastTok = 0;
+
+    // Lightweight poll fallback — role-specific, never re-apply own traffic on DM
+    window.__vttClientId = window.__vttClientId || ('c' + Math.random().toString(36).slice(2, 10));
+    let lastPlayerCombat = 0;
+    let lastDmSync = 0;
     setInterval(() => {
       try {
-        const raw = localStorage.getItem('cybervlachos_vtt_sync');
-        if (raw) {
-          const msg = JSON.parse(raw);
-          if (msg && msg.at && msg.at !== lastAt) {
-            lastAt = msg.at;
-            // DM applies only map/tokens from viewers; full apply for players
-            if (isPlayerRole() || isMapPopoutMode()) applyVttStateMessage(msg);
-            else if (msg.map && msg.map.tokens) applyTokenMessage(msg);
+        if (isPlayerRole()) {
+          // Player listens for DM broadcasts
+          const raw = localStorage.getItem('cybervlachos_vtt_sync');
+          if (raw) {
+            const msg = JSON.parse(raw);
+            if (msg && msg.at && msg.at !== lastDmSync && msg.from !== 'player') {
+              lastDmSync = msg.at;
+              applyVttStateMessage(msg);
+            }
           }
-        }
-        const rawT = localStorage.getItem('cybervlachos_vtt_tokens');
-        if (rawT) {
-          const msgT = JSON.parse(rawT);
-          if (msgT && msgT.at && msgT.at !== lastTok) {
-            lastTok = msgT.at;
-            applyTokenMessage(msgT);
+        } else {
+          // DM listens only for player combat patches
+          const raw = localStorage.getItem('cybervlachos_vtt_player_combat');
+          if (raw) {
+            const msg = JSON.parse(raw);
+            if (msg && msg.at && msg.at !== lastPlayerCombat && msg.from === 'player') {
+              lastPlayerCombat = msg.at;
+              applyPlayerCombatPatch(msg);
+            }
           }
         }
       } catch (e) {}
-    }, 200);
+    }, 300);
   }
-  
+
+  /** DM-side: apply HP/slots/resources from a player without clobbering DM turn flow */
+  function applyPlayerCombatPatch(msg) {
+    if (!msg || !msg.combat || !msg.combat.combatants) return;
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+    const room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    if (msg.at && window.__lastAppliedPlayerCombat === msg.at) return;
+    window.__lastAppliedPlayerCombat = msg.at;
+
+    try {
+      const c = getActive();
+      if (!c) return;
+      const combat = getCombat(c);
+      let changed = false;
+      (msg.combat.combatants || []).forEach(remote => {
+        const local = (combat.combatants || []).find(x =>
+          String(x.id) === String(remote.id) || (remote.name && x.name === remote.name)
+        );
+        if (!local) return;
+        const fields = [
+          'hp','hpMax','tempHp','conditions','concentrating','dead',
+          'turnState','turnPhase','actionUsed','bonusUsed','reactionUsed','moveUsed',
+          'objectInteractUsed','attacksUsed','attacksMax','combatSpellSlots','combatResources',
+          'spellSlots','spellSlotsUsed','deathSaves','combatLog','notes','attacks',
+          'cantrips','spells','legendaryResist','legendaryActionsUsed','legendaryActionsLeft',
+          'resourceUsed','init','ac','hideHp','legendaryActionsMax'
+        ];
+        fields.forEach(f => {
+          if (remote[f] !== undefined) {
+            const before = JSON.stringify(local[f]);
+            local[f] = remote[f];
+            if (JSON.stringify(local[f]) !== before) changed = true;
+          }
+        });
+      });
+      if (msg.combat.round != null && combat.round !== msg.combat.round) {
+        combat.round = msg.combat.round;
+        changed = true;
+      }
+      if (msg.combat.turnIndex != null && combat.turnIndex !== msg.combat.turnIndex) {
+        combat.turnIndex = msg.combat.turnIndex;
+        changed = true;
+      }
+      if (changed) {
+        c.updatedAt = new Date().toISOString();
+        try {
+          // Persist without re-entering player branch
+          const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+          let data;
+          try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { data = null; }
+          if (data && data.campaigns) {
+            const idx = data.campaigns.findIndex(x => x.id === c.id || x.id === data.activeCampaignId);
+            if (idx >= 0) data.campaigns[idx] = c;
+            else data.campaigns.push(c);
+            localStorage.setItem(key, JSON.stringify(data));
+          }
+        } catch (e) { console.warn(e); }
+        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+        try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+        try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+      }
+    } catch (e) { console.warn('applyPlayerCombatPatch', e); }
+  }
+
+
   function isJoinLanding() {
     try {
       const q = new URLSearchParams(location.search);
@@ -10395,6 +11637,225 @@ function escapeHtml(str) {
     document.getElementById('player-room-input')?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); go(); }
     });
+  }
+
+  
+  // ─── Player claim + personal combat panel ────────────────────────────────
+  function claimStorageKey() {
+    const room = (getVttRoomCode() || 'default').toUpperCase();
+    return 'cybervlachos_claim_' + room;
+  }
+  function getClaimedId() {
+    try { return sessionStorage.getItem(claimStorageKey()) || localStorage.getItem(claimStorageKey()) || ''; } catch (e) { return ''; }
+  }
+  function setClaimedId(id) {
+    try {
+      sessionStorage.setItem(claimStorageKey(), String(id || ''));
+      localStorage.setItem(claimStorageKey(), String(id || ''));
+    } catch (e) {}
+  }
+  function getClaimedCombatant() {
+    const id = getClaimedId();
+    if (!id) return null;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    return list.find(cb => String(cb.id) === String(id) || String(cb.name) === String(id)) || null;
+  }
+  function broadcastPlayerAction(action) {
+    try {
+      const payload = {
+        type: 'vtt-player-action',
+        room: getVttRoomCode() || '',
+        at: Date.now(),
+        claimedId: getClaimedId(),
+        action: action || {}
+      };
+      localStorage.setItem('cybervlachos_vtt_player_action', JSON.stringify(payload));
+      const ch = getVttChannel();
+      if (ch) try { ch.postMessage(payload); } catch (e) {}
+      // Also refresh full state token/HP snapshot for other clients
+      try {
+        if (!isPlayerRole()) broadcastVttState('player-action');
+        else {
+          // player: push light HP update via token channel style
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          if (combat) {
+            const lite = {
+              type: 'vtt-state',
+              room: getVttRoomCode() || '',
+              reason: 'player-hp',
+              at: Date.now(),
+              combat: {
+                round: combat.round,
+                current: combat.current,
+                combatants: (combat.combatants || []).map(cb => ({
+                  id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
+                  init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp
+                }))
+              },
+              map: c.combatMap ? {
+                tokens: c.combatMap.tokens || {},
+                fogEnabled: c.combatMap.fogEnabled,
+                fogRevealed: c.combatMap.fogRevealed || {}
+              } : null
+            };
+            localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(lite));
+            if (ch) try { ch.postMessage(lite); } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    } catch (e) { console.warn('broadcastPlayerAction', e); }
+  }
+  function applyPlayerActionMessage(msg) {
+    if (!msg || msg.type !== 'vtt-player-action') return;
+    const room = getVttRoomCode();
+    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    const act = msg.action || {};
+    const c = getActive();
+    if (!c) return;
+    const combat = getCombat(c);
+    const target = (combat.combatants || []).find(cb =>
+      String(cb.id) === String(act.targetId) || String(cb.name) === String(act.targetId)
+    );
+    if (!target) return;
+    if (act.kind === 'heal') {
+      const amt = Math.max(0, Number(act.amount) || 0);
+      target.hp = Math.min(Number(target.hpMax) || amt, (Number(target.hp) || 0) + amt);
+    } else if (act.kind === 'damage') {
+      const amt = Math.max(0, Number(act.amount) || 0);
+      // temp HP first
+      let left = amt;
+      const th = Number(target.tempHp) || 0;
+      if (th > 0) {
+        const use = Math.min(th, left);
+        target.tempHp = th - use;
+        left -= use;
+      }
+      target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+    } else if (act.kind === 'setHp') {
+      target.hp = Math.max(0, Math.min(Number(target.hpMax) || 0, Number(act.amount) || 0));
+    } else if (act.kind === 'tempHp') {
+      target.tempHp = Math.max(0, Number(act.amount) || 0);
+    } else if (act.kind === 'markAction') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.actionUsed = !!act.value;
+    } else if (act.kind === 'markBonus') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.bonusUsed = !!act.value;
+    } else if (act.kind === 'markReaction') {
+      if (!target.turnState) target.turnState = {};
+      target.turnState.reactionUsed = !!act.value;
+    }
+    try { if (!isPlayerRole()) save(); } catch (e) {}
+    try { renderBattleMap(); renderMapRoster(); renderPlayerCombatPanel(); } catch (e) {}
+    try { if (!isPlayerRole() && typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+  }
+  function ensurePlayerCombatPanel() {
+    let panel = document.getElementById('player-combat-panel');
+    if (!panel) {
+      const layout = document.querySelector('.map-layout');
+      if (!layout) return null;
+      panel = document.createElement('aside');
+      panel.id = 'player-combat-panel';
+      panel.className = 'player-combat-panel card';
+      panel.innerHTML = '<div class="map-roster-head"><strong>Your character</strong></div><div id="player-combat-body" class="player-combat-body"></div>';
+      layout.appendChild(panel);
+    }
+    return panel;
+  }  function renderPlayerCombatPanel() {
+    // Combat controls only for role=player (not DM mapPopout share window)
+    if (!isPlayerRole()) {
+      const p = document.getElementById('player-combat-panel');
+      if (p) { p.style.display = 'none'; p.setAttribute('hidden', ''); }
+      return;
+    }
+    const panel = ensurePlayerCombatPanel();
+    if (!panel) return;
+    panel.style.display = 'flex';
+    let body = document.getElementById('player-combat-body');
+    if (!body) {
+      body = document.createElement('div');
+      body.id = 'player-combat-body';
+      body.className = 'player-combat-body';
+      panel.appendChild(body);
+    }
+    // Ensure header
+    let head = panel.querySelector('.map-roster-head');
+    if (!head) {
+      head = document.createElement('div');
+      head.className = 'map-roster-head';
+      panel.insertBefore(head, body);
+    }
+
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    const claimable = list.filter(cb => {
+      const side = String(cb.side || '').toLowerCase();
+      return side !== 'enemy' && side !== 'villain' && side !== 'enemies';
+    });
+    let me = getClaimedCombatant();
+    if (me && !list.some(cb => String(cb.id) === String(me.id))) me = null;
+
+    if (!me) {
+      head.innerHTML = '<strong>Your character</strong>';
+      if (!claimable.length) {
+        body.innerHTML = '<p class="muted small">No party members in combat yet. Ask the DM to add your character.</p>';
+        return;
+      }
+      body.innerHTML = '<p class="muted small">Choose your character to open the full combat panel:</p><div class="pc-claim-list">' +
+        claimable.map(cb => {
+          const hp = Number(cb.hp) || 0, hpMax = Number(cb.hpMax) || 0;
+          return `<button type="button" class="btn secondary" data-claim-id="${String(cb.id).replace(/"/g,'')}">${(cb.name || 'Unknown').replace(/</g,'')} · ${hp}/${hpMax} HP</button>`;
+        }).join('') + '</div>';
+      body.querySelectorAll('[data-claim-id]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          setClaimedId(btn.getAttribute('data-claim-id'));
+          // Select this combatant in combat state for roller targeting context
+          try {
+            const combat2 = getCombat(getActive());
+            const idx = (combat2.combatants || []).findIndex(x => String(x.id) === String(btn.getAttribute('data-claim-id')));
+            if (idx >= 0) combat2.selectedIndex = idx;
+          } catch (e) {}
+          renderPlayerCombatPanel();
+        });
+      });
+      return;
+    }
+
+    head.innerHTML = `<strong>Your character</strong>
+      <button type="button" class="btn ghost btn-tiny" id="pc-switch-char" title="Claim a different character">Switch</button>`;
+    head.querySelector('#pc-switch-char')?.addEventListener('click', () => {
+      setClaimedId('');
+      renderPlayerCombatPanel();
+    });
+
+    // Select claimed combatant so detail/roller context matches
+    try {
+      const idx = list.findIndex(x => String(x.id) === String(me.id));
+      if (idx >= 0) combat.selectedIndex = idx;
+    } catch (e) {}
+
+    // Auto-activate turn for claimed PC so Action/Cast/Roll are not locked behind "Start turn"
+    try {
+      if (!me.turnPhase || me.turnPhase === 'ready' || me.turnPhase === 'pending') {
+        me.turnPhase = 'active';
+        if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(me, null);
+      }
+    } catch (e) {}
+    // Full combat detail + attack/spell roller (same as DM panel)
+    try {
+      if (typeof showCombatDetail === 'function') {
+        showCombatDetail(me, body);
+      } else {
+        body.innerHTML = '<p class="muted">Combat detail unavailable.</p>';
+      }
+    } catch (e) {
+      console.error(e);
+      body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
+    }
   }
 
   function applyPlayerShell() {
@@ -10438,6 +11899,7 @@ function escapeHtml(str) {
     try { if (typeof initBattleMapUi === 'function') initBattleMapUi(); } catch (e) {}
     try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
     try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+    try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
 
     // Re-apply after short delay (setView/render may restore combat)
     setTimeout(() => {
@@ -10455,6 +11917,7 @@ function escapeHtml(str) {
     setTimeout(() => {
       document.querySelectorAll('#view-combat').forEach(el => el.style.setProperty('display', 'none', 'important'));
       try { renderBattleMap(); } catch (e) {}
+      try { renderPlayerCombatPanel(); } catch (e) {}
     }, 500);
   }
 
