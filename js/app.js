@@ -1122,50 +1122,43 @@
           c.villains = Array.from(vm.values());
         }
         c.updatedAt = new Date().toISOString();
-        // P0: optional push imported roster into combat tracker
-        let addedCombat = 0;
-        const addToCombat = (window._rosterImportAddToCombat !== false);
+        var addedCombat = 0;
+        var addToCombat = (window._rosterImportAddToCombat !== false);
         if (addToCombat && typeof combatantFromChar === 'function') {
           try {
-            const combat = getCombat(c);
+            var combat = getCombat(c);
             if (!combat.combatants) combat.combatants = [];
-            const existingIds = new Set(
-              (combat.combatants || []).map(cb => String(cb.charId || cb.sourceId || ''))
-            );
-            const existingNames = new Set(
-              (combat.combatants || []).map(cb => String(cb.name || '').toLowerCase())
-            );
-            const upsertSide = (list, side) => {
-              (list || []).forEach(ch => {
+            var existingIds = new Set((combat.combatants || []).map(function(cb) { return String(cb.charId || cb.sourceId || ''); }));
+            var existingNames = new Set((combat.combatants || []).map(function(cb) { return String(cb.name || '').toLowerCase(); }));
+            function upsertSide(list, side) {
+              (list || []).forEach(function(ch) {
                 if (!ch || !ch.name) return;
-                const cid = String(ch.characterId || ch.id || '');
-                const nm = String(ch.name || '').toLowerCase();
+                var cid = String(ch.characterId || ch.id || '');
+                var nm = String(ch.name || '').toLowerCase();
                 if (cid && existingIds.has(cid)) return;
                 if (nm && existingNames.has(nm)) return;
                 try {
-                  const row = combatantFromChar(ch, side);
+                  var row = combatantFromChar(ch, side);
                   if (row && row.name) {
                     combat.combatants.push(row);
                     if (cid) existingIds.add(cid);
                     if (nm) existingNames.add(nm);
                     addedCombat++;
                   }
-                } catch (err) { console.warn('add to combat', ch && ch.name, err); }
+                } catch (err) { console.warn('add to combat', err); }
               });
-            };
+            }
             upsertSide(party, 'party');
             upsertSide(villains, 'enemy');
             if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
           } catch (err) { console.warn('roster add-to-combat', err); }
         }
         save();
-        let msg = 'Roster imported: ' + party.length + ' party, ' + villains.length + ' villains';
+        var msg = 'Roster imported: ' + party.length + ' party, ' + villains.length + ' villains';
         if (addToCombat) msg += (addedCombat ? (' · ' + addedCombat + ' added to combat') : ' · combat unchanged');
         toast(msg);
         try { if (typeof renderParty === 'function' && $('#view-party')?.classList.contains('active')) renderParty(); } catch (e) {}
-        try {
-          if (typeof setView === 'function' && addToCombat && addedCombat) setView('combat');
-        } catch (e) {}
+        try { if (typeof setView === 'function' && addToCombat && addedCombat) setView('combat'); } catch (e) {}
         try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
         try { renderTools(); } catch (e) {}
       } catch (e) {
@@ -2529,24 +2522,13 @@ function ensureCombatantTurnState(cb, ch) {
       });
     }
     (typeof splitSpellNames === 'function' ? splitSpellNames(ch.cantrips) : []).forEach(s => add(s, 'cantrip'));
-    // Always include known spells; if prepared mode, still show prepared (and known as fallback if prepared empty)
-    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spells) : []).forEach(s => add(s, 'spell'));
-    if (ch.spellPrepMode === 'prepared' && ch.preparedSpells) {
-      (typeof splitSpellNames === 'function' ? splitSpellNames(ch.preparedSpells) : []).forEach(s => add(s, 'spell'));
-    }
+    const prepared = ch.spellPrepMode === 'prepared' && ch.preparedSpells
+      ? ch.preparedSpells
+      : ch.spells;
+    (typeof splitSpellNames === 'function' ? splitSpellNames(prepared) : []).forEach(s => add(s, 'spell'));
     // Additional common fields from imports / combatants
     (typeof splitSpellNames === 'function' ? splitSpellNames(ch.knownSpells) : []).forEach(s => add(s, 'spell'));
     (typeof splitSpellNames === 'function' ? splitSpellNames(ch.preparedSpells) : []).forEach(s => add(s, 'spell'));
-    (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spellList) : []).forEach(s => add(s, 'spell'));
-    if (Array.isArray(ch.spellIds)) {
-      ch.spellIds.forEach(function(id) {
-        try {
-          const sp = (typeof lookupSpellById === 'function') ? lookupSpellById(id) : null;
-          if (sp) add(sp.name || sp, Number(sp.level) === 0 ? 'cantrip' : 'spell');
-          else add(String(id), 'spell');
-        } catch (e) {}
-      });
-    }
     (typeof splitSpellNames === 'function' ? splitSpellNames(ch.spellList) : []).forEach(s => add(s, 'spell'));
     (ch.spellIds || []).forEach(id => {
       const sp = (window.SPELLS || []).find(x => x.id === id || x.name === id);
@@ -6727,7 +6709,7 @@ function parseAttackLines(ch) {
       impFile.addEventListener('change', function() {
         const f = impFile.files && impFile.files[0];
         window._rosterImportMode = (document.querySelector('#roster-import-mode') || {}).value || 'merge';
-        const addCb = document.querySelector('#roster-import-add-combat');
+        var addCb = document.querySelector('#roster-import-add-combat');
         window._rosterImportAddToCombat = addCb ? !!addCb.checked : true;
         if (f) importPartyRoster(f);
         impFile.value = '';
@@ -6843,135 +6825,51 @@ function parseAttackLines(ch) {
   }
 
   function combatantFromChar(ch, side) {
-    const raw = ch || {};
-    const n = normalizeCharacter(raw);
+    const n = normalizeCharacter(ch);
     const dexMod = abilityMod(n.dex);
-    const sideNorm = (function() {
-      const s = String(side || n.type || 'party').toLowerCase();
-      if (s === 'villain' || s === 'enemy' || s === 'enemies') return 'enemy';
-      if (s === 'ally' || s === 'allies') return 'ally';
-      return 'party';
-    })();
-    // Preserve string/array spell + attack lists for the combat UI
-    function asSpellText(v) {
-      if (v == null || v === '') return '';
-      if (typeof v === 'string') return v;
-      if (Array.isArray(v)) {
-        return v.map(function(x) {
-          if (typeof x === 'string') return x;
-          if (x && typeof x === 'object') {
-            const nm = x.name || x.label || '';
-            const lv = x.level;
-            if (lv != null && Number(lv) > 0) {
-              const o = {1:'1st',2:'2nd',3:'3rd',4:'4th',5:'5th',6:'6th',7:'7th',8:'8th',9:'9th'};
-              return nm + ' (' + (o[Number(lv)] || (lv + 'th')) + ')';
-            }
-            return nm;
-          }
-          return '';
-        }).filter(Boolean).join('\n');
-      }
-      if (typeof v === 'object') return String(v.name || v.label || '');
-      return String(v);
-    }
-    function asAttackText(v) {
-      if (v == null || v === '') return '';
-      if (typeof v === 'string') return v;
-      if (Array.isArray(v)) {
-        return v.map(function(x) {
-          if (typeof x === 'string') return x;
-          if (x && typeof x === 'object') {
-            const nm = x.name || 'Attack';
-            const th = x.toHit; const d = x.damage || '';
-            return th != null ? (nm + ': +' + th + ' to hit, ' + d) : (nm + (d ? ': ' + d : ''));
-          }
-          return '';
-        }).filter(Boolean).join('\n');
-      }
-      return String(v);
-    }
-    function normSlots(slots, usedMap) {
-      if (!slots || typeof slots !== 'object') return null;
-      const out = {};
-      let any = false;
-      Object.keys(slots).forEach(function(k) {
-        const v = slots[k];
-        if (v == null) return;
-        any = true;
-        if (typeof v === 'object' && (v.max != null || v.used != null)) {
-          out[String(k)] = { max: Math.max(0, Number(v.max) || 0), used: Math.max(0, Number(v.used) || 0) };
-        } else {
-          const used = usedMap && usedMap[k] != null ? Number(usedMap[k]) || 0 : 0;
-          out[String(k)] = { max: Math.max(0, Number(v) || 0), used: used };
-        }
-      });
-      return any ? out : null;
-    }
-    const atkText = asAttackText(raw.attacks != null ? raw.attacks : n.attacks);
-    const spellText = asSpellText(raw.spells != null ? raw.spells : n.spells);
-    const cantripText = asSpellText(raw.cantrips != null ? raw.cantrips : n.cantrips);
-    const slots = normSlots(raw.combatSpellSlots || raw.spellSlots || n.spellSlots, raw.spellSlotsUsed || n.spellSlotsUsed);
-    const isEnemy = sideNorm === 'enemy' || n.type === 'enemy' || n.type === 'villain';
-    const leg = !!(raw.legendary || n.legendary);
-    const cb = {
-      id: typeof uid === 'function' ? uid() : ('cb' + Date.now()),
-      sourceId: n.id || raw.characterId || null,
-      charId: n.id || raw.characterId || null,
-      name: n.name || raw.name || 'Unknown',
+    return {
+      id: uid(),
+      sourceId: n.id || null,
+      charId: n.id || null,
+      name: n.name,
       init: 10 + dexMod,
-      hp: Number(n.hp) || 0,
-      hpMax: Number(n.hpMax) || Number(n.hp) || 0,
-      ac: Number(n.ac) || 10,
+      hp: n.hp,
+      hpMax: n.hpMax || n.hp,
+      ac: n.ac,
       conditions: '',
-      side: sideNorm,
-      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : 30) || 30,
+      side: side || 'party',
+      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : (Number(n.speed) || 30)),
       moveUsed: 0,
       actionUsed: false,
       bonusUsed: false,
       objectInteractUsed: false,
       reactionUsed: false,
       attacksUsed: 0,
-      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1) || 1,
+      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1),
       turnPhase: 'ready',
-      notes: atkText,
-      attacks: atkText,
-      cantrips: cantripText,
-      spells: spellText,
-      spellcastingAbility: n.spellcastingAbility || raw.spellcastingAbility || '',
-      preparedSpells: asSpellText(raw.preparedSpells || n.preparedSpells),
-      spellPrepMode: n.spellPrepMode || raw.spellPrepMode || 'known',
-      combatSpellSlots: slots,
-      combatResources: raw.combatResources || null,
-      isUmbrarian: !!(n.isUmbrarian || raw.isUmbrarian),
-      umbrarianStage: n.umbrarianStage || raw.umbrarianStage || '',
-      shard: n.shard || raw.shard || '',
-      shardAbility: n.shardAbility || raw.shardAbility || '',
-      inventory: n.inventory || raw.inventory || [],
-      actions: raw.actions || n.actions || [],
-      bonusActions: raw.bonusActions || n.bonusActions || [],
-      reactions: raw.reactions || n.reactions || [],
-      legendaryActions: raw.legendaryActions || n.legendaryActions || [],
-      legendary: !!(leg && isEnemy),
-      legendaryResist: raw.legendaryResist != null ? raw.legendaryResist : n.legendaryResist,
-      legendaryResistMax: raw.legendaryResistMax != null ? raw.legendaryResistMax : n.legendaryResistMax,
-      legendaryActionsMax: raw.legendaryActionsMax != null ? raw.legendaryActionsMax : (raw.legendaryActions && raw.legendaryActions.length ? 3 : null),
-      legendaryActionsUsed: 0,
-      legendaryActionsLeft: raw.legendaryActionsMax != null ? raw.legendaryActionsMax : (raw.legendaryActions && raw.legendaryActions.length ? 3 : undefined),
-      resistances: raw.resistances || n.resistances || '',
-      immunities: raw.immunities || n.immunities || '',
-      vulnerabilities: raw.vulnerabilities || '',
-      tempHp: Number(raw.tempHp) || 0,
+      notes: n.attacks || '',
+      attacks: n.attacks || '',
+      cantrips: n.cantrips || '',
+      spells: n.spells || '',
+      isUmbrarian: !!n.isUmbrarian,
+      umbrarianStage: n.umbrarianStage || '',
+      shard: n.shard || '',
+      shardAbility: n.shardAbility || '',
+      inventory: n.inventory || [],
+      actions: n.actions || [],
+      bonusActions: n.bonusActions || [],
+      reactions: n.reactions || [],
+      legendaryActions: n.legendaryActions || [],
+      legendary: !!(n.legendary && (side === 'enemy' || side === 'villain' || n.type === 'enemy' || n.type === 'villain')),
+      legendaryResist: n.legendaryResist,
+      legendaryResistMax: n.legendaryResistMax,
+      resistances: n.resistances || '',
+      immunities: n.immunities || '',
+      speed: n.speed || '30 ft.',
+      tempHp: 0,
       concentrating: false,
-      combatLog: [],
-      class: n.class || '',
-      level: n.level || 1,
-      features: n.features || raw.features || '',
-      hideHp: false
+      combatLog: []
     };
-    try {
-      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, n);
-    } catch (e) {}
-    return cb;
   }
 
   function lookupBestiary(name) {
@@ -7567,27 +7465,12 @@ function rollDieExpr(expr) {
         r.bonusUsed = local.bonusUsed;
         r.reactionUsed = local.reactionUsed;
         r.moveUsed = local.moveUsed;
-        r.objectInteractUsed = local.objectInteractUsed;
         r.attacksUsed = local.attacksUsed;
-        r.attacksMax = local.attacksMax;
         r.combatSpellSlots = local.combatSpellSlots;
         r.combatResources = local.combatResources;
         r.concentrating = local.concentrating;
         r.spellSlots = local.spellSlots;
-        r.spellSlotsUsed = local.spellSlotsUsed;
         r.deathSaves = local.deathSaves;
-        r.combatLog = local.combatLog;
-        r.legendaryResist = local.legendaryResist;
-        r.legendaryActionsUsed = local.legendaryActionsUsed;
-        r.legendaryActionsLeft = local.legendaryActionsLeft;
-        r.resourceUsed = local.resourceUsed;
-        r.ac = local.ac;
-        r.init = local.init;
-        r.hideHp = local.hideHp;
-        r.notes = local.notes;
-        r.attacks = local.attacks;
-        r.cantrips = local.cantrips;
-        r.spells = local.spells;
       });
       camp.combat.combatants = remoteList;
       if (combat.round != null) camp.combat.round = combat.round;
@@ -7615,13 +7498,9 @@ function rollDieExpr(expr) {
             tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
             turnState: cb.turnState, turnPhase: cb.turnPhase,
             actionUsed: cb.actionUsed, bonusUsed: cb.bonusUsed, reactionUsed: cb.reactionUsed,
-            moveUsed: cb.moveUsed, objectInteractUsed: cb.objectInteractUsed,
-            attacksUsed: cb.attacksUsed, attacksMax: cb.attacksMax,
+            moveUsed: cb.moveUsed, attacksUsed: cb.attacksUsed,
             combatSpellSlots: cb.combatSpellSlots, combatResources: cb.combatResources,
-            spellSlots: cb.spellSlots, spellSlotsUsed: cb.spellSlotsUsed,
-            deathSaves: cb.deathSaves, spells: cb.spells, cantrips: cb.cantrips,
-            legendaryResist: cb.legendaryResist, legendaryActionsUsed: cb.legendaryActionsUsed,
-            legendaryActionsLeft: cb.legendaryActionsLeft, resourceUsed: cb.resourceUsed
+            spellSlots: cb.spellSlots, deathSaves: cb.deathSaves
           }))
         },
         map: c.combatMap ? {
@@ -8395,11 +8274,6 @@ function rollDieExpr(expr) {
     });
     function refreshCombatDetail() {
       try { save(); } catch(e) {}
-      try {
-        if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
-          playerPersistAndSyncCombat();
-        }
-      } catch (e) {}
       const c = getActive();
       const combat = c ? getCombat(c) : null;
       const sel = combat && combat.selectedIndex;
@@ -8696,20 +8570,9 @@ function rollDieExpr(expr) {
     
     // ── Spellcasting panel ──
     (function wireSpellcastingPanel() {
-      const spellList = (function() {
-        if (typeof listCharacterSpellsForCombat !== 'function') return [];
-        const a = listCharacterSpellsForCombat(cb) || [];
-        const b = partyChar ? (listCharacterSpellsForCombat(partyChar) || []) : [];
-        const seen = new Set();
-        const out = [];
-        a.concat(b).forEach(function(s) {
-          const k = String((s && s.name) || '').toLowerCase().replace(/\s+/g, ' ').trim();
-          if (!k || seen.has(k)) return;
-          seen.add(k);
-          out.push(s);
-        });
-        return out;
-      })();
+      const spellList = (typeof listCharacterSpellsForCombat === 'function')
+        ? listCharacterSpellsForCombat(partyChar || cb)
+        : [];
       const stats = (typeof getSpellAttackAndDC === 'function')
         ? getSpellAttackAndDC(partyChar || cb)
         : { attack: 0, dc: 10, ability: 'WIS' };
@@ -10167,49 +10030,47 @@ function rollDieExpr(expr) {
       if (!c) return;
       combatPickFromList(c.party, 'party', 'Add from Party');
     });
-    // P0: one-click add entire roster to combat (no modal)
-    if (!$('#combat-add-all-roster-btn')?.dataset?.wiredP0) {
-      const allBtn = $('#combat-add-all-roster-btn');
-      if (allBtn) {
-        allBtn.dataset.wiredP0 = '1';
-        allBtn.addEventListener('click', () => {
-          const c = getActive();
-          if (!c) { toast('No workspace'); return; }
-          ensureCampaignShape(c);
-          const combat = getCombat(c);
-          if (!combat.combatants) combat.combatants = [];
-          const existingIds = new Set((combat.combatants || []).map(cb => String(cb.charId || cb.sourceId || '')));
-          const existingNames = new Set((combat.combatants || []).map(cb => String(cb.name || '').toLowerCase()));
-          let added = 0;
-          const pushList = (list, side) => {
-            (list || []).forEach(ch => {
-              if (!ch || !ch.name) return;
-              const cid = String(ch.characterId || ch.id || '');
-              const nm = String(ch.name || '').toLowerCase();
-              if (cid && existingIds.has(cid)) return;
-              if (nm && existingNames.has(nm)) return;
-              try {
-                const row = combatantFromChar(ch, side);
-                if (row && row.name) {
-                  combat.combatants.push(row);
-                  if (cid) existingIds.add(cid);
-                  if (nm) existingNames.add(nm);
-                  added++;
-                }
-              } catch (err) { console.warn(err); }
-            });
-          };
-          pushList(c.party, 'party');
-          pushList(c.villains, 'enemy');
-          if (!added) { toast('No new combatants to add (roster empty or already in combat)'); return; }
-          if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
-          c.updatedAt = new Date().toISOString();
-          save();
-          toast('Added ' + added + ' to combat');
-          try { renderCombat(); } catch (e) {}
-        });
-      }
-    }
+    (function wireAddAllRoster() {
+      var allBtn = document.querySelector('#combat-add-all-roster-btn');
+      if (!allBtn || allBtn.dataset.wiredP0) return;
+      allBtn.dataset.wiredP0 = '1';
+      allBtn.addEventListener('click', function() {
+        var c = getActive();
+        if (!c) { toast('No workspace'); return; }
+        ensureCampaignShape(c);
+        var combat = getCombat(c);
+        if (!combat.combatants) combat.combatants = [];
+        var existingIds = new Set((combat.combatants || []).map(function(cb) { return String(cb.charId || cb.sourceId || ''); }));
+        var existingNames = new Set((combat.combatants || []).map(function(cb) { return String(cb.name || '').toLowerCase(); }));
+        var added = 0;
+        function pushList(list, side) {
+          (list || []).forEach(function(ch) {
+            if (!ch || !ch.name) return;
+            var cid = String(ch.characterId || ch.id || '');
+            var nm = String(ch.name || '').toLowerCase();
+            if (cid && existingIds.has(cid)) return;
+            if (nm && existingNames.has(nm)) return;
+            try {
+              var row = combatantFromChar(ch, side);
+              if (row && row.name) {
+                combat.combatants.push(row);
+                if (cid) existingIds.add(cid);
+                if (nm) existingNames.add(nm);
+                added++;
+              }
+            } catch (err) { console.warn(err); }
+          });
+        }
+        pushList(c.party, 'party');
+        pushList(c.villains, 'enemy');
+        if (!added) { toast('No new combatants to add'); return; }
+        if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
+        c.updatedAt = new Date().toISOString();
+        save();
+        toast('Added ' + added + ' to combat');
+        try { renderCombat(); } catch (e) {}
+      });
+    })();
     $('#combat-add-villain-btn')?.addEventListener('click', () => {
       const c = getActive();
       if (!c) return;
@@ -11552,9 +11413,10 @@ function escapeHtml(str) {
   /** DM-side: apply HP/slots/resources from a player without clobbering DM turn flow */
   function applyPlayerCombatPatch(msg) {
     if (!msg || !msg.combat || !msg.combat.combatants) return;
-    if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
-    const room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+    if (isPlayerRole()) return;
+    const room = getVttRoomCode();
     if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+    // Ignore stale
     if (msg.at && window.__lastAppliedPlayerCombat === msg.at) return;
     window.__lastAppliedPlayerCombat = msg.at;
 
@@ -11565,51 +11427,46 @@ function escapeHtml(str) {
       let changed = false;
       (msg.combat.combatants || []).forEach(remote => {
         const local = (combat.combatants || []).find(x =>
-          String(x.id) === String(remote.id) || (remote.name && x.name === remote.name)
+          String(x.id) === String(remote.id) || x.name === remote.name
         );
         if (!local) return;
         const fields = [
           'hp','hpMax','tempHp','conditions','concentrating','dead',
           'turnState','turnPhase','actionUsed','bonusUsed','reactionUsed','moveUsed',
-          'objectInteractUsed','attacksUsed','attacksMax','combatSpellSlots','combatResources',
-          'spellSlots','spellSlotsUsed','deathSaves','combatLog','notes','attacks',
-          'cantrips','spells','legendaryResist','legendaryActionsUsed','legendaryActionsLeft',
-          'resourceUsed','init','ac','hideHp','legendaryActionsMax'
+          'attacksUsed','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
         fields.forEach(f => {
-          if (remote[f] !== undefined) {
+          if (remote[f] !== undefined && remote[f] !== null) {
             const before = JSON.stringify(local[f]);
             local[f] = remote[f];
             if (JSON.stringify(local[f]) !== before) changed = true;
           }
         });
       });
-      if (msg.combat.round != null && combat.round !== msg.combat.round) {
-        combat.round = msg.combat.round;
-        changed = true;
+      // Fog reveal from player? usually no — skip map unless tokens moved by player
+      if (msg.map && msg.map.tokens) {
+        const map = getCombatMap();
+        if (map) {
+          map.tokens = msg.map.tokens;
+          changed = true;
+        }
       }
-      if (msg.combat.turnIndex != null && combat.turnIndex !== msg.combat.turnIndex) {
-        combat.turnIndex = msg.combat.turnIndex;
-        changed = true;
-      }
-      if (changed) {
-        c.updatedAt = new Date().toISOString();
-        try {
-          // Persist without re-entering player branch
-          const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
-          let data;
-          try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { data = null; }
-          if (data && data.campaigns) {
-            const idx = data.campaigns.findIndex(x => x.id === c.id || x.id === data.activeCampaignId);
-            if (idx >= 0) data.campaigns[idx] = c;
-            else data.campaigns.push(c);
-            localStorage.setItem(key, JSON.stringify(data));
-          }
-        } catch (e) { console.warn(e); }
-        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
-        try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
-        try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
-      }
+      if (!changed) return;
+      // Persist without going through full save recursion storms
+      try {
+        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const data = JSON.parse(raw);
+          const camp = (data.campaigns || []).find(x => x.id === data.activeCampaignId) || (data.campaigns || [])[0];
+          if (camp && camp.combat) camp.combat.combatants = combat.combatants;
+          localStorage.setItem(key, JSON.stringify(data));
+        }
+      } catch (e) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('from-player-patch'); } catch (e) {}
+      try { renderCombat(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      try { renderMapRoster(); } catch (e) {}
     } catch (e) { console.warn('applyPlayerCombatPatch', e); }
   }
 
