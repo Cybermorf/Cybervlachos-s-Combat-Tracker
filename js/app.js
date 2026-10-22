@@ -3103,20 +3103,32 @@ function ensureCombatantTurnState(cb, ch) {
       background: ch.background || '',
       world: ch.world || '',
       alignment: ch.alignment || '',
-      str: Number(ch.str) || 10,
-      dex: Number(ch.dex) || 10,
-      con: Number(ch.con) || 10,
-      int: Number(ch.int) || 10,
-      wis: Number(ch.wis) || 10,
-      cha: Number(ch.cha) || 10,
+      str: Number(ch.str != null ? ch.str : (ch.abilities && ch.abilities.str)) || 10,
+      dex: Number(ch.dex != null ? ch.dex : (ch.abilities && ch.abilities.dex)) || 10,
+      con: Number(ch.con != null ? ch.con : (ch.abilities && ch.abilities.con)) || 10,
+      int: Number(ch.int != null ? ch.int : (ch.abilities && ch.abilities.int)) || 10,
+      wis: Number(ch.wis != null ? ch.wis : (ch.abilities && ch.abilities.wis)) || 10,
+      cha: Number(ch.cha != null ? ch.cha : (ch.abilities && ch.abilities.cha)) || 10,
       hp: Number(ch.hp) || 0,
       hpMax: Number(ch.hpMax) || 0,
       ac: Number(ch.ac) || 10,
       speed: ch.speed || '30 ft.',
-      profBonus: Number(ch.profBonus) || profBonusForLevel(ch.level || 1),
+      profBonus: Number(ch.profBonus != null ? ch.profBonus : ch.proficiencyBonus) || profBonusForLevel(ch.level || 1),
       saves: ch.saves || '',
       skills: ch.skills || '',
-      attacks: ch.attacks || '',
+      attacks: (function(a){
+        if (!a) return '';
+        if (typeof a === 'string') return a;
+        if (Array.isArray(a)) {
+          return a.map(function(x){
+            if (typeof x === 'string') return x;
+            var n = (x && x.name) || 'Attack';
+            var th = x && x.toHit; var d = (x && x.damage) || '';
+            return th != null ? (n + ': +' + th + ' to hit, ' + d) : (n + (d ? ': ' + d : ''));
+          }).join('\n');
+        }
+        return String(a);
+      })(ch.attacks),
       features: ch.features || '',
       equipment: ch.equipment || '',
       inventory: Array.isArray(ch.inventory) ? ch.inventory.map(normalizeInventoryItem) : [],
