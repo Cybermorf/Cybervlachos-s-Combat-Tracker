@@ -9963,7 +9963,7 @@ function rollDieExpr(expr) {
   }
 
   async function combatRandomEncounter() {
-    const c = getActive();
+    let c = getActive();
     if (!c) { c = ensureCombatWorkspace() || getActive(); if (!c) { toast('Workspace unavailable'); return; } }
     const world = c.currentWorld || '';
     // Estimate party tier from average level
@@ -9972,13 +9972,25 @@ function rollDieExpr(expr) {
     // Target CR band roughly party level / 2 to party level
     const minCr = Math.max(0, avgLevel * 0.4 - 1);
     const maxCr = avgLevel + 2;
-    let pool = BESTIARY.filter(b => b.cr >= minCr && b.cr <= maxCr);
+    try { if (typeof refreshBestiaryRef === 'function') refreshBestiaryRef(); } catch (e) {}
+    let pool = (BESTIARY || []).filter(b => Number(b.cr) >= minCr && Number(b.cr) <= maxCr);
     if (world) {
       const worldPool = pool.filter(b => b.w === world);
       if (worldPool.length) pool = worldPool;
     }
-    if (!pool.length) pool = world ? BESTIARY.filter(b => b.w === world) : BESTIARY;
-    if (!pool.length) { toast('No creatures match'); return; }
+    if (!pool.length) pool = world ? (BESTIARY || []).filter(b => b.w === world) : (BESTIARY || []).slice();
+    if (!pool.length) {
+      // Fallback so Random Encounter never silently no-ops when bestiary data failed to load
+      pool = [
+        { n: 'Goblin', cr: 0.25, ac: 15, hp: 7, o: 'humanoid', w: world || 'Generic', atk: 'Scimitar: +4 to hit, 1d6+2' },
+        { n: 'Orc', cr: 0.5, ac: 13, hp: 15, o: 'humanoid', w: world || 'Generic', atk: 'Greataxe: +5 to hit, 1d12+3' },
+        { n: 'Ogre', cr: 2, ac: 11, hp: 59, o: 'giant', w: world || 'Generic', atk: 'Greatclub: +6 to hit, 2d8+4' },
+        { n: 'Owlbear', cr: 3, ac: 13, hp: 59, o: 'monstrosity', w: world || 'Generic', atk: 'Beak: +7 to hit, 1d10+5' },
+        { n: 'Troll', cr: 5, ac: 15, hp: 84, o: 'giant', w: world || 'Generic', atk: 'Bite: +7 to hit, 1d6+4' },
+        { n: 'Young Red Dragon', cr: 10, ac: 18, hp: 178, o: 'dragon', w: world || 'Generic', atk: 'Bite: +10 to hit, 2d10+6' }
+      ];
+      toast('Bestiary empty — using fallback monsters');
+    }
 
     // Prefer 1–3 creatures totaling ~party CR budget
     const budget = Math.max(1, avgLevel * 1.2);
