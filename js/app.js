@@ -3051,24 +3051,6 @@ function ensureCombatantTurnState(cb, ch) {
   function renderFeatureCompendium() { /* stripped */ return null; }
 
 
-  function normalizeSpellSlots(slots, usedMap) {
-    if (!slots || typeof slots !== 'object') return null;
-    const out = {};
-    let any = false;
-    Object.keys(slots).forEach(function(k) {
-      const v = slots[k];
-      if (v == null) return;
-      any = true;
-      if (typeof v === 'object' && (v.max != null || v.used != null)) {
-        out[String(k)] = { max: Math.max(0, Number(v.max) || 0), used: Math.max(0, Number(v.used) || 0) };
-      } else {
-        const used = usedMap && usedMap[k] != null ? Number(usedMap[k]) || 0 : 0;
-        out[String(k)] = { max: Math.max(0, Number(v) || 0), used: used };
-      }
-    });
-    return any ? out : null;
-  }
-
   function normalizeCharacter(ch) {
     // Preserve extension fields
     const _ext = {
@@ -3103,32 +3085,20 @@ function ensureCombatantTurnState(cb, ch) {
       background: ch.background || '',
       world: ch.world || '',
       alignment: ch.alignment || '',
-      str: Number(ch.str != null ? ch.str : (ch.abilities && ch.abilities.str)) || 10,
-      dex: Number(ch.dex != null ? ch.dex : (ch.abilities && ch.abilities.dex)) || 10,
-      con: Number(ch.con != null ? ch.con : (ch.abilities && ch.abilities.con)) || 10,
-      int: Number(ch.int != null ? ch.int : (ch.abilities && ch.abilities.int)) || 10,
-      wis: Number(ch.wis != null ? ch.wis : (ch.abilities && ch.abilities.wis)) || 10,
-      cha: Number(ch.cha != null ? ch.cha : (ch.abilities && ch.abilities.cha)) || 10,
+      str: Number(ch.str) || 10,
+      dex: Number(ch.dex) || 10,
+      con: Number(ch.con) || 10,
+      int: Number(ch.int) || 10,
+      wis: Number(ch.wis) || 10,
+      cha: Number(ch.cha) || 10,
       hp: Number(ch.hp) || 0,
       hpMax: Number(ch.hpMax) || 0,
       ac: Number(ch.ac) || 10,
       speed: ch.speed || '30 ft.',
-      profBonus: Number(ch.profBonus != null ? ch.profBonus : ch.proficiencyBonus) || profBonusForLevel(ch.level || 1),
+      profBonus: Number(ch.profBonus) || profBonusForLevel(ch.level || 1),
       saves: ch.saves || '',
       skills: ch.skills || '',
-      attacks: (function(a){
-        if (!a) return '';
-        if (typeof a === 'string') return a;
-        if (Array.isArray(a)) {
-          return a.map(function(x){
-            if (typeof x === 'string') return x;
-            var n = (x && x.name) || 'Attack';
-            var th = x && x.toHit; var d = (x && x.damage) || '';
-            return th != null ? (n + ': +' + th + ' to hit, ' + d) : (n + (d ? ': ' + d : ''));
-          }).join('\n');
-        }
-        return String(a);
-      })(ch.attacks),
+      attacks: ch.attacks || '',
       features: ch.features || '',
       equipment: ch.equipment || '',
       inventory: Array.isArray(ch.inventory) ? ch.inventory.map(normalizeInventoryItem) : [],
@@ -3161,26 +3131,7 @@ function ensureCombatantTurnState(cb, ch) {
       playerSheetLocked: !!ch.playerSheetLocked,
       sheetLocked: !!ch.sheetLocked,
       abilityBase: ch.abilityBase && typeof ch.abilityBase === 'object' ? ch.abilityBase : null,
-      resourceUsed: ch.resourceUsed && typeof ch.resourceUsed === 'object' ? ch.resourceUsed : {},
-      // Combat / villain fields (DSC Toolkit roster)
-      legendary: !!ch.legendary,
-      legendaryResist: ch.legendaryResist != null ? Number(ch.legendaryResist) : null,
-      legendaryResistMax: ch.legendaryResistMax != null ? Number(ch.legendaryResistMax) : null,
-      legendaryActions: Array.isArray(ch.legendaryActions) ? ch.legendaryActions : [],
-      legendaryActionsMax: ch.legendaryActionsMax != null ? Number(ch.legendaryActionsMax) : (Array.isArray(ch.legendaryActions) && ch.legendaryActions.length ? 3 : null),
-      actions: Array.isArray(ch.actions) ? ch.actions : [],
-      bonusActions: Array.isArray(ch.bonusActions) ? ch.bonusActions : [],
-      reactions: Array.isArray(ch.reactions) ? ch.reactions : [],
-      resistances: ch.resistances || '',
-      immunities: ch.immunities || '',
-      vulnerabilities: ch.vulnerabilities || '',
-      combatSpellSlots: (function() {
-        if (ch.combatSpellSlots && typeof ch.combatSpellSlots === 'object') {
-          return normalizeSpellSlots(ch.combatSpellSlots, null) || ch.combatSpellSlots;
-        }
-        return normalizeSpellSlots(ch.spellSlots, ch.spellSlotsUsed);
-      })(),
-      combatResources: ch.combatResources && typeof ch.combatResources === 'object' ? ch.combatResources : null
+      resourceUsed: ch.resourceUsed && typeof ch.resourceUsed === 'object' ? ch.resourceUsed : {}
     };
   }
 
@@ -6838,90 +6789,52 @@ function parseAttackLines(ch) {
   }
 
   function combatantFromChar(ch, side) {
-    const n = normalizeCharacter(ch || {});
+    const n = normalizeCharacter(ch);
     const dexMod = abilityMod(n.dex);
-    const sideNorm = (function() {
-      const s = String(side || n.type || 'party').toLowerCase();
-      if (s === 'villain' || s === 'enemy' || s === 'enemies') return 'enemy';
-      if (s === 'ally' || s === 'allies' || s === 'pc' || s === 'party') return s === 'pc' ? 'party' : (s === 'ally' || s === 'allies' ? 'ally' : 'party');
-      return s || 'party';
-    })();
-    const cb = {
-      id: typeof uid === 'function' ? uid() : ('cb' + Date.now()),
+    return {
+      id: uid(),
       sourceId: n.id || null,
       charId: n.id || null,
-      name: n.name || 'Unknown',
+      name: n.name,
       init: 10 + dexMod,
-      hp: Number(n.hp) || 0,
-      hpMax: Number(n.hpMax) || Number(n.hp) || 0,
-      ac: Number(n.ac) || 10,
-      conditions: Array.isArray(n.conditions) ? n.conditions.filter(Boolean).join(', ') : (n.conditions || ''),
-      side: sideNorm,
-      class: n.class || '',
-      classes: n.classes || [],
-      level: n.level || 1,
-      race: n.race || '',
-      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : 30) || 30,
+      hp: n.hp,
+      hpMax: n.hpMax || n.hp,
+      ac: n.ac,
+      conditions: '',
+      side: side || 'party',
+      speed: (typeof parseSpeed === 'function' ? parseSpeed(n.speed) : (Number(n.speed) || 30)),
       moveUsed: 0,
       actionUsed: false,
       bonusUsed: false,
       objectInteractUsed: false,
       reactionUsed: false,
       attacksUsed: 0,
-      attacksMax: 1,
+      attacksMax: (typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1),
       turnPhase: 'ready',
-      notes: n.attacks || n.notes || '',
+      notes: n.attacks || '',
       attacks: n.attacks || '',
-      features: n.features || '',
       cantrips: n.cantrips || '',
       spells: n.spells || '',
-      spellcastingAbility: n.spellcastingAbility || '',
-      preparedSpells: n.preparedSpells || '',
-      spellPrepMode: n.spellPrepMode || 'known',
-      combatSpellSlots: n.combatSpellSlots || null,
-      combatResources: n.combatResources || null,
       isUmbrarian: !!n.isUmbrarian,
       umbrarianStage: n.umbrarianStage || '',
       shard: n.shard || '',
       shardAbility: n.shardAbility || '',
-      corruption: n.corruption != null ? n.corruption : 0,
-      inventory: Array.isArray(n.inventory) ? n.inventory.filter(Boolean) : [],
+      inventory: n.inventory || [],
       actions: n.actions || [],
       bonusActions: n.bonusActions || [],
       reactions: n.reactions || [],
       legendaryActions: n.legendaryActions || [],
-      legendary: !!(n.legendary && (sideNorm === 'enemy' || sideNorm === 'villain' || n.type === 'enemy' || n.type === 'villain' || n.type === 'npc')),
+      legendary: !!(n.legendary && (side === 'enemy' || side === 'villain' || n.type === 'enemy' || n.type === 'villain')),
       legendaryResist: n.legendaryResist,
       legendaryResistMax: n.legendaryResistMax,
-      legendaryActionsMax: n.legendaryActionsMax != null ? n.legendaryActionsMax : (n.legendaryActions && n.legendaryActions.length ? 3 : null),
-      legendaryActionsUsed: 0,
       resistances: n.resistances || '',
       immunities: n.immunities || '',
-      vulnerabilities: n.vulnerabilities || '',
+      speed: n.speed || '30 ft.',
       tempHp: 0,
       concentrating: false,
-      combatLog: [],
-      hideHp: false
+      combatLog: []
     };
-    // Seed resources / attack budget from class tables when possible
-    try {
-      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, n);
-    } catch (e) { console.warn('ensureCombatantTurnState', e); }
-    if (cb.attacksMax == null || cb.attacksMax < 1) {
-      try {
-        cb.attacksMax = typeof attacksPerAction === 'function' ? attacksPerAction(n) : 1;
-      } catch (e) { cb.attacksMax = 1; }
-    }
-    // Legendary actions left
-    if (cb.legendary || cb.legendaryActionsMax) {
-      const max = cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3;
-      cb.legendaryActionsMax = max;
-      cb.legendaryActionsLeft = max;
-      cb.legendaryActionsUsed = 0;
-    }
-    return cb;
   }
-
 
   function lookupBestiary(name) {
     if (!name) return null;
@@ -9525,25 +9438,19 @@ function rollDieExpr(expr) {
     const combat = getCombat(c);
     const list = $('#combat-list');
     const empty = $('#empty-combat');
-    if (!list) {
-      console.warn('renderCombat: #combat-list missing (wrong view?)');
-      return;
-    }
     list.innerHTML = '';
 
-    const roundEl = $('#combat-round');
-    if (roundEl) roundEl.textContent = combat.round;
+    $('#combat-round').textContent = combat.round;
 
     if (combat.selectedIndex == null) combat.selectedIndex = combat.turnIndex || 0;
 
     if (combat.combatants.length === 0) {
-      if (empty) empty.classList.remove('hidden');
-      const tl0 = $('#combat-turn-label');
-      if (tl0) tl0.textContent = '—';
-      try { showCombatDetail(null); } catch (e) {}
+      empty.classList.remove('hidden');
+      $('#combat-turn-label').textContent = '—';
+      showCombatDetail(null);
       return;
     }
-    if (empty) empty.classList.add('hidden');
+    empty.classList.add('hidden');
 
     // Clamp turn index
     if (combat.turnIndex >= combat.combatants.length) combat.turnIndex = 0;
@@ -9832,32 +9739,18 @@ function rollDieExpr(expr) {
         const checked = $$('.pick-cb:checked');
         if (checked.length === 0) { toast('Select at least one'); return false; }
         const combat = getCombat(c);
-        if (!combat.combatants) combat.combatants = [];
-        let added = 0;
-        checked.forEach(el => {
-          try {
-            const ch = items[parseInt(el.value, 10)];
-            if (!ch) return;
-            const row = combatantFromChar(ch, side);
-            if (row && row.name) {
-              combat.combatants.push(row);
-              added++;
-            }
-          } catch (err) {
-            console.error('Add to combat failed', err);
-          }
+        checked.forEach(cb => {
+          const ch = items[parseInt(cb.value, 10)];
+          if (ch) combat.combatants.push(combatantFromChar(ch, side));
         });
-        if (!added) { toast('Could not add selected combatants'); return false; }
-        if (combat.selectedIndex == null || combat.selectedIndex < 0) combat.selectedIndex = 0;
         c.updatedAt = new Date().toISOString();
-        try { save(); } catch (e) { console.error(e); }
+        save();
         return true;
       }
     });
     if (ok) {
-      try { if (typeof setView === 'function') setView('combat'); } catch (e) {}
       toast('Added to combat');
-      try { renderCombat(); } catch (e) { console.error(e); toast('Added but UI refresh failed — switch to Combat tab'); }
+      renderCombat();
     }
   }
 
@@ -9914,10 +9807,35 @@ function rollDieExpr(expr) {
 
 
   function combatantFromCharacter(ch, side) {
-    // Unified path with combatantFromChar (Toolkit + Combat Tracker roster)
-    return combatantFromChar(ch, side || (ch && (ch.type === 'villain' || ch.type === 'enemy') ? 'enemy' : 'party'));
+    const dexMod = Math.floor(((ch.dex || 10) - 10) / 2);
+    return {
+      id: uid(),
+      charId: ch.id,
+      name: ch.name,
+      side: side || (ch.type === 'villain' ? 'enemy' : 'ally'),
+      init: (1 + Math.floor(Math.random() * 20)) + dexMod,
+      ac: ch.ac || 10,
+      hp: ch.hp != null ? ch.hp : (ch.hpMax || 10),
+      hpMax: ch.hpMax || ch.hp || 10,
+      tempHp: ch.tempHp || 0,
+      conditions: Array.isArray(ch.conditions) ? ch.conditions.join(', ') : (ch.conditions || ''),
+      notes: ch.attacks || ch.notes || '',
+      attacks: ch.attacks || '',
+      actions: ch.actions || [],
+      bonusActions: ch.bonusActions || [],
+      reactions: ch.reactions || [],
+      legendaryActions: ch.legendaryActions || [],
+      legendary: !!(ch.legendary && (side === 'enemy' || side === 'villain' || ch.type === 'enemy' || ch.type === 'villain')),
+      legendaryResist: ch.legendaryResist,
+      legendaryResistMax: ch.legendaryResistMax,
+      resistances: ch.resistances || '',
+      immunities: ch.immunities || '',
+      vulnerabilities: ch.vulnerabilities || '',
+      speed: ch.speed || '30 ft.',
+      concentrating: false,
+      combatLog: []
+    };
   }
-
 
   function combatantFromBestiary(b, side) {
     return {
