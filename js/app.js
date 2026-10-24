@@ -896,9 +896,17 @@
         return;
       }
     } catch (e) {}
-    // Map pop-out (DM share window without player role): view-only
+    // Map pop-out (DM share window): persist map tokens/fog so drag/place works on video maps
     try {
       if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+        try {
+          const payload = typeof cloneStateForLocalStorage === 'function'
+            ? cloneStateForLocalStorage()
+            : { campaigns: state.campaigns, activeCampaignId: state.activeCampaignId };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        } catch (e) { console.warn('popout save', e); }
+        try { if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('popout-map'); } catch (e) {}
+        try { if (typeof broadcastVttState === 'function') broadcastVttState('popout-map'); } catch (e) {}
         try { if (typeof notifyMapWindows === 'function') setTimeout(notifyMapWindows, 0); } catch (e) {}
         return;
       }
@@ -11295,6 +11303,8 @@ function escapeHtml(str) {
   }
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
+    // Never clobber an in-progress local drag
+    if (window.__tokenDragActive) return;
     const room = getVttRoomCode();
     if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
     // Ignore our own echo within 50ms if we just sent
@@ -12884,6 +12894,7 @@ const canvas = document.getElementById('map-canvas');
               return;
             }
             dragId = found;
+            window.__tokenDragActive = true;
             try {
               if (ev.pointerId != null) canvas.setPointerCapture(ev.pointerId);
             } catch (e) {}
@@ -12897,7 +12908,10 @@ const canvas = document.getElementById('map-canvas');
           if (!id) { toast('Pick a combatant from the list or Place on roster'); return; }
           map.tokens[id] = snapWorldToGrid(map, x, y);
           try { save(); } catch (err) {}
-          try { broadcastVttState('token-move'); } catch (e) {}
+          try {
+            if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-place');
+            else broadcastVttState('token-move');
+          } catch (e) {}
           redrawMapLive();
           try { renderMapRoster(); } catch (e) {}
         } else if (tool.startsWith('aoe-')) {
@@ -12945,13 +12959,13 @@ const canvas = document.getElementById('map-canvas');
         // Update position every move (video maps need immediate paintMapFrame)
         map.tokens[dragId] = snapWorldToGrid(map, x, y);
         const now = Date.now();
-        if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 100) {
+        if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
           window.__lastTokenDragBc = now;
           try {
             if (!isPlayerRole()) {
-              // Persist so popout/main stay in sync without waiting for pointerup
               save();
-              broadcastVttState('token-move');
+              if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-drag');
+              else broadcastVttState('token-move');
             }
           } catch (e) {}
         }
@@ -12976,10 +12990,14 @@ const canvas = document.getElementById('map-canvas');
         }
         if (dragId) {
           window.__lastTokenSent = Date.now();
+          window.__tokenDragActive = false;
           try {
             if (!isPlayerRole()) {
               save();
-              try { broadcastVttState('token-move'); } catch (e) {}
+              try {
+                if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-up');
+                else broadcastVttState('token-move');
+              } catch (e) {}
             }
             else {
               // Player/popout: persist token positions into main storage key lightly
@@ -13007,7 +13025,7 @@ const canvas = document.getElementById('map-canvas');
           dragId = null;
         }
       });
-      canvas.addEventListener('mouseleave', () => { dragId = null; });
+      canvas.addEventListener('mouseleave', () => { /* keep drag if captured */ });
 
 
       canvas.addEventListener('contextmenu', (ev) => {

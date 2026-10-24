@@ -3757,3 +3757,27 @@ body.map-popout:not(.vtt-player) .map-toolbar .field label,
 body.map-popout:not(.vtt-player) .map-toolbar .view-desc {
   display: none !important;
 }
+
+
+/* ==== DM mapPopout: MUST show toolbar (token tool / fog) — last wins ==== */
+html.map-popout:not(.vtt-player) .map-toolbar,
+html.map-popout:not(.vtt-player) body .map-toolbar,
+body.map-popout:not(.vtt-player) .map-toolbar,
+body.map-popout:not(.vtt-player) #view-map .map-toolbar,
+html.map-popout:not(.vtt-player) #view-map .map-toolbar {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  flex-wrap: wrap !important;
+  gap: 0.35rem !important;
+  padding: 0.35rem 0.5rem !important;
+  position: relative !important;
+  z-index: 20 !important;
+}
+/* Player popout: still hide toolbar */
+html.map-popout.vtt-player .map-toolbar,
+body.map-popout.vtt-player .map-toolbar,
+html.vtt-player .map-toolbar {
+  display: none !important;
+}
