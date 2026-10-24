@@ -7569,7 +7569,7 @@ function rollDieExpr(expr) {
     // DM main window (not popout): always see everyone
     if (typeof isPlayerFacingView === 'function' ? !isPlayerFacingView() : !isPlayerRole()) return true;
     if (!target) return false;
-    // Always see claimed/self character
+    // Always see claimed/self character (player combat panel)
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     const map = getCombatMap();
     if (!map) return false;
@@ -7578,9 +7578,7 @@ function rollDieExpr(expr) {
       : (map.tokens && map.tokens[String(target.id)]);
     // Popups / player: only list combatants that are on the map
     if (!pos) return false;
-    // Allies / PCs on the map: always listed
-    if (!isEnemySide(target)) return true;
-    // Enemies on the map: need FoW reveal when fog is on
+    // Anyone under unrevealed FoW is hidden from player-facing lists (PC and enemy)
     if (!map.fogEnabled) return true;
     try {
       ensureMapFog(map);
