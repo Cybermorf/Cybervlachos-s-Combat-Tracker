@@ -12080,40 +12080,76 @@ function escapeHtml(str) {
   window.__drawMapOverlays = drawMapOverlays;
 
 
-  function fitMapCanvasToWrap(canvas, srcW, srcH) {
+  function fitMapCanvasToWrap(canvas, srcW, srcH, force) {
     if (!canvas || !srcW || !srcH) return 1;
+    const pop = typeof isMapPopoutMode === 'function' && isMapPopoutMode();
+    const layout = document.querySelector('.map-layout');
     const wrap = canvas.parentElement;
     const roster = document.getElementById('map-roster');
     const playerPanel = document.getElementById('player-combat-panel');
-    const pop = typeof isMapPopoutMode === 'function' && isMapPopoutMode();
+    // Measure from stable layout (not the canvas-sized wrap) to avoid shrink-on-redraw
     let maxW, maxH;
-    if (wrap && wrap.clientWidth > 40 && wrap.clientHeight > 40) {
+    if (layout && layout.clientWidth > 80) {
+      let side = 0;
+      if (roster && getComputedStyle(roster).display !== 'none') side += (roster.offsetWidth || 280) + 12;
+      if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += (playerPanel.offsetWidth || 300) + 12;
+      maxW = Math.max(280, layout.clientWidth - side - 12);
+      maxH = Math.max(220, (layout.clientHeight > 80 ? layout.clientHeight : window.innerHeight * 0.6) - 12);
+    } else if (wrap && wrap.clientWidth > 80 && wrap.clientHeight > 80) {
       maxW = wrap.clientWidth - 8;
       maxH = wrap.clientHeight - 8;
     } else {
       let side = 0;
-      if (roster && getComputedStyle(roster).display !== 'none') side += roster.offsetWidth || 260;
-      if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += playerPanel.offsetWidth || 320;
+      if (roster && getComputedStyle(roster).display !== 'none') side += roster.offsetWidth || 280;
+      if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += playerPanel.offsetWidth || 300;
       maxW = Math.max(320, window.innerWidth - side - (pop ? 24 : 100));
-      maxH = Math.max(240, window.innerHeight - (pop ? 16 : 120));
+      maxH = Math.max(240, window.innerHeight - (pop ? 16 : 140));
     }
-    // Cap main tab a bit; popout can use full available area
     if (!pop) {
-      maxW = Math.min(maxW, 1200);
-      maxH = Math.min(maxH, window.innerHeight - 120);
+      maxW = Math.min(maxW, Math.max(600, window.innerWidth - 320));
+      maxH = Math.min(maxH, window.innerHeight - 140);
     }
-    const scale = Math.min(maxW / srcW, maxH / srcH, 1);
+    let scale = Math.min(maxW / srcW, maxH / srcH, 1);
+    // Never shrink below a previously good fit for the same media unless forced / window grew rules
+    const map = (typeof getCombatMap === 'function') ? getCombatMap() : null;
+    if (!force && map && map._fitSrcW === srcW && map._fitSrcH === srcH && map.scale > 0) {
+      // Keep existing scale if new compute is smaller (click/redraw shrink guard)
+      if (scale < map.scale * 0.98) scale = map.scale;
+    }
     const w = Math.max(1, Math.floor(srcW * scale));
     const h = Math.max(1, Math.floor(srcH * scale));
-    canvas.width = w;
-    canvas.height = h;
-    // Lock CSS size to bitmap aspect — prevents stretch
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
     canvas.style.maxWidth = '100%';
     canvas.style.maxHeight = '100%';
     canvas.style.objectFit = 'contain';
+    if (map) {
+      map._fitSrcW = srcW;
+      map._fitSrcH = srcH;
+      map.scale = scale;
+    }
     return scale;
+  }
+
+  
+  if (!window.__mapResizeBound) {
+    window.__mapResizeBound = true;
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        try {
+          const m = getCombatMap();
+          if (!m) return;
+          m._fitSrcW = null;
+          m._fitSrcH = null;
+          window.__mapVideoTicking = false;
+          renderBattleMap();
+        } catch (e) {}
+      }, 150);
+    });
   }
 
   function renderBattleMap() {
@@ -12160,24 +12196,28 @@ function escapeHtml(str) {
       }
       let started = false;
       let waitFrames = 0;
-      const startVideoDraw = () => {
-        if (started) return;
+      const startVideoDraw = (forceFit) => {
         const srcW = videoEl.videoWidth;
         const srcH = videoEl.videoHeight;
         if (!srcW || !srcH) {
+          if (started) return;
           waitFrames++;
           if (waitFrames < 180) {
-            window.__mapRaf = requestAnimationFrame(() => startVideoDraw());
+            window.__mapRaf = requestAnimationFrame(() => startVideoDraw(forceFit));
           } else if (status) {
-            status.textContent = 'Video still loading… click map to retry play';
+            status.textContent = 'Video still loading… use tool Select and click map once to retry play';
           }
           return;
         }
-        started = true;
         map.width = srcW;
         map.height = srcH;
-        const scale = fitMapCanvasToWrap(canvas, srcW, srcH);
+        // Only fit once (or when forced e.g. new video / window resize)
+        const needFit = forceFit || !started || !map.scale || map._fitSrcW !== srcW || map._fitSrcH !== srcH || !canvas.width;
+        const scale = needFit ? fitMapCanvasToWrap(canvas, srcW, srcH, !!forceFit) : (map.scale || fitMapCanvasToWrap(canvas, srcW, srcH, false));
         map.scale = scale;
+        if (started && window.__mapVideoTicking) return;
+        started = true;
+        window.__mapVideoTicking = true;
         const ensurePlaying = () => {
           try {
             videoEl.muted = true;
@@ -12217,18 +12257,31 @@ function escapeHtml(str) {
         toast('Video failed to decode — use H.264 MP4 or WebM (' + (err && err.message ? err.message : 'unknown') + ')');
         if (status) status.textContent = 'Video decode failed';
       };
-      // Click-to-play fallback (autoplay policies)
-      canvas.onclick = (ev) => {
-        if (map.mediaType === 'video') {
+      // Click-to-play only — never re-fit (prevents map shrinking every click)
+      if (!canvas.dataset.videoPlayBound) {
+        canvas.dataset.videoPlayBound = '1';
+        canvas.addEventListener('pointerdown', () => {
+          const m = getCombatMap();
+          if (!m || m.mediaType !== 'video') return;
           try {
             videoEl.muted = true;
             videoEl.loop = true;
-            videoEl.play().then(() => startVideoDraw()).catch(() => {});
+            const p = videoEl.play();
+            if (p && p.catch) p.catch(() => {});
           } catch (e) {}
-        }
-      };
-      if (videoEl.readyState >= 2 && videoEl.videoWidth) startVideoDraw();
-      else startVideoDraw(); // begins wait loop
+        });
+      }
+      // Reset ticking flag only when media src changes
+      if (videoEl.getAttribute('data-src') === want && window.__mapVideoSrc === want && window.__mapVideoTicking) {
+        // already drawing this video — leave size alone
+        if (status) status.textContent = `Video ${videoEl.videoWidth||'?'}×${videoEl.videoHeight||'?'} · looping · grid ${map.gridSize}px`;
+        return;
+      }
+      window.__mapVideoSrc = want;
+      window.__mapVideoTicking = false;
+      started = false;
+      if (videoEl.readyState >= 2 && videoEl.videoWidth) startVideoDraw(false);
+      else startVideoDraw(false);
       return;
     }
 
@@ -12555,6 +12608,11 @@ function escapeHtml(str) {
             map.aoe = null;
             map.videoName = f.name || 'map-video';
             map.hasVideoInIdb = false;
+            map._fitSrcW = null;
+            map._fitSrcH = null;
+            map.scale = null;
+            window.__mapVideoTicking = false;
+            window.__mapVideoSrc = null;
             if (c && c.id) {
               try {
                 await idbSetMapVideo(c.id, blob);
