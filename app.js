@@ -12531,6 +12531,7 @@ function escapeHtml(str) {
             toast('Could not parse UVTT: ' + (err.message || err));
           }
           el.value = '';
+        }
 
         if (el.id === 'map-file-video') {
           const f = el.files && el.files[0];
@@ -12578,7 +12579,6 @@ function escapeHtml(str) {
             toast('Could not load video: ' + (err && err.message ? err.message : err));
           }
           el.value = '';
-        }
         }
       });
     }
