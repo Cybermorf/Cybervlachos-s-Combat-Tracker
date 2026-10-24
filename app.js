@@ -2312,10 +2312,11 @@ function ensureCombatantTurnState(cb, ch) {
         const prevCur = prevR.current != null ? Number(prevR.current) : null;
         const charUsed = fromChar[r.id] != null ? Number(fromChar[r.id]) : null;
         let used;
-        if (prevCur != null && !isNaN(prevCur)) {
-          used = Math.max(0, (Number(r.max) || 0) - prevCur);
-        } else if (prevUsed != null) {
+        // Prefer explicit used count (spend buttons update used); current can be stale
+        if (prevUsed != null && !isNaN(prevUsed)) {
           used = Math.max(0, prevUsed);
+        } else if (prevCur != null && !isNaN(prevCur)) {
+          used = Math.max(0, (Number(r.max) || 0) - prevCur);
         } else if (charUsed != null) {
           used = Math.max(0, charUsed);
         } else {
@@ -7740,6 +7741,20 @@ function rollDieExpr(expr) {
   }
 
 
+
+  function softRefreshCombatDetail(cb, panelHint) {
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel();
+        return;
+      }
+      if (typeof showCombatDetail === 'function') showCombatDetail(cb, panelHint);
+      else if (typeof renderCombat === 'function') renderCombat();
+    } catch (e) {
+      try { renderCombat(); } catch (e2) {}
+    }
+  }
+
   function showCombatDetail(cb, panelOverride) {
     if (!cb) return;
     // Resolve linked character for Extra Attack / speed
@@ -7948,7 +7963,7 @@ function rollDieExpr(expr) {
             <label>Save DC (for save roll)</label>
             <input type="number" id="cr-dc" value="15" min="1" max="40" />
           </div>
-          <div id="cr-result" class="combat-roll-result muted small">Select an attack and roll.</div>
+          <div id="cr-result" class="combat-roll-result muted small">${cb.lastRollHtml ? cb.lastRollHtml : 'Select an attack and roll.'}</div>
           <div class="combat-apply-row" style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center">
             <button type="button" class="btn primary" id="cr-apply-effect" title="Apply this ability/spell effect to selected targets">Apply Effect</button>
             <button type="button" class="btn danger" id="cr-apply-dmg" title="Apply damage to target(s)">Apply Damage</button>
@@ -8137,13 +8152,22 @@ function rollDieExpr(expr) {
         const hits = res.isFumble ? false : (res.isCrit || res.hitTotal >= acVal);
         hitLine = hits ? ` HIT vs AC ${acVal}` : ` MISS vs AC ${acVal}`;
       }
-      if (box) {
-        box.innerHTML = `<div><strong>${escapeHtml(atkName)}</strong> · ${escapeHtml(res.note)}</div>
+      const rollHtml = `<div><strong>${escapeHtml(atkName)}</strong> · ${escapeHtml(res.note)}</div>
           <div>To hit: <strong>${res.formula}</strong>${res.isCrit ? ' · CRIT' : ''}${res.isFumble ? ' · FUMBLE' : ''}${hitLine}</div>
           <div>Damage: <strong>${res.dmgTotal}</strong> <span class="muted">(${escapeHtml(res.dmgDetail)})</span></div>`;
-      }
+      showRollHtml(rollHtml);
+      try { cb.lastRollHtml = rollHtml; } catch (e) {}
       window.__lastCombatRoll = { damage: res.dmgTotal, heal: 0, hit: !hitLine.includes('MISS'), name: atkName };
-        appendLog(`${atkName}: ${res.formula}${hitLine} · dmg ${res.dmgTotal}`);
+      appendLog(`${atkName}: ${res.formula}${hitLine} · dmg ${res.dmgTotal}`);
+      try {
+        appendSharedCombatLog((cb.name || 'Attacker') + ' · ' + atkName + ': ' + res.formula + hitLine + ' · dmg ' + res.dmgTotal, { names: [cb.name], ids: [cb.id] });
+      } catch (e) {}
+      // Always toast on player so result is obvious
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+          toast(atkName + ': ' + res.formula + hitLine + ' · dmg ' + res.dmgTotal);
+        }
+      } catch (e) {}
     });
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
       const dmg = rollDieExpr(dmgEl?.value || '1d8');
@@ -8397,18 +8421,72 @@ function rollDieExpr(expr) {
       btn.addEventListener('click', () => {
         const id = btn.dataset.res;
         if (!cb.combatResources || !cb.combatResources[id]) return;
-        cb.combatResources[id].used = Math.max(0, (cb.combatResources[id].used || 0) - 1);
-        syncCombatResourcesToCharacter(cb); try { save(); } catch(e) {} renderCombat();
+        const r = cb.combatResources[id];
+        const max = Number(r.max) || 0;
+        r.used = Math.max(0, (Number(r.used) || 0) - 1);
+        r.current = Math.max(0, max - (Number(r.used) || 0));
+        if (max >= 99) r.current = 99;
+        syncCombatResourcesToCharacter(cb);
+        try { save(); } catch(e) {}
+        try { appendSharedCombatLog((cb.name || 'Character') + ' restored 1 ' + (r.label || id), { names: [cb.name], ids: [cb.id] }); } catch (e) {}
+        softRefreshCombatDetail(cb, panel);
       });
     });
-    panel.querySelectorAll('.cd-res-inc, .cd-res-spend').forEach(btn => {
+    panel.querySelectorAll('.cd-res-inc').forEach(btn => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.res;
         if (!cb.combatResources || !cb.combatResources[id]) return;
         const r = cb.combatResources[id];
-        const maxU = r.max >= 99 ? 99 : r.max;
-        r.used = Math.min(maxU, (r.used || 0) + 1);
-        syncCombatResourcesToCharacter(cb); try { save(); } catch(e) {} renderCombat();
+        const maxU = r.max >= 99 ? 99 : (Number(r.max) || 0);
+        r.used = Math.min(maxU, (Number(r.used) || 0) + 1);
+        r.current = Math.max(0, maxU - (Number(r.used) || 0));
+        if (r.max >= 99) r.current = 99;
+        syncCombatResourcesToCharacter(cb);
+        try { save(); } catch(e) {}
+        softRefreshCombatDetail(cb, panel);
+      });
+    });
+    panel.querySelectorAll('.cd-res-spend').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.res;
+        if (!cb.combatResources || !cb.combatResources[id]) {
+          toast('Resource not available');
+          return;
+        }
+        const r = cb.combatResources[id];
+        const maxU = r.max >= 99 ? 99 : (Number(r.max) || 0);
+        const left = maxU >= 99 ? 99 : Math.max(0, maxU - (Number(r.used) || 0));
+        if (maxU < 99 && left <= 0) {
+          toast((r.label || id) + ' exhausted');
+          return;
+        }
+        // Prefer spendCombatResource when present
+        let ok = false;
+        if (typeof spendCombatResource === 'function') {
+          ok = spendCombatResource(cb, id, 1);
+        }
+        if (!ok) {
+          r.used = Math.min(maxU, (Number(r.used) || 0) + 1);
+          r.current = Math.max(0, maxU - (Number(r.used) || 0));
+          if (r.max >= 99) r.current = 99;
+          ok = true;
+        }
+        // Keep used/current consistent after spendCombatResource
+        if (r.max != null) {
+          const max = Number(r.max) || 0;
+          if (r.current != null && (r.used == null || isNaN(r.used))) {
+            r.used = Math.max(0, max - (Number(r.current) || 0));
+          }
+          if (r.used != null) r.current = Math.max(0, max - (Number(r.used) || 0));
+        }
+        syncCombatResourcesToCharacter(cb);
+        try { save(); } catch(e) {}
+        const leftAfter = (Number(r.max) || 0) >= 99 ? '∞' : Math.max(0, (Number(r.max) || 0) - (Number(r.used) || 0));
+        toast((r.label || id) + ' used · ' + leftAfter + ' left');
+        try {
+          appendSharedCombatLog((cb.name || 'Character') + ' used ' + (r.label || id) + ' (' + leftAfter + ' left)', { names: [cb.name], ids: [cb.id] });
+        } catch (e) {}
+        softRefreshCombatDetail(cb, panel);
       });
     });
     panel.querySelectorAll('.cd-slot-spend').forEach(btn => {
