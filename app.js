@@ -2359,7 +2359,12 @@ function ensureCombatantTurnState(cb, ch) {
     // Full turn economy defaults
     if (cb.speed == null || (typeof cb.speed === 'number' && isNaN(cb.speed))) cb.speed = parseSpeed(ch && ch.speed);
     if (cb.moveUsed == null) cb.moveUsed = 0;
-    if (cb.actionUsed == null) cb.actionUsed = false;
+    if (cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) {
+      cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch) : 1;
+    }
+    if (cb.actionsUsed == null) cb.actionsUsed = cb.actionUsed ? 1 : 0;
+    if (cb.extraActionsGranted == null) cb.extraActionsGranted = 0;
+    cb.actionUsed = (Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1);
     if (cb.bonusUsed == null) cb.bonusUsed = false;
     if (cb.objectInteractUsed == null) cb.objectInteractUsed = false;
     if (cb.reactionUsed == null) cb.reactionUsed = false;
@@ -3035,7 +3040,7 @@ function ensureCombatantTurnState(cb, ch) {
         <div class="turn-stage-sub" style="margin-top:0.35rem">
           <div class="turn-stage-sub-head">Actions budget <span class="muted small">(1 + Haste / Action Surge)</span></div>
           <div class="combat-res-row">
-            <span class="combat-res-val"><strong>${actLeft}</strong> / ${actMax}</span>
+            <span class="combat-res-val"><strong>${actLeft}</strong> left of ${actMax}${actUsed ? ' · used ' + actUsed : ''}</span>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-inc" title="Spend 1 action">+</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>
@@ -8698,11 +8703,30 @@ function rollDieExpr(expr) {
       if (!L || L === '0' || !cb.combatSpellSlots || !cb.combatSpellSlots[L]) { toast('No slot available at that level'); return; }
       const s = cb.combatSpellSlots[L];
       if ((s.used || 0) >= s.max) { toast('No slots left at this level'); return; }
+      // Spending a leveled slot is casting — costs 1 Action unless already paid this turn for a cast
+      if (cb.actionsMax == null) cb.actionsMax = 1;
+      if (cb.actionsUsed == null) cb.actionsUsed = 0;
+      const alreadyCast = cb.lastAction && /^Cast /i.test(String(cb.lastAction));
+      if (!alreadyCast) {
+        if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+          toast('No actions left — cannot spend slot as a new cast');
+          return;
+        }
+        cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+        cb.actionUsed = true;
+        cb.lastAction = 'Cast (slot L' + L + ')';
+      }
       s.used = (s.used || 0) + 1;
       const act = window.__activeCombatAction;
-      appendLog(`Spent L${L} slot${act ? ' for ' + act.name : ''} (upcast)`);
-      toast(`Spent level ${L} slot`);
-      syncCombatResourcesToCharacter(cb); save(); renderCombat();
+      const left = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
+      appendLog('Spent L' + L + ' slot' + (act ? ' for ' + act.name : '') + ' · Action ' + cb.actionsUsed + '/' + cb.actionsMax);
+      toast('Spent level ' + L + ' slot · Action used (' + left + ' left)');
+      try {
+        appendSharedCombatLog((cb.name || 'Caster') + ' spent L' + L + ' slot (Action · ' + left + ' left)', { names: [cb.name], ids: [cb.id] });
+      } catch (e) {}
+      syncCombatResourcesToCharacter(cb);
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     function refreshCombatDetail() {
       try { save(); } catch(e) {}
@@ -8810,12 +8834,24 @@ function rollDieExpr(expr) {
           cb.lastAction = labels[act] || act;
         }
         if (act === 'cast') {
-          toast('Use Spellcasting panel to cast (spends 1 Action when you Cast)');
-          // do not spend yet — spent on Cast
+          // Mark Action spent for casting; finish with Spellcasting panel (slot / Cast button)
+          if (cb.actionsMax == null) cb.actionsMax = 1;
+          if (cb.actionsUsed == null) cb.actionsUsed = 0;
+          if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+            toast('No actions left this turn');
+            return;
+          }
+          cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+          cb.actionUsed = true;
+          cb.lastAction = 'Cast a spell';
+          toast('Action: Cast a spell — pick the spell and Cast / Spend Slot');
+          try { appendSharedCombatLog((cb.name || 'Caster') + ' uses Action to Cast a spell', { names: [cb.name], ids: [cb.id] }); } catch (e) {}
         } else if (typeof spendAction === 'function') {
           if (!spendAction(cb, labels[act] || act)) return;
         } else {
+          cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
           cb.actionUsed = true;
+          cb.lastAction = labels[act] || act;
         }
         if (act === 'dodge') { try { addCondition(cb, 'dodging', 1); } catch (e) {} }
         if (act === 'hide') { try { addCondition(cb, 'hiding', 1); } catch (e) {} }
@@ -9128,7 +9164,11 @@ function rollDieExpr(expr) {
       }
 
       function applyCastEconomy(sp, slotLevel) {
-        const bucket = castingTimeBucket(sp.time);
+        if (cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) cb.actionsMax = 1;
+        if (cb.actionsUsed == null) cb.actionsUsed = 0;
+        const timeRaw = sp && (sp.time || sp.castingTime || sp.casting_time);
+        const bucket = castingTimeBucket(timeRaw);
+        const spellLabel = (sp && (sp.name || sp.label)) || 'spell';
         if (bucket === 'bonus') {
           if (cb.bonusUsed) {
             toast('Bonus action already used this turn');
@@ -9137,40 +9177,36 @@ function rollDieExpr(expr) {
           cb.bonusUsed = true;
           if (!cb.bonusActionsUsed) cb.bonusActionsUsed = {};
           cb.bonusActionsUsed['cast-spell'] = true;
+          toast('Bonus action: Cast ' + spellLabel);
         } else if (bucket === 'reaction') {
           if (cb.reactionUsed) {
             toast('Reaction already used');
             return false;
           }
           cb.reactionUsed = true;
+          toast('Reaction: Cast ' + spellLabel);
         } else {
-          // Action spell (or casting time action/1 action)
-          if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
-            toast('No actions left this turn — cannot cast');
-            return false;
-          }
-          if (typeof spendAction === 'function') {
-            if (!spendAction(cb, 'Cast ' + (sp.name || 'spell'))) return false;
-          } else {
+          const alreadyPaid = (Number(cb.actionsUsed) || 0) > 0 && cb.lastAction && /^Cast/i.test(String(cb.lastAction));
+          if (!alreadyPaid) {
+            if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+              toast('No actions left this turn — cannot cast');
+              return false;
+            }
             cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
-            cb.actionUsed = cb.actionsUsed >= (Number(cb.actionsMax) || 1);
-            cb.lastAction = 'Cast ' + (sp.name || 'spell');
+            cb.actionUsed = true;
           }
-          // Starting a new Action means weapon-attack series has not started
-          // (do not reset mid-Attack if they somehow cast with a second action)
-          if ((Number(cb.actionsUsed) || 0) === 1) {
-            /* first action of turn was cast — no Attack action open */
-          }
+          cb.lastAction = 'Cast ' + spellLabel;
+          const left = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
+          toast('Cast ' + spellLabel + ' · ' + left + ' action(s) left');
+          try {
+            appendSharedCombatLog((cb.name || 'Caster') + ' casts ' + spellLabel + ' (Action · ' + left + ' left)', { names: [cb.name], ids: [cb.id] });
+          } catch (e) {}
         }
-        if (sp.level > 0) {
-          const need = Math.max(sp.level, Number(slotLevel) || sp.level);
-          if (!spendSlot(need)) return false;
+        if (sp && sp.level > 0) {
+          const need = Math.max(Number(sp.level) || 0, Number(slotLevel) || Number(sp.level) || 0);
+          if (need > 0 && typeof spendSlot === 'function' && !spendSlot(need)) return false;
         }
-        // Concentration warn + set
-        if (sp.concentration) {
-          if (cb.concentrating && cb.concentrating !== sp.name) {
-            // warn already handled by caller sometimes
-          }
+        if (sp && sp.concentration) {
           cb.concentrating = sp.name;
         }
         return true;
@@ -9194,7 +9230,7 @@ function rollDieExpr(expr) {
           toast('Reminder: after a bonus-action spell, only a cantrip (action) that turn (2014)');
         }
         if (!applyCastEconomy(sp, slotLevel)) return;
-
+        try { save(); } catch (e) {}
         // Prefill roller for damage / heal
         const mode = panel.querySelector('#cr-mode');
         const hitIn = panel.querySelector('#cr-hit-bonus') || panel.querySelector('#cr-to-hit') || panel.querySelector('#cr-tohit');
