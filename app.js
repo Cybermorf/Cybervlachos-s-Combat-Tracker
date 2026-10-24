@@ -2926,7 +2926,7 @@ function ensureCombatantTurnState(cb, ch) {
     const used = cb.attacksUsed || 0;
     const left = Math.max(0, max - used);
     // Actions budget (1 base + Haste + Action Surge grants, etc.)
-    if (cb.actionsMax == null) cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, _ch) : 1;
+    if (cb.actionsMax == null) cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch) : 1;
     if (cb.actionsUsed == null) cb.actionsUsed = cb.actionUsed ? 1 : 0;
     const actMax = Number(cb.actionsMax) || 1;
     const actUsed = Number(cb.actionsUsed) || 0;
@@ -10503,7 +10503,12 @@ function rollDieExpr(expr) {
   }
 
   function bindCombatListeners() {
-    $('#combat-next-btn')?.addEventListener('click', combatNextTurn);
+    const nextTurnHandler = () => {
+      try { combatNextTurn(); } catch (e) { console.error(e); toast('Next turn failed: ' + (e && e.message ? e.message : e)); }
+    };
+    $('#combat-next-btn')?.addEventListener('click', nextTurnHandler);
+    // Toolbar label is "End Turn / Next"
+    document.getElementById('combat-end-round-btn')?.addEventListener('click', nextTurnHandler);
     const wireRest = (id, fn, label) => {
       const el = document.getElementById(id);
       if (!el || el.dataset.wiredRest) return;
