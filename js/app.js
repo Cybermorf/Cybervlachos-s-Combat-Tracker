@@ -8289,11 +8289,8 @@ function rollDieExpr(expr) {
         if (atkUsed > 0 && atkUsed < maxAtk) {
           // Continuing the Attack action already paid for
           cb.attacksUsed = atkUsed + 1;
-        } else if (atkUsed >= maxAtk) {
-          toast('No weapon attacks left this Attack action (' + maxAtk + ')');
-          return;
         } else {
-          // Need to start the Attack action (costs 1 Action)
+          // Start a new Attack action (first swing, or new series after Action Surge / Haste)
           if (actLeft <= 0) {
             toast('No actions left — already used on ' + (cb.lastAction || 'another action (e.g. Cast)'));
             return;
@@ -8305,7 +8302,7 @@ function rollDieExpr(expr) {
             cb.actionUsed = cb.actionsUsed >= actMax;
             cb.lastAction = 'Attack';
           }
-          cb.attacksUsed = 1;
+          cb.attacksUsed = 1; // new Attack action resets Extra Attack series
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
