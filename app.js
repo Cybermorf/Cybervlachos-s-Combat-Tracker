@@ -11177,8 +11177,9 @@ function escapeHtml(str) {
     const gox = (Number(map.gridOffsetX) || 0) * scale;
     const goy = (Number(map.gridOffsetY) || 0) * scale;
     const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
-    // Player / shared mapPopout: solid black; main DM tab: translucent so tokens remain readable
-    ctx.fillStyle = playerView ? 'rgba(0,0,0,0.94)' : 'rgba(0,0,0,0.55)';
+    const isVideoMap = map && map.mediaType === 'video';
+    // Player / shared mapPopout: solid black; DM: translucent (darker on video so FoW is obvious)
+    ctx.fillStyle = playerView ? 'rgba(0,0,0,0.96)' : (isVideoMap ? 'rgba(0,0,0,0.78)' : 'rgba(0,0,0,0.55)');
     const cols = Math.ceil(canvas.width / g) + 2;
     const rows = Math.ceil(canvas.height / g) + 2;
     const startCol = Math.floor(-gox / g) - 1;
@@ -12158,10 +12159,15 @@ function escapeHtml(str) {
     const ctx = canvas.getContext('2d');
     const map = getCombatMap();
     const status = document.getElementById('map-status');
-    if (window.__mapRaf) { cancelAnimationFrame(window.__mapRaf); window.__mapRaf = null; }
     const videoEl = document.getElementById('map-video');
     const hasVideo = !!(map && map.mediaType === 'video' && map.videoObjectUrl);
     const hasImage = !!(map && map.imageDataUrl);
+    const sameVideoRunning = !!(hasVideo && window.__mapVideoTicking && window.__mapVideoSrc === map.videoObjectUrl);
+    // Never cancel the video draw loop when only FoW/tokens changed — tick already redraws overlays
+    if (!sameVideoRunning && window.__mapRaf) {
+      cancelAnimationFrame(window.__mapRaf);
+      window.__mapRaf = null;
+    }
     if (!map) {
       if (status) status.textContent = 'No map workspace';
       return;
@@ -12271,10 +12277,34 @@ function escapeHtml(str) {
           } catch (e) {}
         });
       }
-      // Reset ticking flag only when media src changes
+      // Already running this video: keep size + tick; overlays update every frame from live map state
       if (videoEl.getAttribute('data-src') === want && window.__mapVideoSrc === want && window.__mapVideoTicking) {
-        // already drawing this video — leave size alone
-        if (status) status.textContent = `Video ${videoEl.videoWidth||'?'}×${videoEl.videoHeight||'?'} · looping · grid ${map.gridSize}px`;
+        if (!window.__mapRaf) {
+          // Tick was dropped — restart draw loop without refit
+          const restartTick = () => {
+            const m = getCombatMap();
+            if (!m || m.mediaType !== 'video' || m.videoObjectUrl !== want) {
+              window.__mapVideoTicking = false;
+              return;
+            }
+            try {
+              if (videoEl.ended || (videoEl.duration && videoEl.currentTime >= videoEl.duration - 0.05)) {
+                videoEl.currentTime = 0;
+              }
+              if (videoEl.paused) videoEl.play().catch(() => {});
+            } catch (e) {}
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
+            try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || 1); } catch (e) {}
+            window.__mapRaf = requestAnimationFrame(restartTick);
+          };
+          window.__mapRaf = requestAnimationFrame(restartTick);
+        }
+        if (status) {
+          status.textContent = `Video ${videoEl.videoWidth||'?'}×${videoEl.videoHeight||'?'} · looping · grid ${map.gridSize}px · FoW ${map.fogEnabled ? 'ON' : 'off'} (${Object.keys(map.fogRevealed||{}).length} revealed)`;
+        }
+        try { renderMapRoster(); } catch (e) {}
         return;
       }
       window.__mapVideoSrc = want;
@@ -12659,7 +12689,11 @@ function escapeHtml(str) {
           paintFog(map0, x, y, fogMode === 'reveal');
           window.__fogDrag = fogMode;
           try { save(); } catch (e) {}
-          try { renderBattleMap(); } catch (e) {}
+          // Video tick redraws overlays; only full-render for static images
+          try {
+            const mm = getCombatMap();
+            if (!(mm && mm.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
+          } catch (e) { try { renderBattleMap(); } catch (e2) {} }
           try { renderMapRoster(); } catch (e) {}
           try { broadcastVttState('fog-paint'); } catch (e) {}
           return;
@@ -12700,7 +12734,10 @@ function escapeHtml(str) {
           if (!id) { toast('Pick a combatant'); return; }
           map.tokens[id] = snapWorldToGrid(map, x, y);
           try { save(); } catch (err) {}
-          renderBattleMap();
+          try {
+            if (!(map.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
+            else renderMapRoster();
+          } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         } else if (tool.startsWith('aoe-')) {
           const shape = tool.replace('aoe-', '');
           const ft = Number(document.getElementById('map-aoe-ft')?.value) || 20;
@@ -12715,7 +12752,10 @@ function escapeHtml(str) {
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
         if (window.__fogDrag && !isPlayerRole()) {
           paintFog(map, x, y, window.__fogDrag === 'reveal');
-          try { renderBattleMap(); } catch (e) {}
+          try {
+            const mm = getCombatMap();
+            if (!(mm && mm.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
+          } catch (e) {}
           const now = Date.now();
           if (!window.__lastFogBc || now - window.__lastFogBc > 150) {
             window.__lastFogBc = now;
@@ -12741,7 +12781,9 @@ function escapeHtml(str) {
         }
         if (!dragId) return;
         map.tokens[dragId] = snapWorldToGrid(map, x, y);
-        renderBattleMap();
+        try {
+          if (!(map.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
+        } catch (e) { try { renderBattleMap(); } catch (e2) {} }
       });
       canvas.addEventListener('mouseup', () => {
         if (window.__fogDrag) {
