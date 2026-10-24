@@ -7546,29 +7546,42 @@ function rollDieExpr(expr) {
     const side = String(cb && cb.side || '').toLowerCase();
     return side === 'enemy' || side === 'villain' || side === 'enemies';
   }
+  function getCombatantTokenPos(target, map) {
+    if (!target || !map) return null;
+    const tokens = map.tokens || {};
+    const id = target.id != null ? String(target.id) : '';
+    if (id && tokens[id]) return tokens[id];
+    if (target.id != null && tokens[target.id]) return tokens[target.id];
+    try {
+      const c = getActive();
+      const list = (c && getCombat(c).combatants) || [];
+      for (const k of Object.keys(tokens)) {
+        if (id && String(k) === id) return tokens[k];
+        const cb = list.find(x => String(x.id) === String(k));
+        if (cb && target.name && cb.name === target.name) return tokens[k];
+        if (target.name && String(k) === String(target.name)) return tokens[k];
+      }
+    } catch (e) {}
+    return null;
+  }
+
   function playerCanSeeCombatant(viewer, target) {
+    // DM main window (not popout): always see everyone
     if (typeof isPlayerFacingView === 'function' ? !isPlayerFacingView() : !isPlayerRole()) return true;
     if (!target) return false;
+    // Always see claimed/self character
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
-    if (!isEnemySide(target)) return true; // allies always listed
     const map = getCombatMap();
     if (!map) return false;
-    // Resolve token by id or name
-    const tokens = map.tokens || {};
-    let pos = tokens[String(target.id)];
-    if (!pos) {
-      const key = Object.keys(tokens).find(k => {
-        try {
-          const c = getActive();
-          const list = (c && getCombat(c).combatants) || [];
-          const cb = list.find(x => String(x.id) === String(k));
-          return cb && cb.name === target.name;
-        } catch (e) { return false; }
-      });
-      if (key) pos = tokens[key];
-    }
-    if (!pos) return false; // not on map → hidden from players
-    if (!map.fogEnabled) return true; // fog off: visible if placed
+    const pos = (typeof getCombatantTokenPos === 'function')
+      ? getCombatantTokenPos(target, map)
+      : (map.tokens && map.tokens[String(target.id)]);
+    // Popups / player: only list combatants that are on the map
+    if (!pos) return false;
+    // Allies / PCs on the map: always listed
+    if (!isEnemySide(target)) return true;
+    // Enemies on the map: need FoW reveal when fog is on
+    if (!map.fogEnabled) return true;
     try {
       ensureMapFog(map);
       const cell = worldToFogCell(map, pos.x, pos.y);
@@ -11066,13 +11079,21 @@ function escapeHtml(str) {
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = (typeof isEnemySide === 'function') ? isEnemySide(cb) : (side === 'enemy' || side === 'villain' || side === 'enemies' || side === 'hostile');
       const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
-      // Popups + player clients: hide enemies not revealed by FoW (or not placed on map)
-      if (fogView && isEnemy) {
+      // Popups + player clients: only show combatants on the map; enemies also need FoW reveal
+      if (fogView) {
         const viewer = (typeof getClaimedCombatant === 'function') ? getClaimedCombatant() : null;
         if (typeof playerCanSeeCombatant === 'function') {
           if (!playerCanSeeCombatant(viewer, cb)) return '';
         } else {
-          return '';
+          // Fallback: must have token; enemies need reveal
+          const pos = map && map.tokens && (map.tokens[id] || map.tokens[cb.id]);
+          if (!pos) return '';
+          if (isEnemy && map.fogEnabled) {
+            try {
+              const cell = worldToFogCell(map, pos.x, pos.y);
+              if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+            } catch (e) { return ''; }
+          }
         }
       }
       const hp = Number(cb.hp) || 0;
