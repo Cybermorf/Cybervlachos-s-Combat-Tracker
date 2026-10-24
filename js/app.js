@@ -12280,7 +12280,10 @@ function escapeHtml(str) {
         ensurePlaying();
         const tick = () => {
           const m = getCombatMap();
-          if (!m || m.mediaType !== 'video') return;
+          if (!m || m.mediaType !== 'video') {
+            window.__mapVideoTicking = false;
+            return;
+          }
           // Keep looping even if browser cleared loop flag
           if (videoEl.ended || (videoEl.duration && videoEl.currentTime >= videoEl.duration - 0.05)) {
             try { videoEl.currentTime = 0; } catch (e) {}
@@ -12288,10 +12291,14 @@ function escapeHtml(str) {
           } else {
             ensurePlaying();
           }
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
-          try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || scale); } catch (e) {}
+          try { paintMapFrame(); } catch (e) {
+            try {
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+              window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || scale);
+            } catch (e2) {}
+          }
           window.__mapRaf = requestAnimationFrame(tick);
         };
         tick();
@@ -12336,10 +12343,12 @@ function escapeHtml(str) {
               }
               if (videoEl.paused) videoEl.play().catch(() => {});
             } catch (e) {}
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
-            try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || 1); } catch (e) {}
+            try { paintMapFrame(); } catch (e) {
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e2) {}
+              try { window.__drawMapOverlays && window.__drawMapOverlays(ctx, canvas, m, m.scale || 1); } catch (e2) {}
+            }
             window.__mapRaf = requestAnimationFrame(restartTick);
           };
           window.__mapRaf = requestAnimationFrame(restartTick);
@@ -12368,6 +12377,7 @@ function escapeHtml(str) {
       map.height = img.height;
       const scale = fitMapCanvasToWrap(canvas, img.width, img.height);
       map.scale = scale;
+      window.__mapStaticImg = img;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -12745,13 +12755,48 @@ function escapeHtml(str) {
     }
 
     
-  function redrawMapLive() {
+  function paintMapFrame() {
     try {
       const map = getCombatMap();
       const canvas = document.getElementById('map-canvas');
       if (!map || !canvas) return;
-      // Video: tick loop already draws overlays from live map state
-      if (map.mediaType === 'video' && window.__mapVideoTicking && window.__mapRaf) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const scale = map.scale || 1;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (map.mediaType === 'video') {
+        const videoEl = document.getElementById('map-video');
+        if (videoEl && videoEl.videoWidth) {
+          try { ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height); } catch (e) {}
+        } else {
+          ctx.fillStyle = '#1a1a22';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      } else if (map.imageDataUrl && window.__mapStaticImg && window.__mapStaticImg.complete) {
+        try { ctx.drawImage(window.__mapStaticImg, 0, 0, canvas.width, canvas.height); } catch (e) {}
+      } else {
+        ctx.fillStyle = '#1a1a22';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      try {
+        if (window.__drawMapOverlays) window.__drawMapOverlays(ctx, canvas, map, scale);
+        else drawMapOverlays(ctx, canvas, map, scale);
+      } catch (e) {}
+    } catch (e) {
+      console.warn('paintMapFrame', e);
+    }
+  }
+
+  function redrawMapLive() {
+    try {
+      const map = getCombatMap();
+      if (!map) return;
+      // Always paint current tokens/fog immediately (critical for video maps during drag)
+      if (map.mediaType === 'video') {
+        paintMapFrame();
+        return;
+      }
       renderBattleMap();
     } catch (e) {
       try { renderBattleMap(); } catch (e2) {}
@@ -12897,12 +12942,18 @@ const canvas = document.getElementById('map-canvas');
           return;
         }
         if (!dragId) return;
+        // Update position every move (video maps need immediate paintMapFrame)
         map.tokens[dragId] = snapWorldToGrid(map, x, y);
-        // Throttle broadcast while dragging
         const now = Date.now();
-        if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
+        if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 100) {
           window.__lastTokenDragBc = now;
-          try { broadcastVttState('token-move'); } catch (e) {}
+          try {
+            if (!isPlayerRole()) {
+              // Persist so popout/main stay in sync without waiting for pointerup
+              save();
+              broadcastVttState('token-move');
+            }
+          } catch (e) {}
         }
         redrawMapLive();
       });
