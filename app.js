@@ -10713,6 +10713,25 @@ function escapeHtml(str) {
     return false;
   }
 
+  
+  function schedulePopoutMapRefit() {
+    if (typeof isMapPopoutMode !== 'function' || !isMapPopoutMode()) return;
+    const run = () => {
+      try {
+        const m = getCombatMap();
+        if (!m) return;
+        m._fitSrcW = null;
+        m._fitSrcH = null;
+        window.__mapVideoTicking = false;
+        renderBattleMap();
+      } catch (e) {}
+    };
+    setTimeout(run, 50);
+    setTimeout(run, 200);
+    setTimeout(run, 500);
+    setTimeout(run, 1200);
+  }
+
   function applyMapPopoutMode() {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
@@ -11429,11 +11448,15 @@ function escapeHtml(str) {
           } else if (id === 'map-fog-reveal') {
             window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
             if (window.__mapFogTool) map.fogEnabled = true;
-            toast(window.__mapFogTool ? 'Reveal brush ON — click/drag map' : 'Reveal off');
+            const toolEl = document.getElementById('map-tool');
+            if (toolEl) toolEl.value = window.__mapFogTool ? 'fog-reveal' : 'token';
+            toast(window.__mapFogTool ? 'Reveal brush ON — click/drag map' : 'Reveal off — token tool');
           } else if (id === 'map-fog-hide') {
             window.__mapFogTool = window.__mapFogTool === 'hide' ? null : 'hide';
             if (window.__mapFogTool) map.fogEnabled = true;
-            toast(window.__mapFogTool ? 'Hide brush ON — click/drag map' : 'Hide off');
+            const toolEl = document.getElementById('map-tool');
+            if (toolEl) toolEl.value = window.__mapFogTool ? 'fog-hide' : 'token';
+            toast(window.__mapFogTool ? 'Hide brush ON — click/drag map' : 'Hide off — token tool');
           }
           try { save(); } catch (e) {}
           try { renderBattleMap(); } catch (e) {}
@@ -11989,8 +12012,9 @@ function escapeHtml(str) {
       const pos = map.tokens[id];
       if (!pos) return;
       // Player / shared popout: hide tokens in unrevealed fog cells
-      const fogView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : playerMode;
-      if (fogView && map.fogEnabled) {
+      // Only true player clients hide tokens in fog; DM mapPopout must see all tokens to move them
+      const hideFogTokens = typeof isPlayerRole === 'function' && isPlayerRole();
+      if (hideFogTokens && map.fogEnabled) {
         const cell = worldToFogCell(map, pos.x, pos.y);
         if (!map.fogRevealed || !map.fogRevealed[cell]) return;
       }
@@ -12088,34 +12112,43 @@ function escapeHtml(str) {
     const wrap = canvas.parentElement;
     const roster = document.getElementById('map-roster');
     const playerPanel = document.getElementById('player-combat-panel');
-    // Measure from stable layout (not the canvas-sized wrap) to avoid shrink-on-redraw
-    let maxW, maxH;
-    if (layout && layout.clientWidth > 80) {
-      let side = 0;
+    let side = 0;
+    try {
       if (roster && getComputedStyle(roster).display !== 'none') side += (roster.offsetWidth || 280) + 12;
       if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += (playerPanel.offsetWidth || 300) + 12;
+    } catch (e) {}
+    // Prefer window size on popout (layout often 0-height for first frames)
+    let maxW, maxH;
+    if (pop) {
+      maxW = Math.max(280, window.innerWidth - side - 16);
+      maxH = Math.max(220, window.innerHeight - 16);
+      if (layout && layout.clientWidth > 120 && layout.clientHeight > 120) {
+        maxW = Math.max(280, layout.clientWidth - side - 12);
+        maxH = Math.max(220, layout.clientHeight - 12);
+      }
+    } else if (layout && layout.clientWidth > 80) {
       maxW = Math.max(280, layout.clientWidth - side - 12);
       maxH = Math.max(220, (layout.clientHeight > 80 ? layout.clientHeight : window.innerHeight * 0.6) - 12);
     } else if (wrap && wrap.clientWidth > 80 && wrap.clientHeight > 80) {
       maxW = wrap.clientWidth - 8;
       maxH = wrap.clientHeight - 8;
     } else {
-      let side = 0;
-      if (roster && getComputedStyle(roster).display !== 'none') side += roster.offsetWidth || 280;
-      if (playerPanel && getComputedStyle(playerPanel).display !== 'none') side += playerPanel.offsetWidth || 300;
-      maxW = Math.max(320, window.innerWidth - side - (pop ? 24 : 100));
-      maxH = Math.max(240, window.innerHeight - (pop ? 16 : 140));
+      maxW = Math.max(320, window.innerWidth - side - 100);
+      maxH = Math.max(240, window.innerHeight - 140);
     }
     if (!pop) {
       maxW = Math.min(maxW, Math.max(600, window.innerWidth - 320));
       maxH = Math.min(maxH, window.innerHeight - 140);
     }
     let scale = Math.min(maxW / srcW, maxH / srcH, 1);
-    // Never shrink below a previously good fit for the same media unless forced / window grew rules
     const map = (typeof getCombatMap === 'function') ? getCombatMap() : null;
-    if (!force && map && map._fitSrcW === srcW && map._fitSrcH === srcH && map.scale > 0) {
-      // Keep existing scale if new compute is smaller (click/redraw shrink guard)
+    // Shrink-guard only after layout has stabilized (skip on popout first paints / force)
+    const layoutReady = !pop || (layout && layout.clientWidth > 120 && layout.clientHeight > 120);
+    if (!force && layoutReady && map && map._fitSrcW === srcW && map._fitSrcH === srcH && map.scale > 0) {
       if (scale < map.scale * 0.98) scale = map.scale;
+      // Allow grow when window got larger
+      if (scale > map.scale * 1.02) { /* use new larger scale */ }
+      else if (scale < map.scale) scale = map.scale;
     }
     const w = Math.max(1, Math.floor(srcW * scale));
     const h = Math.max(1, Math.floor(srcH * scale));
@@ -12674,6 +12707,17 @@ function escapeHtml(str) {
     const canvas = document.getElementById('map-canvas');
     if (canvas && !canvas.dataset.mapBound) {
       canvas.dataset.mapBound = '1';
+  // Clear sticky fog brush when user switches to token/pan/aoe tools
+  document.addEventListener('change', (ev) => {
+    if (ev.target && ev.target.id === 'map-tool') {
+      const v = ev.target.value;
+      if (v === 'token' || v === 'pan' || v === 'grid-offset' || (v && v.startsWith('aoe-'))) {
+        window.__mapFogTool = null;
+      } else if (v === 'fog-reveal') window.__mapFogTool = 'reveal';
+      else if (v === 'fog-hide') window.__mapFogTool = 'hide';
+    }
+  });
+
       let dragId = null;
       canvas.addEventListener('mousedown', (ev) => {
         if (ev.button !== 0) return;
@@ -12681,8 +12725,14 @@ function escapeHtml(str) {
         if (!map || (!map.imageDataUrl && !(map.mediaType === 'video' && map.videoObjectUrl))) return;
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
-        // Fog brush (DM only)
-        const fogMode = window.__mapFogTool || (tool === 'fog-reveal' ? 'reveal' : (tool === 'fog-hide' ? 'hide' : null));
+        // Fog brush (DM only) — never override Place/move token, pan, AoE, or grid-offset
+        const toolBlocksFog = (tool === 'token' || tool === 'pan' || tool === 'grid-offset' || (tool && tool.startsWith('aoe-')));
+        let fogMode = null;
+        if (!toolBlocksFog) {
+          if (tool === 'fog-reveal') fogMode = 'reveal';
+          else if (tool === 'fog-hide') fogMode = 'hide';
+          else if (window.__mapFogTool) fogMode = window.__mapFogTool;
+        }
         if (fogMode && !isPlayerRole()) {
           const map0 = getCombatMap();
           if (!map0) return;
