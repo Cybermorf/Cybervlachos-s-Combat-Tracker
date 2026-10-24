@@ -64,12 +64,14 @@
   }
 
   async function idbSetMapVideo(workspaceId, blob) {
-    if (!workspaceId || !blob) return;
+    if (!workspaceId) return;
     try {
       const db = await openMapDb();
       await new Promise((resolve, reject) => {
         const tx = db.transaction(MAP_IDB_STORE, 'readwrite');
-        tx.objectStore(MAP_IDB_STORE).put(blob, 'mapvideo:' + workspaceId);
+        const store = tx.objectStore(MAP_IDB_STORE);
+        if (blob) store.put(blob, 'mapvideo:' + workspaceId);
+        else store.delete('mapvideo:' + workspaceId);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -12484,17 +12486,47 @@ function escapeHtml(str) {
     document.getElementById('map-clear-btn')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
+      // Stop video draw loop
+      try {
+        if (window.__mapRaf) { cancelAnimationFrame(window.__mapRaf); window.__mapRaf = null; }
+      } catch (e) {}
+      window.__mapVideoTicking = false;
+      window.__mapVideoSrc = null;
       map.imageDataUrl = null;
       if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
         try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
       }
       map.videoObjectUrl = null;
       map.mediaType = null;
+      map.hasVideoInIdb = false;
+      map.hasImageInIdb = false;
+      map._fitSrcW = null;
+      map._fitSrcH = null;
+      map.scale = null;
       map.walls = [];
       map.tokens = {};
       map.aoe = null;
+      map.fogRevealed = {};
+      map.fogEnabled = false;
+      // Reset video element
+      const videoEl = document.getElementById('map-video');
+      if (videoEl) {
+        try { videoEl.pause(); } catch (e) {}
+        try { videoEl.removeAttribute('src'); videoEl.removeAttribute('data-src'); videoEl.load(); } catch (e) {}
+      }
+      // Drop IDB media for this workspace
+      try {
+        const c = getActive();
+        if (c && c.id) {
+          idbSetMapVideo(c.id, null).catch(() => {});
+          // best-effort: also clear image key if helper exists
+          if (typeof idbSetMapImage === 'function') idbSetMapImage(c.id, null).catch(() => {});
+        }
+      } catch (e) {}
       try { save(); } catch (err) {}
+      try { broadcastVttState('map-clear'); } catch (e) {}
       renderBattleMap();
+      toast('Map cleared');
     });
     document.getElementById('map-grid-size')?.addEventListener('change', (e) => {
       const map = getCombatMap();
@@ -12794,19 +12826,22 @@ const canvas = document.getElementById('map-canvas');
             const sel = document.getElementById('map-token-combatant');
             if (sel) sel.value = found;
             try { selectCombatantById(found); } catch (e) {}
-            // Players: select only (no move). DM: drag when token tool.
+            // Players: select only. DM: always drag (toolbar is hidden on popout; default was pan).
             if (isPlayerRole()) {
               dragId = null;
               toast('Selected ' + (listNameForToken(found) || found));
               return;
             }
-            if (tool === 'pan') {
+            // Hold Alt for select-only without move
+            if (ev.altKey || (tool === 'pan' && ev.shiftKey)) {
               dragId = null;
               toast('Selected ' + (listNameForToken(found) || found));
               return;
             }
             dragId = found;
-            try { canvas.setPointerCapture && canvas.setPointerCapture(ev.pointerId || 0); } catch (e) {}
+            try {
+              if (ev.pointerId != null) canvas.setPointerCapture(ev.pointerId);
+            } catch (e) {}
             return;
           }
         }
