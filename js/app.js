@@ -7440,7 +7440,7 @@ function rollDieExpr(expr) {
       return combat.sharedLog;
     } catch (e) { return []; }
   }
-  function appendSharedCombatLog(line) {
+  function appendSharedCombatLog(line, meta) {
     const msg = String(line || '').trim();
     if (!msg) return;
     try {
@@ -7449,20 +7449,94 @@ function rollDieExpr(expr) {
       if (!combat) return;
       if (!Array.isArray(combat.sharedLog)) combat.sharedLog = [];
       const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      combat.sharedLog.push('[' + stamp + '] ' + msg);
+      const entry = {
+        t: stamp,
+        text: msg,
+        names: (meta && meta.names) ? meta.names.filter(Boolean) : [],
+        ids: (meta && meta.ids) ? meta.ids.map(String) : []
+      };
+      // Infer names from text if not provided
+      if (!entry.names.length) {
+        try {
+          const list = combat.combatants || [];
+          list.forEach(cb => {
+            if (cb && cb.name && msg.indexOf(cb.name) !== -1) entry.names.push(cb.name);
+            if (cb && cb.id != null && msg.indexOf(String(cb.id)) !== -1) entry.ids.push(String(cb.id));
+          });
+        } catch (e) {}
+      }
+      combat.sharedLog.push(entry);
       if (combat.sharedLog.length > 80) combat.sharedLog = combat.sharedLog.slice(-80);
       try { save(); } catch (e) {}
       try { broadcastVttState('combat-log'); } catch (e) {}
       renderSharedCombatLog();
     } catch (e) {}
   }
+
+  /** Player-facing: hide log lines that mention combatants the viewer cannot see (FoW / not on map). */
+  function sharedLogEntryVisible(entry) {
+    try {
+      const facing = (typeof isPlayerFacingView === 'function') ? isPlayerFacingView() : (typeof isPlayerRole === 'function' && isPlayerRole());
+      // DM main window sees everything
+      if (!facing) return true;
+      if (!entry) return false;
+      const text = typeof entry === 'string' ? entry : (entry.text || '');
+      // Always show round markers / pure system lines with no combatant names
+      if (/^—\s*Round/i.test(text) || /^Round\s/i.test(text)) return true;
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const list = (combat && combat.combatants) || [];
+      const names = (typeof entry === 'object' && entry.names && entry.names.length)
+        ? entry.names
+        : list.filter(cb => cb && cb.name && text.indexOf(cb.name) !== -1).map(cb => cb.name);
+      // No known combatant mentioned → show (generic system)
+      if (!names.length) return true;
+      const viewer = (typeof getClaimedCombatant === 'function') ? getClaimedCombatant() : null;
+      // Visible if ANY mentioned combatant is visible to player (so you see your own attacks)
+      // Hidden only when EVERY mentioned combatant is not visible — actually:
+      // Hide if the line involves an unseen combatant as subject/target the player shouldn't know about.
+      // Rule: show line only if every *enemy* mentioned is visible; allies/PCs mentioned must be on map+revealed too.
+      for (let i = 0; i < names.length; i++) {
+        const nm = names[i];
+        const cb = list.find(x => x && x.name === nm);
+        if (!cb) continue;
+        if (viewer && (String(cb.id) === String(viewer.id) || cb.name === viewer.name)) continue;
+        if (typeof playerCanSeeCombatant === 'function') {
+          if (!playerCanSeeCombatant(viewer, cb)) return false;
+        }
+      }
+      return true;
+    } catch (e) { return true; }
+  }
+
+  function formatSharedLogEntry(entry) {
+    if (typeof entry === 'string') return entry;
+    if (!entry) return '';
+    return '[' + (entry.t || '') + '] ' + (entry.text || '');
+  }
+
   function renderSharedCombatLog() {
     const lines = getSharedCombatLog();
-    const htmlLines = lines.slice(-40).map(l => '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(l) : l) + '</div>').join('')
-      || '<div class="muted small">No combat events yet.</div>';
-    document.querySelectorAll('#combat-shared-log, #player-shared-log, #map-shared-log').forEach(el => {
-      if (el) el.innerHTML = htmlLines;
-      if (el) el.scrollTop = el.scrollHeight;
+    const facing = (typeof isPlayerFacingView === 'function') ? isPlayerFacingView() : (typeof isPlayerRole === 'function' && isPlayerRole());
+    const visible = facing ? lines.filter(sharedLogEntryVisible) : lines;
+    const htmlLines = visible.slice(-40).map(l => {
+      const s = formatSharedLogEntry(l);
+      return '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(s) : s) + '</div>';
+    }).join('') || '<div class="muted small">No combat events yet.</div>';
+    // DM main: full log; player panel: filtered
+    const dmEl = document.getElementById('combat-shared-log');
+    if (dmEl) {
+      const all = lines.slice(-40).map(l => {
+        const s = formatSharedLogEntry(l);
+        return '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(s) : s) + '</div>';
+      }).join('') || '<div class="muted small">No combat events yet.</div>';
+      dmEl.innerHTML = all;
+      dmEl.scrollTop = dmEl.scrollHeight;
+    }
+    document.querySelectorAll('#player-shared-log, #map-shared-log').forEach(el => {
+      if (!el) return;
+      el.innerHTML = htmlLines;
+      el.scrollTop = el.scrollHeight;
     });
   }
 
@@ -8122,7 +8196,7 @@ function rollDieExpr(expr) {
       if (isNaN(amt) || amt <= 0) return;
       cb.hp = Math.min(cb.hpMax || amt, (cb.hp || 0) + amt);
       appendLog(`Healed ${amt} (HP now ${cb.hp})`);
-      try { appendSharedCombatLog((cb.name || 'Character') + ' healed for ' + amt + ' (now ' + cb.hp + ')'); } catch (e) {}
+      try { appendSharedCombatLog((cb.name || 'Character') + ' healed for ' + amt + ' (now ' + cb.hp + ')', { names: [cb.name], ids: [cb.id] }); } catch (e) {}
       try { save(); } catch (e) {}
       try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
@@ -8194,7 +8268,7 @@ function rollDieExpr(expr) {
           if (target.hp === 0) target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
           if (!target.combatLog) target.combatLog = [];
           target.combatLog.push(`Took ${amt} from ${cb.name || 'attacker'}`);
-          try { appendSharedCombatLog((cb.name || 'Attacker') + ' dealt ' + amt + ' to ' + (target.name || 'target') + ' (now ' + target.hp + '/' + (target.hpMax || '?') + ')'); } catch (e) {}
+          try { appendSharedCombatLog((cb.name || 'Attacker') + ' dealt ' + amt + ' to ' + (target.name || 'target') + ' (now ' + target.hp + '/' + (target.hpMax || '?') + ')', { names: [cb.name, target.name], ids: [cb.id, target.id] }); } catch (e) {}
           appendLog(`Applied ${amt} damage to ${target.name} (now ${target.hp}/${target.hpMax})`);
           syncLinkedCharacterHp(target);
         } else if (kind === 'heal') {
@@ -8221,7 +8295,7 @@ function rollDieExpr(expr) {
           }
           applyHealToCombatant(target, amt);
           appendLog(`Healed ${target.name} for ${amt} (now ${target.hp}/${target.hpMax})`);
-          try { appendSharedCombatLog((cb.name || 'Healer') + ' healed ' + (target.name || 'ally') + ' for ' + amt); } catch (e) {}
+          try { appendSharedCombatLog((cb.name || 'Healer') + ' healed ' + (target.name || 'ally') + ' for ' + amt, { names: [cb.name, target.name], ids: [cb.id, target.id] }); } catch (e) {}
           syncLinkedCharacterHp(target);
         } else if (kind === 'cond') {
           const cond = (panel.querySelector('#cr-apply-cond-text')?.value || '').trim() || prompt('Condition?', 'poisoned');
@@ -9781,7 +9855,7 @@ function rollDieExpr(expr) {
     combat.turnIndex = (combat.turnIndex + 1) % combat.combatants.length;
     const next = combat.combatants[combat.turnIndex];
     if (next) {
-      try { appendSharedCombatLog('Turn: ' + (next.name || 'Combatant')); } catch (e) {}
+      try { appendSharedCombatLog('Turn: ' + (next.name || 'Combatant'), { names: [next.name], ids: [next.id] }); } catch (e) {}
       // Start of turn for next combatant
       next.turnPhase = 'ready';
       next.attacksUsed = 0;
@@ -11336,6 +11410,7 @@ function escapeHtml(str) {
       if (!window.__lastRosterFogRefresh || now - window.__lastRosterFogRefresh > 120) {
         window.__lastRosterFogRefresh = now;
         if (typeof renderMapRoster === 'function') renderMapRoster();
+        if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog();
       }
     } catch (e) {}
   }
@@ -11614,6 +11689,7 @@ function escapeHtml(str) {
           try { save(); } catch (e) {}
           try { renderBattleMap(); } catch (e) {}
           try { renderMapRoster(); } catch (e) {}
+          try { renderSharedCombatLog(); } catch (e) {}
           try { broadcastVttState('fog'); } catch (e) {}
         }
       } catch (err) {
