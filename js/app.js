@@ -11064,21 +11064,14 @@ function escapeHtml(str) {
     listEl.innerHTML = list.map((cb, idx) => {
       const id = String(cb.id != null ? cb.id : idx);
       const side = String(cb.side || '').toLowerCase();
-      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies' || side === 'hostile';
+      const isEnemy = (typeof isEnemySide === 'function') ? isEnemySide(cb) : (side === 'enemy' || side === 'villain' || side === 'enemies' || side === 'hostile');
       const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
-      // Popups + player clients: hide enemies that FoW has not revealed (or not on map)
+      // Popups + player clients: hide enemies not revealed by FoW (or not placed on map)
       if (fogView && isEnemy) {
         const viewer = (typeof getClaimedCombatant === 'function') ? getClaimedCombatant() : null;
         if (typeof playerCanSeeCombatant === 'function') {
           if (!playerCanSeeCombatant(viewer, cb)) return '';
-        } else if (map && map.fogEnabled) {
-          const pos = map.tokens && (map.tokens[id] || map.tokens[cb.id]);
-          if (!pos) return '';
-          try {
-            const cell = worldToFogCell(map, pos.x, pos.y);
-            if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
-          } catch (e) { return ''; }
-        } else if (map && map.fogEnabled) {
+        } else {
           return '';
         }
       }
@@ -11212,6 +11205,14 @@ function escapeHtml(str) {
         else delete map.fogRevealed[key];
       }
     }
+    // Keep popup combatant lists in sync with FoW (throttled)
+    try {
+      const now = Date.now();
+      if (!window.__lastRosterFogRefresh || now - window.__lastRosterFogRefresh > 120) {
+        window.__lastRosterFogRefresh = now;
+        if (typeof renderMapRoster === 'function') renderMapRoster();
+      }
+    } catch (e) {}
   }
   function drawFogOfWar(ctx, canvas, map, scale) {
     ensureMapFog(map);
