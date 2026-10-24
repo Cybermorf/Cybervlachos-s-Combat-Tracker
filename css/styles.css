@@ -3805,3 +3805,33 @@ body.vtt-player .player-shared-log-wrap {
   border-radius: 6px;
   background: rgba(0,0,0,0.35);
 }
+
+
+/* Persistent player roll result (not wiped when combat body re-renders) */
+.player-roll-result,
+#player-roll-result {
+  display: none;
+  color: #f0e6d0 !important;
+  background: #2a2218 !important;
+  border: 1px solid #c4a35a88;
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  margin: 0.25rem 0 0.4rem;
+  min-height: 2.75rem;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  white-space: normal;
+}
+.player-roll-result.is-active,
+#player-roll-result.is-active {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+body.vtt-player .player-roll-result.is-active,
+body.vtt-player #player-roll-result.is-active {
+  display: block !important;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}

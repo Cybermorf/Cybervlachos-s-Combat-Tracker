@@ -7742,6 +7742,72 @@ function rollDieExpr(expr) {
 
 
 
+
+  function publishCombatRollResult(html, cb) {
+    const raw = String(html || '').trim();
+    if (!raw) return;
+    try {
+      if (cb) cb.lastRollHtml = raw;
+      const id = cb && (cb.id != null ? String(cb.id) : '');
+      if (id) {
+        window.__playerLastRollById = window.__playerLastRollById || {};
+        window.__playerLastRollById[id] = raw;
+      }
+      window.__playerLastRollHtml = raw;
+    } catch (e) {}
+    // In-panel result boxes
+    try {
+      document.querySelectorAll('#cr-result, #combat-roll-result, .combat-roll-result').forEach(el => {
+        if (el.id === 'player-roll-result') return;
+        el.classList.remove('muted');
+        el.style.display = 'block';
+        el.style.visibility = 'visible';
+        el.style.opacity = '1';
+        el.innerHTML = raw;
+      });
+    } catch (e) {}
+    // Persistent player strip (survives body rebuild)
+    try {
+      const pr = document.getElementById('player-roll-result');
+      if (pr) {
+        pr.innerHTML = raw;
+        pr.hidden = false;
+        pr.removeAttribute('hidden');
+        pr.classList.add('is-active');
+        pr.style.display = 'block';
+        try { pr.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e2) {}
+      }
+    } catch (e) {}
+    // Toast always for player clients
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw;
+        const plain = (tmp.innerText || '').replace(/\s+/g, ' ').trim();
+        if (plain) toast(plain.slice(0, 140));
+      }
+    } catch (e) {}
+  }
+
+  function restorePlayerRollResult(cb) {
+    let html = '';
+    try {
+      if (cb && cb.lastRollHtml) html = cb.lastRollHtml;
+      const id = cb && (cb.id != null ? String(cb.id) : '');
+      if (!html && id && window.__playerLastRollById) html = window.__playerLastRollById[id] || '';
+      if (!html) html = window.__playerLastRollHtml || '';
+    } catch (e) {}
+    const pr = document.getElementById('player-roll-result');
+    if (!pr) return;
+    if (html) {
+      pr.innerHTML = html;
+      pr.hidden = false;
+      pr.removeAttribute('hidden');
+      pr.classList.add('is-active');
+      pr.style.display = 'block';
+    }
+  }
+
   function softRefreshCombatDetail(cb, panelHint) {
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole()) {
@@ -8049,27 +8115,9 @@ function rollDieExpr(expr) {
       const box = panel.querySelector('#cr-result') || panel.querySelector('#combat-roll-result');
       const atkName = (list[parseInt(atkSel?.value, 10) || 0] || {}).name || 'Attack';
       function showRollHtml(html) {
-        if (box) {
-          box.classList.remove('muted');
-          box.style.display = 'block';
-          box.style.visibility = 'visible';
-          box.style.opacity = '1';
-          box.innerHTML = html;
+        try { publishCombatRollResult(html, cb); } catch (e) {
+          if (box) { box.classList.remove('muted'); box.style.display = 'block'; box.innerHTML = html; }
         }
-        // Duplicate into any secondary result area
-        panel.querySelectorAll('#cr-result, #combat-roll-result, .combat-roll-result').forEach(el => {
-          if (el !== box) {
-            el.classList.remove('muted');
-            el.style.display = 'block';
-            el.innerHTML = html;
-          }
-        });
-        try {
-          const plain = (box && box.innerText) ? box.innerText.replace(/\s+/g, ' ').trim() : '';
-          if (plain && typeof isPlayerRole === 'function' && isPlayerRole()) {
-            toast(plain.slice(0, 120));
-          }
-        } catch (e) {}
       }
       if (mode === 'utility') {
         showRollHtml(`<div><strong>${escapeHtml(atkName)}</strong> — utility (no attack roll).</div>`);
@@ -12181,6 +12229,7 @@ function escapeHtml(str) {
       console.error(e);
       body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
     }
+    try { restorePlayerRollResult(me); } catch (e) {}
   }
 
   function applyPlayerShell() {
