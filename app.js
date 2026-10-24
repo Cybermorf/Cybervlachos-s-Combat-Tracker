@@ -2228,6 +2228,70 @@
     return Math.max(1, n);
   }
 
+
+  /** Base actions per turn: 1 + Haste + extraActionsGranted (Action Surge, etc.). */
+  function actionsMaxForCombatant(cb, ch) {
+    let n = 1;
+    try {
+      const conds = [];
+      if (cb) {
+        if (Array.isArray(cb.conditionList)) {
+          cb.conditionList.forEach(c => conds.push(String(c.name || c || '').toLowerCase()));
+        }
+        String(cb.conditions || '').split(/[,;]/).forEach(s => { if (s.trim()) conds.push(s.trim().toLowerCase()); });
+      }
+      if (conds.some(c => c.includes('haste'))) n += 1;
+    } catch (e) {}
+    n += Math.max(0, Number(cb && cb.extraActionsGranted) || 0);
+    if (n < 1) n = 1;
+    return n;
+  }
+
+  function actionsRemaining(cb) {
+    if (!cb) return 0;
+    const max = Number(cb.actionsMax) || 1;
+    const used = Number(cb.actionsUsed) || 0;
+    return Math.max(0, max - used);
+  }
+
+  /** Spend one Action (Attack, Cast, Dash, …). */
+  function spendAction(cb, label) {
+    if (!cb) return false;
+    if (cb.actionsMax == null) cb.actionsMax = 1;
+    if (cb.actionsUsed == null) cb.actionsUsed = 0;
+    if (cb.actionsUsed >= cb.actionsMax) {
+      toast('No actions left this turn (' + cb.actionsUsed + '/' + cb.actionsMax + ')');
+      return false;
+    }
+    cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+    cb.actionUsed = cb.actionsUsed >= cb.actionsMax;
+    if (label) cb.lastAction = label;
+    return true;
+  }
+
+  /** Start-of-turn reset driven by DM Next Turn. */
+  function beginCombatantTurn(cb, ch) {
+    if (!cb) return;
+    cb.turnPhase = 'active';
+    cb.attacksUsed = 0;
+    cb.moveUsed = 0;
+    cb.actionsUsed = 0;
+    cb.extraActionsGranted = 0;
+    cb.actionUsed = false;
+    cb.bonusUsed = false;
+    cb.objectInteractUsed = false;
+    cb.reactionUsed = false;
+    cb.bonusActionsUsed = {};
+    cb.disengage = false;
+    cb.dashSpeed = 0;
+    try {
+      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch || null);
+    } catch (e) {}
+    cb.actionsMax = actionsMaxForCombatant(cb, ch || null);
+    cb.actionsUsed = 0;
+    cb.actionUsed = false;
+  }
+
   function mergeCondition(existing, add) {
     const cur = String(existing || '').trim();
     if (!add) return cur;
@@ -2610,9 +2674,19 @@ function ensureCombatantTurnState(cb, ch) {
   
   function applyCombatTurnPhaseLocks(panel, cb) {
     if (!panel || !cb) return;
+    // Current initiative combatant is started by DM Next Turn
+    try {
+      const c0 = getActive();
+      const combat0 = c0 ? getCombat(c0) : null;
+      if (combat0 && Array.isArray(combat0.combatants)) {
+        const cur = combat0.combatants[combat0.turnIndex];
+        if (cur && String(cur.id) === String(cb.id) && (cb.turnPhase === 'ready' || cb.turnPhase === 'pending' || !cb.turnPhase)) {
+          cb.turnPhase = 'active';
+        }
+      }
+    } catch (e) {}
     const phase = cb.turnPhase || 'ready';
-    // ready: must Start turn first
-    // active: full turn
+    // active: full turn (DM Next Turn)
     // ended: only reaction + legendary
     const lockedUntilStart = phase === 'ready' || phase === 'pending' || !phase;
     const turnEnded = phase === 'ended';
@@ -2630,7 +2704,7 @@ function ensureCombatantTurnState(cb, ch) {
       else if (!dis) el.removeAttribute('title');
       el.classList.toggle('turn-locked', !!dis);
     };
-    const lockMsg = lockedUntilStart ? 'Start turn first' : (turnEnded ? 'Turn ended — only Reaction / Legendary' : '');
+    const lockMsg = lockedUntilStart ? 'Wait for DM Next Turn' : (turnEnded ? 'Turn ended — only Reaction / Legendary' : '');
 
     // Turn economy buttons
     ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
@@ -2851,6 +2925,12 @@ function ensureCombatantTurnState(cb, ch) {
     const max = cb.attacksMax != null ? cb.attacksMax : 1;
     const used = cb.attacksUsed || 0;
     const left = Math.max(0, max - used);
+    // Actions budget (1 base + Haste + Action Surge grants, etc.)
+    if (cb.actionsMax == null) cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, _ch) : 1;
+    if (cb.actionsUsed == null) cb.actionsUsed = cb.actionUsed ? 1 : 0;
+    const actMax = Number(cb.actionsMax) || 1;
+    const actUsed = Number(cb.actionsUsed) || 0;
+    const actLeft = Math.max(0, actMax - actUsed);
     const speed = parseSpeed(cb.speed);
     const moveUsed = Math.max(0, Number(cb.moveUsed) || 0);
     const moveLeft = Math.max(0, speed - moveUsed);
@@ -2919,9 +2999,9 @@ function ensureCombatantTurnState(cb, ch) {
         <div class="turn-stage-head">
           <span class="turn-stage-num">A</span>
           <strong>Action</strong>
-          ${badge(!!cb.actionUsed || used >= max, used > 0 && !cb.actionUsed ? 'Attacks spent' : 'Available')}
+          ${badge(actLeft <= 0, actLeft <= 0 ? 'All used' : (actUsed > 0 ? actLeft + ' left' : 'Available'))}
         </div>
-        <p class="muted small">Choose one Action (or Mark used). Independent of movement.</p>
+        <p class="muted small">Actions this turn (base 1 + Haste / Action Surge). Cast, Attack, Dash… each spend 1 Action. Weapon Extra Attacks are separate below.</p>
         <div class="action-menu" id="cd-action-menu">
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="attack" title="Use the Attack action">Attack</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="cast" title="Cast a 1-action spell (use Spellcasting panel)">Cast a spell</button>
@@ -2937,12 +3017,19 @@ function ensureCombatantTurnState(cb, ch) {
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="use-object" title="Use an object that needs your action">Use an object</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="other" title="Other action">Other…</button>
         </div>
-        <div class="combat-res-row" style="margin-top:0.35rem">
-          <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${cb.actionUsed ? 'Mark available' : 'Mark used'}</button>
+        <div class="turn-stage-sub" style="margin-top:0.35rem">
+          <div class="turn-stage-sub-head">Actions budget <span class="muted small">(1 + Haste / Action Surge)</span></div>
+          <div class="combat-res-row">
+            <span class="combat-res-val"><strong>${actLeft}</strong> / ${actMax}</span>
+            <button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-act-inc" title="Spend 1 action">+</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${actLeft <= 0 ? 'Mark available' : 'Mark used'}</button>
+          </div>
           ${cb.lastAction ? `<span class="muted small">Last: ${escapeHtml(cb.lastAction)}</span>` : ''}
         </div>
         <div class="turn-stage-sub">
-          <div class="turn-stage-sub-head">Attack budget <span class="muted small">(Extra Attack · multiclass = best progression)</span></div>
+          <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(Extra Attack · within the Attack action)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
@@ -8178,11 +8265,24 @@ function rollDieExpr(expr) {
       // Attack budget (Extra Attack)
       {
         const maxAtk = cb.attacksMax != null ? cb.attacksMax : 1;
-        if ((cb.attacksUsed || 0) >= maxAtk) {
-          if (!confirm('Attack budget for this turn is used (' + maxAtk + '). Roll anyway?')) return;
+        // First weapon attack of the turn spends 1 Action; further attacks use Extra Attack budget only
+        const atkUsed = Number(cb.attacksUsed) || 0;
+        if (atkUsed === 0) {
+          if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+            if (!confirm('No actions left this turn. Roll weapon attack anyway?')) return;
+          } else if (typeof spendAction === 'function') {
+            if (!spendAction(cb, 'Attack')) {
+              if (!confirm('No actions left. Roll anyway?')) return;
+            }
+          } else {
+            cb.actionUsed = true;
+            cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+          }
+        }
+        if (atkUsed >= maxAtk) {
+          if (!confirm('Weapon attacks for this Attack action are used (' + maxAtk + '). Roll anyway?')) return;
         } else {
-          cb.attacksUsed = (cb.attacksUsed || 0) + 1;
-          cb.actionUsed = true; // Attack action (independent of movement)
+          cb.attacksUsed = atkUsed + 1;
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
@@ -8529,8 +8629,17 @@ function rollDieExpr(expr) {
         }
         syncCombatResourcesToCharacter(cb);
         try { save(); } catch(e) {}
+        // Action Surge: grant +1 action this turn
+        if (String(id) === 'action-surge' || /action.?surge/i.test(String(r.label || ''))) {
+          cb.extraActionsGranted = (Number(cb.extraActionsGranted) || 0) + 1;
+          cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, null) : ((Number(cb.actionsMax) || 1) + 1);
+          cb.actionUsed = (Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1);
+          toast('Action Surge — +1 Action this turn');
+        }
         const leftAfter = (Number(r.max) || 0) >= 99 ? '∞' : Math.max(0, (Number(r.max) || 0) - (Number(r.used) || 0));
-        toast((r.label || id) + ' used · ' + leftAfter + ' left');
+        if (String(id) !== 'action-surge' && !/action.?surge/i.test(String(r.label || ''))) {
+          toast((r.label || id) + ' used · ' + leftAfter + ' left');
+        }
         try {
           appendSharedCombatLog((cb.name || 'Character') + ' used ' + (r.label || id) + ' (' + leftAfter + ' left)', { names: [cb.name], ids: [cb.id] });
         } catch (e) {}
@@ -8599,6 +8708,23 @@ function rollDieExpr(expr) {
     panel.querySelector('#cd-atk-reset')?.addEventListener('click', () => {
       cb.attacksUsed = 0; refreshCombatDetail();
     });
+    // Actions budget (+ Haste / Action Surge)
+    panel.querySelector('#cd-act-dec')?.addEventListener('click', () => {
+      cb.actionsUsed = Math.max(0, (Number(cb.actionsUsed) || 0) - 1);
+      cb.actionUsed = (Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1);
+      refreshCombatDetail();
+    });
+    panel.querySelector('#cd-act-inc')?.addEventListener('click', () => {
+      const max = Number(cb.actionsMax) || 1;
+      cb.actionsUsed = Math.min(max, (Number(cb.actionsUsed) || 0) + 1);
+      cb.actionUsed = (Number(cb.actionsUsed) || 0) >= max;
+      refreshCombatDetail();
+    });
+    panel.querySelector('#cd-act-reset')?.addEventListener('click', () => {
+      cb.actionsUsed = 0;
+      cb.actionUsed = false;
+      refreshCombatDetail();
+    });
     panel.querySelector('#cd-move-dec')?.addEventListener('click', () => {
       const sp = typeof parseSpeed === 'function' ? parseSpeed(cb.speed) : 30;
       cb.speed = sp;
@@ -8626,14 +8752,22 @@ function rollDieExpr(expr) {
       refreshCombatDetail();
     });
     panel.querySelector('#cd-action-toggle')?.addEventListener('click', () => {
-      cb.actionUsed = !cb.actionUsed; refreshCombatDetail();
+      const max = Number(cb.actionsMax) || 1;
+      if ((Number(cb.actionsUsed) || 0) >= max) {
+        cb.actionsUsed = 0;
+        cb.actionUsed = false;
+      } else {
+        cb.actionsUsed = max;
+        cb.actionUsed = true;
+      }
+      refreshCombatDetail();
     });
 
     // Full Action menu
     panel.querySelectorAll('.act-opt').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if ((cb.turnPhase || 'ready') !== 'active') { toast('Start turn first'); return; }
-        if (cb.actionUsed) { toast('Action already used'); return; }
+        if ((cb.turnPhase || 'ready') !== 'active') { toast('Wait for the DM to advance to your turn'); return; }
+        if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) { toast('No actions left this turn'); return; }
         const act = btn.getAttribute('data-act');
         const labels = {
           attack: 'Attack', cast: 'Cast a spell', dash: 'Dash', disengage: 'Disengage',
@@ -8655,7 +8789,14 @@ function rollDieExpr(expr) {
         } else {
           cb.lastAction = labels[act] || act;
         }
-        cb.actionUsed = true;
+        if (act === 'cast') {
+          toast('Use Spellcasting panel to cast (spends 1 Action when you Cast)');
+          // do not spend yet — spent on Cast
+        } else if (typeof spendAction === 'function') {
+          if (!spendAction(cb, labels[act] || act)) return;
+        } else {
+          cb.actionUsed = true;
+        }
         if (act === 'dodge') { try { addCondition(cb, 'dodging', 1); } catch (e) {} }
         if (act === 'hide') { try { addCondition(cb, 'hiding', 1); } catch (e) {} }
         if (act === 'disengage') { cb.disengage = true; }
@@ -8797,39 +8938,47 @@ function rollDieExpr(expr) {
       refreshCombatDetail();
     });
     panel.querySelector('#cd-start-turn')?.addEventListener('click', () => {
-      // Start of turn: reset per-turn resources, keep reaction until start (reaction already available from previous end)
-      cb.turnPhase = 'active';
-      cb.reactionUsed = false;
-          try {
-            const c0 = getActive();
-            let ch0 = null;
-            if (c0) {
-              const lists = [].concat(c0.party||[], c0.villains||[]);
-              ch0 = lists.find(x => x && (x.id === cb.charId || x.id === cb.sourceId || x.name === cb.name));
-            }
-            ensureCombatantTurnState(cb, ch0);
-          } catch (e) {}
-      if ((cb.hp || 0) <= 0 && !cb.dead) {
-        const ds = rollDeathSave(cb);
-        if (ds) toast('Death save: ' + ds.roll + ' (S' + (ds.successes||cb.deathSaves?.successes||0) + '/F' + (ds.failures||cb.deathSaves?.failures||0) + ')');
+      // Manual start (normally DM presses Next Turn)
+      try {
+        const c0 = getActive();
+        let ch0 = null;
+        if (c0) {
+          const lists = [].concat(c0.party || [], c0.villains || []);
+          ch0 = lists.find(x => x && (x.id === cb.charId || x.id === cb.sourceId || x.name === cb.name));
+        }
+        if (typeof beginCombatantTurn === 'function') beginCombatantTurn(cb, ch0);
+        else {
+          cb.turnPhase = 'active';
+          cb.attacksUsed = 0;
+          cb.moveUsed = 0;
+          cb.actionsUsed = 0;
+          cb.actionsMax = 1;
+          cb.extraActionsGranted = 0;
+          cb.actionUsed = false;
+          cb.bonusUsed = false;
+          cb.objectInteractUsed = false;
+          cb.reactionUsed = false;
+        }
+      } catch (e) {
+        cb.turnPhase = 'active';
       }
-      if (!canTakeActions(cb) && (cb.hp || 0) > 0) {
+      if ((cb.hp || 0) <= 0 && !cb.dead) {
+        try {
+          const ds = rollDeathSave(cb);
+          if (ds) toast('Death save: ' + ds.roll + ' (S' + (ds.successes||cb.deathSaves?.successes||0) + '/F' + (ds.failures||cb.deathSaves?.failures||0) + ')');
+        } catch (e) {}
+      }
+      if (typeof canTakeActions === 'function' && !canTakeActions(cb) && (cb.hp || 0) > 0) {
         toast(cb.name + ' cannot take actions (condition)');
       }
-      cb.moveUsed = 0;
-      cb.actionUsed = false;
-      cb.bonusUsed = false;
-      cb.objectInteractUsed = false;
-      cb.attacksUsed = 0;
-      cb.reactionUsed = false; // reaction refreshes at start of turn
       if (cb.legendary) {
         cb.legendaryActionsLeft = cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3;
       }
-      // Death saves at start of turn if at 0 HP
       if ((cb.hp || 0) <= 0) {
         toast('At 0 HP — roll death save (Death Saves section)');
       }
-      appendLog(`${cb.name}: start of turn`);
+      try { appendLog((cb.name || 'Combatant') + ': start of turn'); } catch (e) {}
+      try { appendSharedCombatLog('Start turn: ' + (cb.name || 'Combatant'), { names: [cb.name], ids: [cb.id] }); } catch (e) {}
       refreshCombatDetail();
     });
     panel.querySelector('#cd-end-turn-local')?.addEventListener('click', () => {
@@ -8975,7 +9124,17 @@ function rollDieExpr(expr) {
           }
           cb.reactionUsed = true;
         } else {
-          cb.actionUsed = true;
+          // Action spell (or casting time action/1 action)
+          if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+            toast('No actions left this turn — cannot cast');
+            return false;
+          }
+          if (typeof spendAction === 'function') {
+            if (!spendAction(cb, 'Cast ' + (sp.name || 'spell'))) return false;
+          } else {
+            cb.actionUsed = true;
+            cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+          }
         }
         if (sp.level > 0) {
           const need = Math.max(sp.level, Number(slotLevel) || sp.level);
@@ -9977,21 +10136,31 @@ function rollDieExpr(expr) {
     const prev = combat.combatants[combat.turnIndex];
     if (prev) {
       prev.turnPhase = 'ended';
+      try { appendSharedCombatLog('End turn: ' + (prev.name || 'Combatant'), { names: [prev.name], ids: [prev.id] }); } catch (e) {}
     }
     combat.turnIndex = (combat.turnIndex + 1) % combat.combatants.length;
     const next = combat.combatants[combat.turnIndex];
     if (next) {
-      try { appendSharedCombatLog('Turn: ' + (next.name || 'Combatant'), { names: [next.name], ids: [next.id] }); } catch (e) {}
-      // Start of turn for next combatant
-      next.turnPhase = 'ready';
-      next.attacksUsed = 0;
-      next.moveUsed = 0;
-      next.actionUsed = false;
-      next.bonusUsed = false;
-      next.objectInteractUsed = false;
-      next.reactionUsed = false; // refreshes at start of their turn
-      // Legendary actions are per-round (refreshed when round advances), not per-turn
-
+      // DM Next Turn both ends previous and starts next (no separate Start turn required)
+      let chNext = null;
+      try {
+        const lists = [].concat(c.party || [], c.villains || []);
+        chNext = lists.find(x => x && (x.id === next.sourceId || x.id === next.charId || x.characterId === next.sourceId)) || null;
+      } catch (e) {}
+      if (typeof beginCombatantTurn === 'function') beginCombatantTurn(next, chNext);
+      else {
+        next.turnPhase = 'active';
+        next.attacksUsed = 0;
+        next.moveUsed = 0;
+        next.actionsUsed = 0;
+        next.actionsMax = 1;
+        next.extraActionsGranted = 0;
+        next.actionUsed = false;
+        next.bonusUsed = false;
+        next.objectInteractUsed = false;
+        next.reactionUsed = false;
+      }
+      try { appendSharedCombatLog('Start turn: ' + (next.name || 'Combatant'), { names: [next.name], ids: [next.id] }); } catch (e) {}
     }
     if (combat.turnIndex === 0) {
       combat.round = (combat.round || 1) + 1;
