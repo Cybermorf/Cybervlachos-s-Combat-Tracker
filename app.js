@@ -11054,23 +11054,30 @@ function escapeHtml(str) {
       return;
     }
     const playerMode = typeof isPlayerRole === 'function' && isPlayerRole();
+    const popoutMode = typeof isMapPopoutMode === 'function' && isMapPopoutMode();
+    // Popups (player or DM share) and player role use FoW roster filtering
+    const fogView = (typeof usePlayerFogView === 'function' && usePlayerFogView())
+      || (typeof isPlayerFacingView === 'function' && isPlayerFacingView())
+      || playerMode
+      || popoutMode;
     if (map) try { ensureMapFog(map); } catch (e) {}
     listEl.innerHTML = list.map((cb, idx) => {
       const id = String(cb.id != null ? cb.id : idx);
       const side = String(cb.side || '').toLowerCase();
-      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
+      const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies' || side === 'hostile';
       const sideClass = isEnemy ? 'enemy' : ((side === 'ally' || side === 'allies') ? 'ally' : 'pc');
-      // Player / shared popout: hide enemies not revealed by FoW
-      const fogView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : playerMode;
+      // Popups + player clients: hide enemies that FoW has not revealed (or not on map)
       if (fogView && isEnemy) {
-        if (typeof playerCanSeeCombatant === 'function' && playerMode) {
-          const viewer = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        const viewer = (typeof getClaimedCombatant === 'function') ? getClaimedCombatant() : null;
+        if (typeof playerCanSeeCombatant === 'function') {
           if (!playerCanSeeCombatant(viewer, cb)) return '';
         } else if (map && map.fogEnabled) {
-          const pos = map.tokens && map.tokens[id];
+          const pos = map.tokens && (map.tokens[id] || map.tokens[cb.id]);
           if (!pos) return '';
-          const cell = worldToFogCell(map, pos.x, pos.y);
-          if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+          try {
+            const cell = worldToFogCell(map, pos.x, pos.y);
+            if (!map.fogRevealed || !map.fogRevealed[cell]) return '';
+          } catch (e) { return ''; }
         } else if (map && map.fogEnabled) {
           return '';
         }
