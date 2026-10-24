@@ -196,10 +196,18 @@
             <button type="button" class="btn secondary" id="combat-map-popout-btn" title="Open map window for players / Discord">Pop out map</button>
             <button type="button" class="btn secondary" id="combat-short-rest" title="Recover short-rest resources">Short Rest</button>
             <button type="button" class="btn secondary" id="combat-long-rest" title="Full HP, slots, resources">Long Rest</button>
+            <button type="button" class="btn secondary" id="combat-reset-resources" title="Restore slots/Ki/Lunar/Rage without healing">Reset Resources</button>
             <button id="combat-next-btn" class="btn primary">Next Turn</button>
           </div>
         </div>
         <p class="view-desc">Track initiative, HP, conditions, concentration, and actions. Select a combatant for the <strong>info + attack roller</strong> panel (actions, bonus/legendary, spells). Generate bosses with the Villain Generator.</p>
+        <div class="card combat-log-panel" style="margin-bottom:0.75rem;padding:0.6rem 0.75rem">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
+            <strong style="color:var(--gold,#c4a35a)">Combat Log</strong>
+            <button type="button" class="btn ghost small" id="combat-log-clear" title="Clear shared log">Clear log</button>
+          </div>
+          <div id="combat-shared-log" class="combat-shared-log"></div>
+        </div>
         <div class="combat-toolbar">
           <div class="combat-meta">
             <span class="stat-pill">Round <strong id="combat-round">1</strong></span>
@@ -331,6 +339,10 @@
             <div class="map-roster-head"><strong>Your character</strong></div>
             <div id="player-combat-body" class="player-combat-body">
               <p class="muted small">Claim a character to open your combat panel.</p>
+            </div>
+            <div class="player-shared-log-wrap">
+              <strong class="small" style="color:var(--gold,#c4a35a)">Combat Log</strong>
+              <div id="player-shared-log" class="combat-shared-log"></div>
             </div>
           </aside>
         </div>

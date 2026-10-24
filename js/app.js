@@ -7375,20 +7375,28 @@ function rollDieExpr(expr) {
   function shortRestCombat(combat) {
     if (!combat || !combat.combatants) return;
     combat.combatants.forEach(cb => {
-      // Short rest resources
       const res = cb.combatResources || {};
       Object.keys(res).forEach(k => {
         const recover = String(res[k].recover || '').toLowerCase();
         if (recover.includes('short')) res[k].used = 0;
-        // Lunar Recovery: half on short rest once - simple half refill
         if (k === 'lunar' && res[k].used > 0) {
           const half = Math.floor((res[k].max || 0) / 2);
           res[k].used = Math.max(0, (res[k].used || 0) - half);
         }
       });
-      // Warlock slots often short rest - pact handled separately if present
+      // Warlock pact slots recover on short rest
+      const cls = String(cb.className || cb.class || '').toLowerCase();
+      if (cls.includes('warlock') && cb.combatSpellSlots) {
+        Object.keys(cb.combatSpellSlots).forEach(L => {
+          const slot = cb.combatSpellSlots[L];
+          if (slot && typeof slot === 'object') slot.used = 0;
+        });
+      }
+      if (cls.includes('warlock') && cb.spellSlotsUsed) {
+        Object.keys(cb.spellSlotsUsed).forEach(k => { cb.spellSlotsUsed[k] = 0; });
+      }
     });
-    if (typeof appendLog === 'function') appendLog('Party takes a Short Rest (short-rest resources recover)');
+    try { appendSharedCombatLog('Party takes a Short Rest (short-rest resources recover)'); } catch (e) {}
   }
 
   function longRestCombat(combat) {
@@ -7418,7 +7426,70 @@ function rollDieExpr(expr) {
       ['dodging', 'hiding', 'grappled', 'restrained'].forEach(c => removeCondition(cb, c));
       removeCondition(cb, 'unconscious');
     });
-    if (typeof appendLog === 'function') appendLog('Party takes a Long Rest — HP, slots, and resources restored');
+    try { appendSharedCombatLog('Party takes a Long Rest — HP, slots, and resources restored'); } catch (e) {}
+  }
+
+
+  /** Table-wide combat log (synced to players). */
+  function getSharedCombatLog() {
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (!combat) return [];
+      if (!Array.isArray(combat.sharedLog)) combat.sharedLog = [];
+      return combat.sharedLog;
+    } catch (e) { return []; }
+  }
+  function appendSharedCombatLog(line) {
+    const msg = String(line || '').trim();
+    if (!msg) return;
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (!combat) return;
+      if (!Array.isArray(combat.sharedLog)) combat.sharedLog = [];
+      const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      combat.sharedLog.push('[' + stamp + '] ' + msg);
+      if (combat.sharedLog.length > 80) combat.sharedLog = combat.sharedLog.slice(-80);
+      try { save(); } catch (e) {}
+      try { broadcastVttState('combat-log'); } catch (e) {}
+      renderSharedCombatLog();
+    } catch (e) {}
+  }
+  function renderSharedCombatLog() {
+    const lines = getSharedCombatLog();
+    const htmlLines = lines.slice(-40).map(l => '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(l) : l) + '</div>').join('')
+      || '<div class="muted small">No combat events yet.</div>';
+    document.querySelectorAll('#combat-shared-log, #player-shared-log, #map-shared-log').forEach(el => {
+      if (el) el.innerHTML = htmlLines;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
+
+  function resetCombatResourcesOnly(combat) {
+    if (!combat || !combat.combatants) return;
+    combat.combatants.forEach(cb => {
+      const res = cb.combatResources || {};
+      Object.keys(res).forEach(k => { res[k].used = 0; });
+      if (cb.combatSpellSlots) {
+        Object.keys(cb.combatSpellSlots).forEach(L => {
+          const slot = cb.combatSpellSlots[L];
+          if (slot && typeof slot === 'object') slot.used = 0;
+          else if (typeof slot === 'number') { /* max tracked elsewhere */ }
+        });
+      }
+      // Common flat fields
+      if (cb.spellSlotsUsed && typeof cb.spellSlotsUsed === 'object') {
+        Object.keys(cb.spellSlotsUsed).forEach(k => { cb.spellSlotsUsed[k] = 0; });
+      }
+      if (cb.legendaryResistMax != null) cb.legendaryResist = cb.legendaryResistMax;
+      cb.attacksUsed = 0;
+      cb.actionUsed = false;
+      cb.bonusUsed = false;
+      cb.reactionUsed = false;
+      cb.moveUsed = 0;
+    });
+    appendSharedCombatLog('DM reset combat resources (slots, Ki, Lunar, Rage, etc.) — HP unchanged');
   }
 
   function tickConditionRounds(cb) {
@@ -8051,6 +8122,7 @@ function rollDieExpr(expr) {
       if (isNaN(amt) || amt <= 0) return;
       cb.hp = Math.min(cb.hpMax || amt, (cb.hp || 0) + amt);
       appendLog(`Healed ${amt} (HP now ${cb.hp})`);
+      try { appendSharedCombatLog((cb.name || 'Character') + ' healed for ' + amt + ' (now ' + cb.hp + ')'); } catch (e) {}
       try { save(); } catch (e) {}
       try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
@@ -8122,6 +8194,7 @@ function rollDieExpr(expr) {
           if (target.hp === 0) target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
           if (!target.combatLog) target.combatLog = [];
           target.combatLog.push(`Took ${amt} from ${cb.name || 'attacker'}`);
+          try { appendSharedCombatLog((cb.name || 'Attacker') + ' dealt ' + amt + ' to ' + (target.name || 'target') + ' (now ' + target.hp + '/' + (target.hpMax || '?') + ')'); } catch (e) {}
           appendLog(`Applied ${amt} damage to ${target.name} (now ${target.hp}/${target.hpMax})`);
           syncLinkedCharacterHp(target);
         } else if (kind === 'heal') {
@@ -8148,6 +8221,7 @@ function rollDieExpr(expr) {
           }
           applyHealToCombatant(target, amt);
           appendLog(`Healed ${target.name} for ${amt} (now ${target.hp}/${target.hpMax})`);
+          try { appendSharedCombatLog((cb.name || 'Healer') + ' healed ' + (target.name || 'ally') + ' for ' + amt); } catch (e) {}
           syncLinkedCharacterHp(target);
         } else if (kind === 'cond') {
           const cond = (panel.querySelector('#cr-apply-cond-text')?.value || '').trim() || prompt('Condition?', 'poisoned');
@@ -9487,6 +9561,8 @@ function rollDieExpr(expr) {
   }
 
   function renderCombat() {
+    try { renderSharedCombatLog(); } catch (e) {}
+
     ensureCombatWorkspace();
     // Player client: keep map + personal panel, don't rebuild DM combat list
     if (typeof isPlayerRole === 'function' && isPlayerRole()) {
@@ -9705,6 +9781,7 @@ function rollDieExpr(expr) {
     combat.turnIndex = (combat.turnIndex + 1) % combat.combatants.length;
     const next = combat.combatants[combat.turnIndex];
     if (next) {
+      try { appendSharedCombatLog('Turn: ' + (next.name || 'Combatant')); } catch (e) {}
       // Start of turn for next combatant
       next.turnPhase = 'ready';
       next.attacksUsed = 0;
@@ -9718,6 +9795,7 @@ function rollDieExpr(expr) {
     }
     if (combat.turnIndex === 0) {
       combat.round = (combat.round || 1) + 1;
+      try { appendSharedCombatLog('— Round ' + combat.round + ' —'); } catch (e) {}
       tickConditionDurations(combat);
       // Refresh legendary actions budget each round (NOT legendary resistances — those are /day)
       combat.combatants.forEach(cb => {
@@ -10057,6 +10135,34 @@ function rollDieExpr(expr) {
 
   function bindCombatListeners() {
     $('#combat-next-btn')?.addEventListener('click', combatNextTurn);
+    const wireRest = (id, fn, label) => {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.wiredRest) return;
+      el.dataset.wiredRest = '1';
+      el.addEventListener('click', () => {
+        const c = getActive();
+        if (!c) { toast('No workspace'); return; }
+        const combat = getCombat(c);
+        if (!combat || !(combat.combatants || []).length) { toast('No combatants'); return; }
+        fn(combat);
+        c.updatedAt = new Date().toISOString();
+        try { save(); } catch (e) {}
+        try { renderCombat(); } catch (e) {}
+        try { renderSharedCombatLog(); } catch (e) {}
+        toast(label);
+      });
+    };
+    wireRest('combat-short-rest', shortRestCombat, 'Short Rest applied');
+    wireRest('combat-long-rest', longRestCombat, 'Long Rest applied');
+    wireRest('combat-reset-resources', resetCombatResourcesOnly, 'Resources reset (HP unchanged)');
+    document.getElementById('combat-log-clear')?.addEventListener('click', () => {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (combat) combat.sharedLog = [];
+      try { save(); } catch (e) {}
+      try { renderSharedCombatLog(); } catch (e) {}
+      toast('Combat log cleared');
+    });
     $('#combat-clear-btn')?.addEventListener('click', async () => {
       const ok = await openModal({
         title: 'Clear Combat?',
@@ -11829,7 +11935,8 @@ function escapeHtml(str) {
     }
     return panel;
   }  function renderPlayerCombatPanel() {
-    // Combat controls only for role=player (not DM mapPopout share window)
+    try { renderSharedCombatLog(); } catch (e) {}
+ // Combat controls only for role=player (not DM mapPopout share window)
     if (!isPlayerRole()) {
       const p = document.getElementById('player-combat-panel');
       if (p) { p.style.display = 'none'; p.setAttribute('hidden', ''); }
@@ -12093,17 +12200,82 @@ function escapeHtml(str) {
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.stroke();
-      ctx.fillStyle = '#fff';
-      ctx.font = '11px sans-serif';
+      // Readable label plate (works on video + busy maps)
+      const label = (playerMode && isEnemy)
+        ? (cb.hideName ? 'Creature' : (cb.name || 'Enemy').slice(0, 14))
+        : (cb.name || '?').slice(0, 14);
+      ctx.font = 'bold 12px system-ui,sans-serif';
       ctx.textAlign = 'center';
-      const label = (playerMode && isEnemy) ? (cb.hideName ? 'Creature' : (cb.name || 'Enemy').slice(0, 10)) : (cb.name || '?').slice(0, 10);
-      ctx.fillText(label, x, y + r + 12);
+      ctx.textBaseline = 'top';
+      const lw = Math.min(120, Math.max(36, ctx.measureText(label).width + 10));
+      const lx = x - lw / 2;
+      const ly = y + r + 4;
+      ctx.fillStyle = 'rgba(8,6,4,0.82)';
+      ctx.strokeStyle = isEnemy ? 'rgba(200,80,80,0.9)' : 'rgba(196,163,90,0.85)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(lx, ly, lw, 16, 4);
+      else ctx.rect(lx, ly, lw, 16);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#f5ecd7';
+      ctx.fillText(label, x, ly + 2);
+      // Conditions under name
+      let condStr = '';
+      try {
+        const cl = (cb.conditionList && cb.conditionList.length)
+          ? cb.conditionList.map(c => (c.name || c)).filter(Boolean)
+          : String(cb.conditions || '').split(/[,;]/).map(s => s.trim()).filter(Boolean);
+        if (cb.concentrating) cl.unshift('Conc.');
+        if (cb.dead || hp <= 0) cl.unshift('Down');
+        condStr = cl.slice(0, 3).join(', ');
+      } catch (e) { condStr = ''; }
+      if (condStr) {
+        ctx.font = '10px system-ui,sans-serif';
+        const cw = Math.min(130, Math.max(28, ctx.measureText(condStr).width + 8));
+        ctx.fillStyle = 'rgba(40,20,10,0.8)';
+        ctx.fillRect(x - cw / 2, ly + 16, cw, 13);
+        ctx.fillStyle = '#e8b86a';
+        ctx.fillText(condStr.slice(0, 22), x, ly + 17);
+      }
       if (showHp) {
-        ctx.fillStyle = '#c4a35a';
-        ctx.font = '10px sans-serif';
-        ctx.fillText(hp + '/' + hpMax, x, y + 3);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 10px system-ui,sans-serif';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(hp + '/' + hpMax, x, y + 1);
       }
     });
+
+    // Ruler / range measure
+    if (map.ruler && map.ruler.x1 != null) {
+      const r = map.ruler;
+      const x1 = r.x1 * scale, y1 = r.y1 * scale;
+      const x2 = (r.x2 != null ? r.x2 : r.x1) * scale;
+      const y2 = (r.y2 != null ? r.y2 : r.y1) * scale;
+      ctx.strokeStyle = 'rgba(255,220,100,0.95)';
+      ctx.fillStyle = 'rgba(255,220,100,0.95)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(x1, y1, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x2, y2, 4, 0, Math.PI * 2); ctx.fill();
+      const dx = (r.x2 != null ? r.x2 : r.x1) - r.x1;
+      const dy = (r.y2 != null ? r.y2 : r.y1) - r.y1;
+      const distPx = Math.sqrt(dx * dx + dy * dy);
+      const ft = distPx / ((Number(map.gridSize) || 70) / 5);
+      const label = (Math.round(ft * 2) / 2) + ' ft';
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      ctx.font = 'bold 13px system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = 'rgba(0,0,0,0.75)';
+      ctx.fillRect(mx - tw / 2, my - 18, tw, 18);
+      ctx.fillStyle = '#ffe566';
+      ctx.fillText(label, mx, my - 4);
+    }
 
     // AoE
     if (map.aoe) {
@@ -12655,8 +12827,10 @@ function escapeHtml(str) {
       const map = getCombatMap();
       if (!map) return;
       map.aoe = null;
+      map.ruler = null;
       try { save(); } catch (err) {}
       renderBattleMap();
+      toast('AoE / ruler cleared');
     });
     document.getElementById('map-apply-aoe-targets')?.addEventListener('click', () => {
       const map = getCombatMap();
@@ -12947,6 +13121,10 @@ const canvas = document.getElementById('map-canvas');
           map.aoe = { shape: shape === 'sphere' ? 'sphere' : shape, x, y, ft, angle: -Math.PI / 2 };
           try { save(); } catch (err) {}
           renderBattleMap();
+        } else if (tool === 'ruler') {
+          map.ruler = { x1: x, y1: y, x2: x, y2: y };
+          window.__rulerDrag = true;
+          redrawMapLive();
         }
       });
       canvas.addEventListener('pointermove', (ev) => {
@@ -12982,6 +13160,12 @@ const canvas = document.getElementById('map-canvas');
           }
           return;
         }
+        if (window.__rulerDrag && map.ruler) {
+          map.ruler.x2 = x;
+          map.ruler.y2 = y;
+          redrawMapLive();
+          return;
+        }
         if (!dragId) return;
         // Update position every move (video maps need immediate paintMapFrame)
         map.tokens[dragId] = snapWorldToGrid(map, x, y);
@@ -12999,6 +13183,17 @@ const canvas = document.getElementById('map-canvas');
         redrawMapLive();
       });
       canvas.addEventListener('mouseup', () => {
+        if (window.__rulerDrag) {
+          window.__rulerDrag = false;
+          const mapR = getCombatMap();
+          if (mapR && mapR.ruler) {
+            const dx = (mapR.ruler.x2 || 0) - mapR.ruler.x1;
+            const dy = (mapR.ruler.y2 || 0) - mapR.ruler.y1;
+            const ft = Math.sqrt(dx * dx + dy * dy) / ((Number(mapR.gridSize) || 70) / 5);
+            toast('Range: ' + (Math.round(ft * 2) / 2) + ' ft');
+            try { save(); } catch (e) {}
+          }
+        }
         if (window.__fogDrag) {
           window.__fogDrag = null;
           try { save(); } catch (e) {}

@@ -3781,3 +3781,27 @@ body.map-popout.vtt-player .map-toolbar,
 html.vtt-player .map-toolbar {
   display: none !important;
 }
+
+
+/* Shared combat log */
+.combat-log-panel { border: 1px solid rgba(196,163,90,0.25); background: rgba(12,10,8,0.9); }
+.combat-shared-log, #player-shared-log, #map-shared-log {
+  max-height: 9rem;
+  overflow-y: auto;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: #e8dcc8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.combat-shared-log .clog-line, #player-shared-log .clog-line {
+  padding: 0.15rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+body.map-popout .combat-log-panel { display: none; }
+body.vtt-player .player-shared-log-wrap {
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid rgba(196,163,90,0.2);
+  border-radius: 6px;
+  background: rgba(0,0,0,0.35);
+}
