@@ -2709,12 +2709,27 @@ function ensureCombatantTurnState(cb, ch) {
     // Turn economy buttons
     ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
      'cd-action-toggle','cd-atk-dec','cd-atk-inc','cd-atk-reset',
+     'cd-act-dec','cd-act-inc','cd-act-reset',
      'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local',
      'cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'
     ].forEach(id => {
       const el = panel.querySelector('#' + id);
       setDisabled(el, !allowMain, lockMsg);
     });
+    // No Action left (e.g. after Cast) → cannot start Attack or another action-cast
+    try {
+      const actLeft2 = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
+      const atkLeft2 = Math.max(0, (Number(cb.attacksMax) || 1) - (Number(cb.attacksUsed) || 0));
+      const canContinueAtk = (Number(cb.attacksUsed) || 0) > 0 && atkLeft2 > 0;
+      const rollBtn = panel.querySelector('#cr-roll-btn');
+      if (rollBtn && allowMain && !canContinueAtk && actLeft2 <= 0) {
+        setDisabled(rollBtn, true, 'No actions left for Attack (already cast or acted)');
+      }
+      const castBtn = panel.querySelector('#cr-spell-cast');
+      if (castBtn && allowMain && actLeft2 <= 0) {
+        setDisabled(castBtn, true, 'No actions left to cast');
+      }
+    } catch (e) {}
     panel.querySelectorAll('.ba-toggle, .cd-option-btn, .act-opt').forEach(el => {
       setDisabled(el, !allowMain, lockMsg);
     });
@@ -8265,24 +8280,32 @@ function rollDieExpr(expr) {
       // Attack budget (Extra Attack)
       {
         const maxAtk = cb.attacksMax != null ? cb.attacksMax : 1;
-        // First weapon attack of the turn spends 1 Action; further attacks use Extra Attack budget only
+        // Attack action: first swing spends 1 Action; further swings use Extra Attack only.
+        // If Action was already spent (e.g. Cast a spell), block unless another Action remains.
         const atkUsed = Number(cb.attacksUsed) || 0;
-        if (atkUsed === 0) {
-          if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
-            if (!confirm('No actions left this turn. Roll weapon attack anyway?')) return;
-          } else if (typeof spendAction === 'function') {
-            if (!spendAction(cb, 'Attack')) {
-              if (!confirm('No actions left. Roll anyway?')) return;
-            }
-          } else {
-            cb.actionUsed = true;
-            cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
-          }
-        }
-        if (atkUsed >= maxAtk) {
-          if (!confirm('Weapon attacks for this Attack action are used (' + maxAtk + '). Roll anyway?')) return;
-        } else {
+        const actMax = Number(cb.actionsMax) || 1;
+        const actUsed = Number(cb.actionsUsed) || 0;
+        const actLeft = Math.max(0, actMax - actUsed);
+        if (atkUsed > 0 && atkUsed < maxAtk) {
+          // Continuing the Attack action already paid for
           cb.attacksUsed = atkUsed + 1;
+        } else if (atkUsed >= maxAtk) {
+          toast('No weapon attacks left this Attack action (' + maxAtk + ')');
+          return;
+        } else {
+          // Need to start the Attack action (costs 1 Action)
+          if (actLeft <= 0) {
+            toast('No actions left — already used on ' + (cb.lastAction || 'another action (e.g. Cast)'));
+            return;
+          }
+          if (typeof spendAction === 'function') {
+            if (!spendAction(cb, 'Attack')) return;
+          } else {
+            cb.actionsUsed = actUsed + 1;
+            cb.actionUsed = cb.actionsUsed >= actMax;
+            cb.lastAction = 'Attack';
+          }
+          cb.attacksUsed = 1;
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
@@ -9132,8 +9155,14 @@ function rollDieExpr(expr) {
           if (typeof spendAction === 'function') {
             if (!spendAction(cb, 'Cast ' + (sp.name || 'spell'))) return false;
           } else {
-            cb.actionUsed = true;
             cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+            cb.actionUsed = cb.actionsUsed >= (Number(cb.actionsMax) || 1);
+            cb.lastAction = 'Cast ' + (sp.name || 'spell');
+          }
+          // Starting a new Action means weapon-attack series has not started
+          // (do not reset mid-Attack if they somehow cast with a second action)
+          if ((Number(cb.actionsUsed) || 0) === 1) {
+            /* first action of turn was cast — no Attack action open */
           }
         }
         if (sp.level > 0) {
