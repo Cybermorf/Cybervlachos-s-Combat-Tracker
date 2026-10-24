@@ -2266,11 +2266,57 @@
     cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
     cb.actionUsed = cb.actionsUsed >= cb.actionsMax;
     if (label) cb.lastAction = label;
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
     return true;
   }
 
   /** Start-of-turn reset driven by DM Next Turn. */
-  function beginCombatantTurn(cb, ch) {
+  
+  function persistTurnEconomy(cb) {
+    if (!cb) return;
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (!combat) return;
+      if (!combat.turnEconomy) combat.turnEconomy = {};
+      const id = String(cb.id != null ? cb.id : cb.name || '');
+      if (!id) return;
+      combat.turnEconomy[id] = {
+        actionsUsed: Number(cb.actionsUsed) || 0,
+        actionsMax: Number(cb.actionsMax) || 1,
+        actionUsed: !!cb.actionUsed,
+        attacksUsed: Number(cb.attacksUsed) || 0,
+        attacksMax: cb.attacksMax,
+        lastAction: cb.lastAction || null,
+        bonusUsed: !!cb.bonusUsed,
+        reactionUsed: !!cb.reactionUsed,
+        turnPhase: cb.turnPhase || 'active',
+        extraActionsGranted: Number(cb.extraActionsGranted) || 0
+      };
+    } catch (e) {}
+  }
+  function restoreTurnEconomy(cb) {
+    if (!cb) return;
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const id = String(cb.id != null ? cb.id : cb.name || '');
+      const row = combat && combat.turnEconomy && combat.turnEconomy[id];
+      if (!row) return;
+      if (row.actionsUsed != null) cb.actionsUsed = row.actionsUsed;
+      if (row.actionsMax != null) cb.actionsMax = row.actionsMax;
+      if (row.actionUsed != null) cb.actionUsed = row.actionUsed;
+      if (row.attacksUsed != null) cb.attacksUsed = row.attacksUsed;
+      if (row.attacksMax != null) cb.attacksMax = row.attacksMax;
+      if (row.lastAction != null) cb.lastAction = row.lastAction;
+      if (row.bonusUsed != null) cb.bonusUsed = row.bonusUsed;
+      if (row.reactionUsed != null) cb.reactionUsed = row.reactionUsed;
+      if (row.turnPhase != null) cb.turnPhase = row.turnPhase;
+      if (row.extraActionsGranted != null) cb.extraActionsGranted = row.extraActionsGranted;
+    } catch (e) {}
+  }
+
+function beginCombatantTurn(cb, ch) {
     if (!cb) return;
     cb.turnPhase = 'active';
     cb.attacksUsed = 0;
@@ -2284,12 +2330,14 @@
     cb.bonusActionsUsed = {};
     cb.disengage = false;
     cb.dashSpeed = 0;
+    cb.lastAction = null;
     try {
       if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch || null);
     } catch (e) {}
-    cb.actionsMax = actionsMaxForCombatant(cb, ch || null);
+    cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch || null) : 1;
     cb.actionsUsed = 0;
     cb.actionUsed = false;
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
   }
 
   function mergeCondition(existing, add) {
@@ -7940,6 +7988,7 @@ function rollDieExpr(expr) {
       }
     } catch (e) {}
     if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, _ch);
+    if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb);
 
     const panel = panelOverride || $('#combat-detail');
     if (!panel) return;
@@ -9193,9 +9242,12 @@ function rollDieExpr(expr) {
               return false;
             }
             cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
-            cb.actionUsed = true;
           }
+          // Always pin action as used after an action-cast
+          cb.actionUsed = true;
+          if ((Number(cb.actionsUsed) || 0) < 1) cb.actionsUsed = 1;
           cb.lastAction = 'Cast ' + spellLabel;
+          try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
           const left = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
           toast('Cast ' + spellLabel + ' · ' + left + ' action(s) left');
           try {
@@ -9350,7 +9402,9 @@ function rollDieExpr(expr) {
         await openSpellDetailModal(sp, {
           allowCast: true,
           slotOptionsHtml,
-          onCast: (slot) => { doCast(sp, slot); }
+          onCast: (slot) => { Promise.resolve(doCast(sp, slot)).then(function() {
+          try { persistTurnEconomy(cb); save(); refreshCombatDetail(); } catch (e) {}
+        }); }
         });
       });
 
@@ -9364,7 +9418,11 @@ function rollDieExpr(expr) {
         // Keep both selects in sync
         if (slotSel && slot) slotSel.value = String(slot);
         if (up && slot) up.value = String(slot);
-        doCast(sp, slot);
+        doCast(sp, slot).then(function() {
+          try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+          try { save(); } catch (e) {}
+          try { refreshCombatDetail(); } catch (e) { try { softRefreshCombatDetail(cb, panel); } catch (e2) {} }
+        }).catch(function() {});
       });
       // Keep upcast + cast-with-slot selects synchronized
       function syncSlotSelects(from) {
