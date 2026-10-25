@@ -11998,31 +11998,49 @@ function escapeHtml(str) {
     try {
       const c = getActive();
       if (!c || !c.combatMap) return;
+      const at = Date.now();
+      window.__lastTokenSent = at;
       const payload = {
         type: 'vtt-tokens',
         room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
         reason: reason || 'token-move',
-        at: Date.now(),
+        at: at,
+        clientId: window.__vttClientId || null,
         tokens: JSON.parse(JSON.stringify(c.combatMap.tokens || {})),
         fogEnabled: !!c.combatMap.fogEnabled,
         fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
       };
       try { localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(payload)); } catch (e) {}
-      try { localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(Object.assign(buildVttStatePayload(reason) || { type: 'vtt-state', at: Date.now() }, { map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed } }))); } catch (e) {}
+      try {
+        const full = Object.assign(buildVttStatePayload(reason) || { type: 'vtt-state', at: at }, {
+          map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed }
+        });
+        localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(full));
+      } catch (e) {}
       const ch = getVttChannel();
       if (ch) {
         try { ch.postMessage(payload); } catch (e) {}
       }
+      // Also map BC used by older popout path
+      try {
+        if (window.__mapBc) window.__mapBc.postMessage({ type: 'tokens', tokens: payload.tokens, at: at });
+      } catch (e) {}
     } catch (e) { console.warn('token bc', e); }
   }
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
     // Never clobber an in-progress local drag
     if (window.__tokenDragActive) return;
-    const room = getVttRoomCode();
-    if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
-    // Ignore our own echo within 50ms if we just sent
+    const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
+    const msgRoom = msg.room || '';
+    // Only filter when BOTH sides have a room code and they differ
+    if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
+    // Ignore our own echo
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
+    // Don't skip forever if drag flag stuck
+    if (window.__tokenDragActive && window.__tokenDragStartedAt && Date.now() - window.__tokenDragStartedAt > 3000) {
+      window.__tokenDragActive = false;
+    }
     try {
       const map = getCombatMap();
       if (!map) return;
@@ -12220,6 +12238,19 @@ function escapeHtml(str) {
   function bindVttSync() {
     if (window.__vttSyncBound) return;
     window.__vttSyncBound = true;
+    if (!window.__vttClientId) {
+      window.__vttClientId = 'c' + Math.random().toString(36).slice(2, 10);
+    }
+
+    // Cross-tab via localStorage (works when BC is flaky)
+    window.addEventListener('storage', (ev) => {
+      try {
+        if (ev.key === 'cybervlachos_vtt_tokens' && ev.newValue) {
+          const msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-tokens') applyTokenMessage(msg);
+        }
+      } catch (e) {}
+    });
 
     const ch = getVttChannel();
     if (ch) {
@@ -13536,6 +13567,7 @@ function escapeHtml(str) {
           if (ev.altKey) return;
           window.__mapDragId = found;
           window.__tokenDragActive = true;
+          window.__tokenDragStartedAt = Date.now();
           try { if (ev.pointerId != null) c.setPointerCapture(ev.pointerId); } catch (e) {}
           return;
         }
@@ -13650,7 +13682,9 @@ function escapeHtml(str) {
             }
           }
           if (!cb) { toast('Select a combatant first (Combat list or Token for dropdown)'); return; }
-          await setTokenImageFromFile(file, cb);
+          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
+          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await fn(file, cb);
         } catch (err) {
           console.error(err);
           toast('Token import failed: ' + (err && err.message ? err.message : err));
@@ -13677,7 +13711,9 @@ function escapeHtml(str) {
             }
           }
           if (!cb) { toast('Select a combatant in Combat or Map list first'); return; }
-          await setTokenImageFromFile(file, cb);
+          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
+          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await fn(file, cb);
         } catch (err) {
           console.error(err);
           toast('Token import failed: ' + (err && err.message ? err.message : err));
@@ -13878,7 +13914,9 @@ function escapeHtml(str) {
             }
           }
           if (!cb) { toast('Select a combatant in the list first'); return; }
-          await setTokenImageFromFile(file, cb);
+          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
+          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await fn(file, cb);
         } catch (e) {
           console.error(e);
           toast('Token import failed: ' + (e && e.message ? e.message : e));
@@ -14157,6 +14195,15 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
     try { renderBattleMap(); } catch (e) {}
     toast('Token image cleared');
   }
+
+  // Expose for map UI handlers (avoid scope issues across reloads / nested binds)
+  try {
+    window.setTokenImageFromFile = setTokenImageFromFile;
+    window.clearTokenImage = clearTokenImage;
+    window.getTokenImageForCombatant = getTokenImageForCombatant;
+    window.bindMapCanvasInteractions = bindMapCanvasInteractions;
+    window.broadcastTokenPositions = broadcastTokenPositions;
+  } catch (e) {}
 
 function paintMapFrame() {
     try {
