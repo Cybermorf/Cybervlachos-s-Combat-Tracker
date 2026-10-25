@@ -13286,6 +13286,118 @@ function escapeHtml(str) {
   // ═══════════════════════════════════════════════════════════
   // Map canvas interactions (main DM + popout + player)
   // ═══════════════════════════════════════════════════════════
+  
+  function bindMapMediaInputs() {
+    if (window.__mapMediaInputsBound) return;
+    window.__mapMediaInputsBound = true;
+    document.addEventListener('change', async (e) => {
+      const el = e.target;
+      if (!el || !el.id) return;
+      try {
+        if (el.id === 'map-file-image') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            try { ensureCombatWorkspace(); } catch (err) {}
+            const map = getCombatMap();
+            if (!map) { toast('No workspace — open Combat once first'); return; }
+            // Clear prior video
+            if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+              try { URL.revokeObjectURL(map.videoObjectUrl); } catch (err) {}
+            }
+            map.videoObjectUrl = null;
+            map.mediaType = 'image';
+            map.imageDataUrl = reader.result;
+            map.hasImageInIdb = false;
+            map.tokens = map.tokens || {};
+            map.walls = map.walls || [];
+            map.aoe = null;
+            map._fitSrcW = null; map._fitSrcH = null; map.scale = null;
+            const gs = document.getElementById('map-grid-size');
+            if (gs) map.gridSize = Number(gs.value) || 70;
+            try { save(); } catch (err) { console.warn(err); }
+            try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
+            renderBattleMap();
+            toast('Map image loaded');
+          };
+          reader.onerror = () => toast('Failed to read image');
+          reader.readAsDataURL(f);
+          el.value = '';
+          return;
+        }
+        if (el.id === 'map-file-uvtt') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          try {
+            const text = await f.text();
+            const parsed = parseUvttFile(text);
+            try { ensureCombatWorkspace(); } catch (err) {}
+            const map = getCombatMap();
+            if (!map) { toast('No workspace — open Combat once first'); return; }
+            if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+              try { URL.revokeObjectURL(map.videoObjectUrl); } catch (err) {}
+            }
+            map.videoObjectUrl = null;
+            map.mediaType = 'image';
+            if (parsed.imageDataUrl) map.imageDataUrl = parsed.imageDataUrl;
+            else toast('UVTT has no image — import image separately');
+            map.gridSize = parsed.gridSize || 70;
+            map.walls = parsed.walls || [];
+            map.tokens = map.tokens || {};
+            map.aoe = null;
+            map._fitSrcW = null; map._fitSrcH = null; map.scale = null;
+            const gs = document.getElementById('map-grid-size');
+            if (gs) gs.value = String(map.gridSize);
+            try { save(); } catch (err) { console.warn(err); }
+            renderBattleMap();
+            toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+          } catch (err) {
+            console.warn(err);
+            toast('Could not parse UVTT: ' + (err.message || err));
+          }
+          el.value = '';
+          return;
+        }
+        if (el.id === 'map-file-video') {
+          const f = el.files && el.files[0];
+          if (!f) return;
+          try {
+            ensureCombatWorkspace();
+            const map = getCombatMap();
+            if (!map) { toast('No workspace — open Map tab first'); return; }
+            const mime = f.type || (/\.webm$/i.test(f.name) ? 'video/webm' : 'video/mp4');
+            const buf = await f.arrayBuffer();
+            const blob = new Blob([buf], { type: mime });
+            if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+              try { URL.revokeObjectURL(map.videoObjectUrl); } catch (err) {}
+            }
+            map.videoObjectUrl = URL.createObjectURL(blob);
+            map.mediaType = 'video';
+            map.imageDataUrl = null;
+            map.hasVideoInIdb = true;
+            map.tokens = map.tokens || {};
+            map.walls = map.walls || [];
+            map.aoe = null;
+            map._fitSrcW = null; map._fitSrcH = null; map.scale = null;
+            try { save(); } catch (err) {}
+            try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
+            renderBattleMap();
+            toast('Video map loaded (looping)');
+          } catch (err) {
+            console.error(err);
+            toast('Video import failed: ' + (err.message || err));
+          }
+          el.value = '';
+        }
+      } catch (err) {
+        console.error('map media import', err);
+        toast('Import failed');
+      }
+    });
+  }
+
+
   function bindMapCanvasInteractions(force) {
     const canvas = document.getElementById('map-canvas');
     if (!canvas) return false;
@@ -13491,7 +13603,7 @@ function escapeHtml(str) {
         }
       });
     }
-    ['map-token-clear-btn','map-token-clear-btn2'].forEach(cid => {
+    ['map-token-clear-btn'].forEach(cid => {
     const clr = document.getElementById(cid);
     if (clr && clr.dataset.cyberBound !== '2') {
       clr.dataset.cyberBound = '2';
@@ -13514,6 +13626,7 @@ function escapeHtml(str) {
     // Always ensure workspace exists
     try { ensureCombatWorkspace(); } catch (e) {}
     try { refreshMapTokenSelect(); } catch (e) {}
+    try { bindMapMediaInputs(); } catch (e) { console.error(e); }
     try { bindTokenImageControls(); } catch (e) { console.error(e); }
     try { bindMapCanvasInteractions(false); } catch (e) { console.error(e); }
 
@@ -13756,7 +13869,7 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
     });
 
 
-    if (!window.__mapFileChangeBound) {
+    if (false && !window.__mapFileChangeBound) {
       window.__mapFileChangeBound = true;
       document.addEventListener('change', async (e) => {
         const el = e.target;
