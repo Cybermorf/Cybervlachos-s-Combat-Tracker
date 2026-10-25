@@ -2815,13 +2815,19 @@ function ensureCombatantTurnState(cb, ch) {
 
     // Turn economy buttons
     ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
-     'cd-action-toggle','cd-atk-dec','cd-atk-inc','cd-atk-reset',
-     'cd-act-dec','cd-act-inc','cd-act-reset',
+     'cd-action-toggle',
      'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local',
      'cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'
     ].forEach(id => {
       const el = panel.querySelector('#' + id);
       setDisabled(el, !allowMain, lockMsg);
+    });
+    // DM can always adjust/reset action & weapon budgets
+    ['cd-atk-dec','cd-atk-inc','cd-atk-reset','cd-act-dec','cd-act-inc','cd-act-reset'].forEach(id => {
+      const el = panel.querySelector('#' + id);
+      if (!el) return;
+      const dm = !(typeof isPlayerRole === 'function' && isPlayerRole());
+      setDisabled(el, !dm && !allowMain, dm ? '' : lockMsg);
     });
     // No Action left (e.g. after Cast) → cannot start Attack or another action-cast
     try {
@@ -8804,14 +8810,18 @@ function rollDieExpr(expr) {
       // Spending a leveled slot is casting — costs 1 Action unless already paid this turn for a cast
       if (cb.actionsMax == null) cb.actionsMax = 1;
       if (cb.actionsUsed == null) cb.actionsUsed = 0;
-      const alreadyCast = cb.lastAction && /^Cast /i.test(String(cb.lastAction));
-      if (!alreadyCast) {
-        if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
-          toast('No actions left — cannot spend slot as a new cast');
-          return;
-        }
+      // Slot spend is a cast: only skip charge if menu prepaid exactly once
+      const menuPrepaid = String(cb.lastAction || '') === 'Cast a spell' && (Number(cb.actionsUsed) || 0) > 0;
+      if (menuPrepaid) {
+        cb.lastAction = 'Cast (slot L' + L + ')';
+        cb.attacksUsed = Number(cb.attacksMax) || 1;
+        cb.actionUsed = true;
+      } else {
         if (typeof spendMainCombatAction === 'function') {
           if (!spendMainCombatAction(cb, 'cast', 'Cast (slot L' + L + ')')) return;
+        } else if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+          toast('No actions left — cannot spend slot as a new cast');
+          return;
         } else {
           cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
           cb.actionUsed = true;
@@ -8853,7 +8863,10 @@ function rollDieExpr(expr) {
       cb.attacksUsed = Math.min(max, (cb.attacksUsed || 0) + 1); refreshCombatDetail();
     });
     panel.querySelector('#cd-atk-reset')?.addEventListener('click', () => {
-      cb.attacksUsed = 0; refreshCombatDetail();
+      cb.attacksUsed = 0;
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try { save(); } catch (e) {}
+      refreshCombatDetail();
     });
     // Actions budget (+ Haste / Action Surge)
     panel.querySelector('#cd-act-dec')?.addEventListener('click', () => {
@@ -8870,6 +8883,9 @@ function rollDieExpr(expr) {
     panel.querySelector('#cd-act-reset')?.addEventListener('click', () => {
       cb.actionsUsed = 0;
       cb.actionUsed = false;
+      cb.lastAction = null;
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try { save(); } catch (e) {}
       refreshCombatDetail();
     });
     panel.querySelector('#cd-move-dec')?.addEventListener('click', () => {
@@ -9294,8 +9310,13 @@ function rollDieExpr(expr) {
           cb.reactionUsed = true;
           toast('Reaction: Cast ' + spellLabel);
         } else {
-          const alreadyPaid = (Number(cb.actionsUsed) || 0) > 0 && cb.lastAction && /^Cast/i.test(String(cb.lastAction));
-          if (!alreadyPaid) {
+          // Only the action-menu placeholder "Cast a spell" pre-pays a single cast
+          const menuPrepaid = (Number(cb.actionsUsed) || 0) > 0 && String(cb.lastAction || '') === 'Cast a spell';
+          if (menuPrepaid) {
+            cb.lastAction = 'Cast ' + spellLabel;
+            cb.attacksUsed = Number(cb.attacksMax) || 1;
+            cb.actionUsed = true;
+          } else {
             if (typeof spendMainCombatAction === 'function') {
               if (!spendMainCombatAction(cb, 'cast', 'Cast ' + spellLabel)) return false;
             } else {
@@ -9308,11 +9329,6 @@ function rollDieExpr(expr) {
               cb.attacksUsed = Number(cb.attacksMax) || 1;
               cb.lastAction = 'Cast ' + spellLabel;
             }
-          } else {
-            cb.lastAction = 'Cast ' + spellLabel;
-            // Ensure weapon attacks stay locked after cast
-            cb.attacksUsed = Number(cb.attacksMax) || 1;
-            cb.actionUsed = true;
           }
           try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
           const left = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
@@ -13604,10 +13620,38 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
 
     
   
+  
+  const TOKEN_IMG_KEY = 'cybervlachos_token_images_v1';
+  function loadTokenImageStore() {
+    try { return JSON.parse(localStorage.getItem(TOKEN_IMG_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function saveTokenImageStore(store) {
+    try { localStorage.setItem(TOKEN_IMG_KEY, JSON.stringify(store)); return true; }
+    catch (e) {
+      try {
+        // Store only this id if full dump fails
+        return false;
+      } catch (e2) { return false; }
+    }
+  }
+  function tokenImageKey(cb) {
+    return String(cb && (cb.id != null ? cb.id : cb.name) || '');
+  }
+
   const __tokenImgCache = {};
   function getTokenImageForCombatant(cb) {
     if (!cb) return null;
-    const src = cb.tokenImage || cb.tokenImg || cb.avatar || cb.portrait || '';
+    let src = cb.tokenImage || cb.tokenImg || cb.avatar || cb.portrait || '';
+    if (!src) {
+      try {
+        const store = loadTokenImageStore();
+        const k = tokenImageKey(cb);
+        if (k && store[k]) {
+          src = store[k];
+          cb.tokenImage = src;
+        }
+      } catch (e) {}
+    }
     if (!src || typeof src !== 'string') return null;
     if (__tokenImgCache[src] === false) return null;
     if (__tokenImgCache[src] && __tokenImgCache[src].complete) return __tokenImgCache[src];
@@ -13640,17 +13684,34 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
       return;
     }
     cb.tokenImage = dataUrl;
-    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try {
+      const store = loadTokenImageStore();
+      store[tokenImageKey(cb)] = dataUrl;
+      if (!saveTokenImageStore(store)) {
+        // fallback: keep on combatant only
+        toast('Saved on combatant (storage nearly full)');
+      }
+    } catch (e) {}
     try { save(); } catch (e) {}
+    try {
+      delete __tokenImgCache[dataUrl];
+      getTokenImageForCombatant(cb);
+    } catch (e) {}
     try { renderBattleMap(); } catch (e) {}
+    try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
     try { renderCombat(); } catch (e) {}
     toast('Token image set for ' + (cb.name || 'combatant'));
   }
 
   function clearTokenImage(cb) {
     if (!cb) return;
+    const k = tokenImageKey(cb);
     delete cb.tokenImage;
     delete cb.tokenImg;
+    try {
+      const store = loadTokenImageStore();
+      if (k && store[k]) { delete store[k]; saveTokenImageStore(store); }
+    } catch (e) {}
     try { save(); } catch (e) {}
     try { renderBattleMap(); } catch (e) {}
     toast('Token image cleared');
@@ -13707,6 +13768,8 @@ function paintMapFrame() {
 const canvas = document.getElementById('map-canvas');
     if (canvas && !canvas.dataset.mapBound) {
       canvas.dataset.mapBound = '1';
+      // mark for debugging
+      canvas.dataset.tokenDrag = '1';
   // Clear sticky fog brush when user switches to token/pan/aoe tools
   document.addEventListener('change', (ev) => {
     if (ev.target && ev.target.id === 'map-tool') {
@@ -13722,7 +13785,10 @@ const canvas = document.getElementById('map-canvas');
       canvas.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         const map = getCombatMap();
-        if (!map || (!map.imageDataUrl && !(map.mediaType === 'video' && map.videoObjectUrl))) return;
+        if (!map) return;
+        // Allow token tools even when bitmap still loading from IDB
+        const hasSurface = !!(map.imageDataUrl || map.videoObjectUrl || map.hasImageInIdb || map.width || (map.tokens && Object.keys(map.tokens).length));
+        if (!hasSurface) return;
         const tool = document.getElementById('map-tool')?.value || 'token';
         const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
         // Fog brush (DM only) — never override Place/move token, pan, AoE, or grid-offset
@@ -13759,7 +13825,7 @@ const canvas = document.getElementById('map-canvas');
         if (tool === 'token' || tool === 'pan') {
           // hit-test existing token
           const g = Number(map.gridSize) || 70;
-          const hitR = g * 0.55;
+          const hitR = g * 0.75;
           let found = null;
           let foundDist = Infinity;
           Object.keys(map.tokens || {}).forEach(id => {
@@ -13774,9 +13840,17 @@ const canvas = document.getElementById('map-canvas');
             try { selectCombatantById(found); } catch (e) {}
             // Players: select only. DM: always drag (toolbar is hidden on popout; default was pan).
             if (isPlayerRole()) {
-              dragId = null;
-              toast('Selected ' + (listNameForToken(found) || found));
-              return;
+              // Players may drag only their claimed token
+              let allowed = false;
+              try {
+                const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+                if (claimed && String(claimed.id) === String(found)) allowed = true;
+              } catch (e) {}
+              if (!allowed) {
+                dragId = null;
+                toast('Selected ' + (listNameForToken(found) || found));
+                return;
+              }
             }
             // Hold Alt for select-only without move
             if (ev.altKey || (tool === 'pan' && ev.shiftKey)) {
