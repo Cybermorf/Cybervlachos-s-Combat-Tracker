@@ -3860,3 +3860,21 @@ body.vtt-player #player-roll-result.is-active {
   color: #a09080;
   margin-left: 0.5rem;
 }
+
+
+/* Tokens / map interaction layer on top */
+#map-canvas-wrap { position: relative !important; }
+#map-video {
+  position: absolute !important;
+  inset: 0;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: none !important;
+  z-index: 0 !important;
+}
+#map-canvas {
+  position: relative !important;
+  z-index: 5 !important;
+  pointer-events: auto !important;
+  touch-action: none !important;
+}

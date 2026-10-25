@@ -1199,7 +1199,7 @@
       try {
         if (typeof initBattleMapUi === 'function') initBattleMapUi();
         if (typeof bindTokenImageControls === 'function') bindTokenImageControls();
-        if (typeof bindMapCanvasInteractions === 'function') bindMapCanvasInteractions(true);
+        if (typeof bindMapCanvasInteractions === 'function') bindMapCanvasInteractions(false);
         refreshMapTokenSelect();
         renderBattleMap();
       } catch (e) { console.warn(e); }
@@ -12966,6 +12966,23 @@ function escapeHtml(str) {
     // Fog of war (on top of map/tokens in unrevealed cells)
     try { drawFogOfWar(ctx, canvas, map, scale); } catch (e) {}
 
+    // Dragged token always on top of fog so DM sees live movement
+    try {
+      const dragId = window.__mapDragId;
+      if (dragId && map.tokens && map.tokens[dragId]) {
+        const pos = map.tokens[dragId];
+        const x = pos.x * scale, y = pos.y * scale;
+        const r = Math.max(10, (Number(map.gridSize) || 70) * scale * 0.35);
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 210, 74, 0.95)';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      }
+    } catch (e) {}
+
   }
   window.__drawMapOverlays = drawMapOverlays;
 
@@ -13391,10 +13408,17 @@ function escapeHtml(str) {
                 adjustTokensForNewMap(map, prevW, prevH, dim.w, dim.h);
                 map.width = dim.w; map.height = dim.h;
               }
+              // Cache for paintMapFrame during drag
+              try {
+                const img = new Image();
+                img.onload = () => { window.__mapStaticImg = img; try { paintMapFrame(); } catch (e) {} };
+                img.src = reader.result;
+                window.__mapStaticImg = img;
+              } catch (e) {}
               try { save(); } catch (err) { console.warn(err); }
               try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
               renderBattleMap();
-              try { bindMapCanvasInteractions(true); } catch (e) {}
+              try { bindMapCanvasInteractions(false); } catch (e) {}
               toast('Map image loaded');
             });
             return;
@@ -13477,27 +13501,32 @@ function escapeHtml(str) {
 
 
   function bindMapCanvasInteractions(force) {
-    const canvas = document.getElementById('map-canvas');
+    let canvas = document.getElementById('map-canvas');
     if (!canvas) return false;
-    if (!force && canvas.dataset.cyberMapBound === '2') return true;
+    // Already healthy — do not clone (cloning kills active drags)
+    if (!force && canvas.dataset.cyberMapBound === '2' && canvas.dataset.tokenDrag === '1') return true;
 
-    // Clone to drop any half-bound listeners from older code
     let c = canvas;
-    try {
-      const fresh = canvas.cloneNode(true);
-      fresh.width = canvas.width;
-      fresh.height = canvas.height;
-      if (canvas.parentNode) {
-        canvas.parentNode.replaceChild(fresh, canvas);
-        c = fresh;
+    // Only clone when force-repairing a broken bind
+    if (force && canvas.dataset.cyberMapBound === '2') {
+      try {
+        const fresh = canvas.cloneNode(true);
+        fresh.width = canvas.width;
+        fresh.height = canvas.height;
+        if (canvas.parentNode) {
+          canvas.parentNode.replaceChild(fresh, canvas);
+          c = document.getElementById('map-canvas') || fresh;
+        }
+      } catch (e) {
+        c = document.getElementById('map-canvas') || canvas;
       }
-    } catch (e) {
-      c = document.getElementById('map-canvas') || canvas;
     }
     c.dataset.cyberMapBound = '2';
     c.dataset.tokenDrag = '1';
     c.style.pointerEvents = 'auto';
+    c.style.zIndex = '5';
     c.style.touchAction = 'none';
+    c.style.position = 'relative';
 
     const onDown = (ev) => {
       if (ev.button != null && ev.button !== 0) return;
@@ -13617,7 +13646,10 @@ function escapeHtml(str) {
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
       map.tokens[window.__mapDragId] = snapWorldToGrid(map, x, y);
-      try { redrawMapLive(); } catch (e) {}
+      // Immediate local paint (DM popup was syncing others but not itself)
+      try { paintMapFrame(); } catch (e) {
+        try { redrawMapLive(); } catch (e2) {}
+      }
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
         window.__lastTokenDragBc = now;
@@ -13652,10 +13684,15 @@ function escapeHtml(str) {
     c.addEventListener('pointermove', onMove);
     c.addEventListener('pointerup', onUp);
     c.addEventListener('pointercancel', onUp);
-    // Also on window so drag doesn't stick
-    if (!window.__mapGlobalUp) {
-      window.__mapGlobalUp = true;
-      window.addEventListener('pointerup', onUp);
+    // Window-level move/up so drag works even if cursor leaves canvas (main map)
+    if (!window.__mapGlobalPtr) {
+      window.__mapGlobalPtr = true;
+      window.addEventListener('pointermove', (ev) => {
+        if (!window.__mapDragId && !window.__fogDrag && !window.__gridDrag && !window.__rulerDrag) return;
+        try { onMove(ev); } catch (e) {}
+      }, true);
+      window.addEventListener('pointerup', onUp, true);
+      window.addEventListener('pointercancel', onUp, true);
     }
     return true;
   }
@@ -14242,8 +14279,8 @@ function paintMapFrame() {
     try {
       const map = getCombatMap();
       if (!map) return;
-      // Always paint current tokens/fog immediately (critical for video maps during drag)
-      if (map.mediaType === 'video') {
+      // Always fast-path paint (tokens must move under cursor on main + popouts)
+      if (typeof paintMapFrame === 'function') {
         paintMapFrame();
         return;
       }
