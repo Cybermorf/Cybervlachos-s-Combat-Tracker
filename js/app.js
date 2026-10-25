@@ -2613,8 +2613,9 @@ function ensureCombatantTurnState(cb, ch) {
     // Full turn economy defaults
     if (cb.speed == null || (typeof cb.speed === 'number' && isNaN(cb.speed))) cb.speed = parseSpeed(ch && ch.speed);
     if (cb.moveUsed == null) cb.moveUsed = 0;
-    if (cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) {
-      cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch) : 1;
+    // Keep actionsMax in sync with Action Surge / Haste grants
+    if ((Number(cb.extraActionsGranted) || 0) > 0 || cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) {
+      cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch) : Math.max(1, Number(cb.actionsMax) || 1);
     }
     if (cb.actionsUsed == null) cb.actionsUsed = cb.actionUsed ? 1 : 0;
     if (cb.extraActionsGranted == null) cb.extraActionsGranted = 0;
@@ -12594,7 +12595,14 @@ function escapeHtml(str) {
       }
       // Also map BC used by older popout path
       try {
-        if (window.__mapBc) window.__mapBc.postMessage({ type: 'tokens', tokens: payload.tokens, at: at });
+        if (window.__mapBc) window.__mapBc.postMessage(payload);
+      } catch (e) {}
+      try {
+        // Secondary channel name some popouts listen on
+        if (!window.__mapBc2 && typeof BroadcastChannel !== 'undefined') {
+          try { window.__mapBc2 = new BroadcastChannel('dsc_combat_map_sync'); } catch (e2) {}
+        }
+        if (window.__mapBc2) window.__mapBc2.postMessage(payload);
       } catch (e) {}
     } catch (e) { console.warn('token bc', e); }
   }
