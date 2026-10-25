@@ -3970,3 +3970,14 @@ body:not(.map-popout):not(.vtt-player) .popup-dice-overlay {
   animation: none;
   transform: scale(1.05);
 }
+
+/* Player popup: no separate Apply Damage — Damage Roll applies */
+body.vtt-player #cr-apply-dmg,
+body.vtt-player .dm-only-apply-dmg,
+html.vtt-player #cr-apply-dmg {
+  display: none !important;
+}
+#cr-roll-dmg.is-ready {
+  outline: 1px solid rgba(141, 200, 120, 0.7);
+  box-shadow: 0 0 0 1px rgba(141, 200, 120, 0.25);
+}

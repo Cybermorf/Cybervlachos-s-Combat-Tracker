@@ -7415,6 +7415,54 @@ function rollDieExpr(expr) {
     return { total: sum + bonus, detail: rolls.join('+') + (bonus ? (bonus >= 0 ? '+' : '') + bonus : '') + '=' + (sum + bonus) };
   }
 
+  
+  function setDamageRollEnabled(panel, enabled, reason) {
+    try {
+      const btn = panel && panel.querySelector('#cr-roll-dmg');
+      if (!btn) return;
+      btn.disabled = !enabled;
+      btn.title = enabled ? 'Roll damage and apply to selected target(s)' : (reason || 'Hit the target AC first');
+      btn.classList.toggle('is-ready', !!enabled);
+    } catch (e) {}
+  }
+
+  function targetHasDamageResistance(target, dmgType) {
+    if (!target) return false;
+    const blob = JSON.stringify(target).toLowerCase();
+    // Rage / resistance keywords
+    if (/\braging\b|\brage\b/.test(blob) && (!dmgType || /bludgeoning|piercing|slashing|weapon/.test(String(dmgType).toLowerCase()))) {
+      // PHB Rage: resistance to bludgeoning/piercing/slashing while raging
+      return true;
+    }
+    if (target.resistances) {
+      const r = Array.isArray(target.resistances) ? target.resistances.join(' ') : String(target.resistances);
+      if (/all|weapon|nonmagical/i.test(r)) return true;
+      if (dmgType && r.toLowerCase().includes(String(dmgType).toLowerCase())) return true;
+    }
+    if (target.conditions) {
+      const c = Array.isArray(target.conditions) ? target.conditions.join(' ') : String(target.conditions);
+      if (/\brage\b|\braging\b|\bresistant\b/i.test(c)) return true;
+    }
+    return false;
+  }
+
+  function computeAppliedDamage(baseAmt, target, opts) {
+    opts = opts || {};
+    let amt = Math.max(0, Number(baseAmt) || 0);
+    const half = !!opts.half;
+    if (half) amt = Math.floor(amt / 2);
+    if (targetHasDamageResistance(target, opts.dmgType)) {
+      amt = Math.floor(amt / 2);
+    }
+    // Vulnerability simple tag
+    if (target && target.vulnerabilities) {
+      const v = Array.isArray(target.vulnerabilities) ? target.vulnerabilities.join(' ') : String(target.vulnerabilities);
+      if (opts.dmgType && v.toLowerCase().includes(String(opts.dmgType).toLowerCase())) amt = amt * 2;
+    }
+    return Math.max(0, amt);
+  }
+
+
   function rollCombatAttack(opts) {
     const adv = opts.adv || 'normal';
     const hitBonus = Number(opts.hitBonus) || 0;
@@ -7432,16 +7480,20 @@ function rollDieExpr(expr) {
     const hitTotal = used + toHit + hitBonus;
     const isCrit = !!opts.forceCrit || used === 20;
     const isFumble = !opts.forceCrit && used === 1;
-    let dmg = rollDieExpr(dmgExpr);
-    if (isCrit) {
-      const dmg2 = rollDieExpr(dmgExpr);
-      dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail };
+    let dmg = { total: 0, detail: '—' };
+    if (!opts.attackOnly && dmgExpr && dmgExpr !== '0') {
+      dmg = rollDieExpr(dmgExpr);
+      if (isCrit) {
+        const dmg2 = rollDieExpr(dmgExpr);
+        dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail };
+      }
     }
+    const formula = `${used}${toHit || hitBonus ? (toHit + hitBonus >= 0 ? '+' : '') + (toHit + hitBonus) : ''} = ${hitTotal}`;
     return {
       hitTotal, used, note, isCrit, isFumble, toHit, hitBonus,
-      dmgTotal: dmg.total + dmgBonus,
-      dmgDetail: dmg.detail + (dmgBonus ? ((dmgBonus >= 0 ? '+' : '') + dmgBonus) : ''),
-      formula: `${used} ${toHit >= 0 ? '+' : ''}${toHit}${hitBonus ? (hitBonus >= 0 ? ' +' : ' ') + hitBonus : ''} = ${hitTotal}`
+      formula: formula,
+      dmgTotal: dmg.total + (opts.attackOnly ? 0 : dmgBonus),
+      dmgDetail: dmg.detail + (!opts.attackOnly && dmgBonus ? ((dmgBonus >= 0 ? '+' : '') + dmgBonus) : '')
     };
   }
 
@@ -8448,7 +8500,7 @@ function rollDieExpr(expr) {
           </div>
           <div class="tool-btns" style="margin-top:0.5rem;flex-wrap:wrap">
             <button type="button" class="btn primary" id="cr-roll-btn">Roll Attack</button>
-            <button type="button" class="btn secondary" id="cr-roll-dmg">Damage only</button>
+            <button type="button" class="btn secondary" id="cr-roll-dmg" disabled title="Roll damage only after a hit">Damage Roll</button>
             <button type="button" class="btn secondary" id="cr-roll-save">Save DC check</button>
           </div>
           <div class="field" style="margin-top:0.35rem">
@@ -8458,7 +8510,7 @@ function rollDieExpr(expr) {
           <div id="cr-result" class="combat-roll-result muted small">${cb.lastRollHtml ? cb.lastRollHtml : 'Select an attack and roll.'}</div>
           <div class="combat-apply-row" style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center">
             <button type="button" class="btn primary" id="cr-apply-effect" title="Apply this ability/spell effect to selected targets">Apply Effect</button>
-            <button type="button" class="btn danger" id="cr-apply-dmg" title="Apply damage to target(s)">Apply Damage</button>
+            <button type="button" class="btn danger" id="cr-apply-dmg" class="dm-only-apply-dmg" title="Apply damage to target(s)">Apply Damage</button>
             <button type="button" class="btn primary" id="cr-apply-heal" title="Requires healing spell or potion">Apply Heal</button>
             <button type="button" class="btn secondary" id="cr-apply-cond">Apply Condition</button>
             <label class="checkbox-row" style="margin:0"><input type="checkbox" id="cr-half" /> Half dmg</label>
@@ -8625,43 +8677,133 @@ function rollDieExpr(expr) {
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
+      // Attack roll only — damage is a separate step after HIT
       const res = rollCombatAttack({
         adv: panel.querySelector('#cr-adv')?.value || 'normal',
         toHit: parseInt(toHitEl?.value, 10) || 0,
         hitBonus: parseInt(panel.querySelector('#cr-hit-bonus')?.value, 10) || 0,
-        damage: dmgEl?.value || '1d8',
-        dmgBonus: parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0,
-        forceCrit
+        damage: '0',
+        dmgBonus: 0,
+        forceCrit,
+        attackOnly: true
       });
-      const acVal = parseInt(panel.querySelector('#cr-ac')?.value, 10);
+      // Prefer selected target AC if present
+      let acVal = parseInt(panel.querySelector('#cr-ac')?.value, 10);
+      try {
+        const packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+        if (packs && packs[0] && packs[0].target && packs[0].target.ac != null) {
+          const tac = parseInt(packs[0].target.ac, 10);
+          if (!isNaN(tac)) {
+            acVal = tac;
+            const acInput = panel.querySelector('#cr-ac');
+            if (acInput && !acInput.value) acInput.value = String(tac);
+          }
+        }
+      } catch (e) {}
+      let hits = false;
       let hitLine = '';
       if (!isNaN(acVal)) {
-        const hits = res.isFumble ? false : (res.isCrit || res.hitTotal >= acVal);
-        hitLine = hits ? ` HIT vs AC ${acVal}` : ` MISS vs AC ${acVal}`;
+        hits = res.isFumble ? false : (res.isCrit || res.hitTotal >= acVal);
+        hitLine = hits ? ` · <strong style="color:#8d8">HIT</strong> vs AC ${acVal}` : ` · <strong style="color:#c66">MISS</strong> vs AC ${acVal}`;
+      } else {
+        hitLine = ' · <span class="muted">set Target AC to resolve hit</span>';
+        hits = false;
       }
       const rollHtml = `<div><strong>${escapeHtml(atkName)}</strong> · ${escapeHtml(res.note)}</div>
           <div>To hit: <strong>${res.formula}</strong>${res.isCrit ? ' · CRIT' : ''}${res.isFumble ? ' · FUMBLE' : ''}${hitLine}</div>
-          <div>Damage: <strong>${res.dmgTotal}</strong> <span class="muted">(${escapeHtml(res.dmgDetail)})</span></div>`;
+          <div class="muted">${hits ? 'Damage Roll is ready.' : 'Miss — Damage Roll locked.'}</div>`;
       showRollHtml(rollHtml);
       try { cb.lastRollHtml = rollHtml; } catch (e) {}
-      window.__lastCombatRoll = { damage: res.dmgTotal, heal: 0, hit: !hitLine.includes('MISS'), name: atkName };
-      appendLog(`${atkName}: ${res.formula}${hitLine} · dmg ${res.dmgTotal}`);
+      window.__lastCombatRoll = {
+        damage: 0,
+        heal: 0,
+        hit: hits,
+        isCrit: !!res.isCrit,
+        isFumble: !!res.isFumble,
+        hitTotal: res.hitTotal,
+        ac: acVal,
+        canDamage: hits,
+        name: atkName,
+        dmgExpr: dmgEl?.value || '1d8',
+        dmgBonus: parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0
+      };
+      setDamageRollEnabled(panel, hits, hits ? '' : 'Attack missed AC');
+      appendLog(`${atkName}: ${res.formula}${hits ? ' HIT' : ' MISS'} vs AC ${isNaN(acVal) ? '?' : acVal}`);
       try {
-        appendSharedCombatLog((cb.name || 'Attacker') + ' · ' + atkName + ': ' + res.formula + hitLine + ' · dmg ' + res.dmgTotal, { names: [cb.name], ids: [cb.id] });
+        appendSharedCombatLog((cb.name || 'Attacker') + ' · ' + atkName + ': ' + res.formula + (hits ? ' HIT' : ' MISS') + ' vs AC ' + (isNaN(acVal) ? '?' : acVal), { names: [cb.name], ids: [cb.id] });
       } catch (e) {}
-      // Always toast on player so result is obvious
       try {
         if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-          toast(atkName + ': ' + res.formula + hitLine + ' · dmg ' + res.dmgTotal);
+          toast(atkName + ': ' + res.formula + (hits ? ' HIT' : ' MISS') + (isNaN(acVal) ? '' : ' vs AC ' + acVal));
         }
       } catch (e) {}
+      try { save(); renderCombat(); } catch (e) {}
     });
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
-      const dmg = rollDieExpr(dmgEl?.value || '1d8');
-      const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0;
-      const box = panel.querySelector('#cr-result');
-      showRollHtml(`<div>Damage: <strong>${dmg.total + bonus}</strong> (${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</div>`);
-      appendLog(`Damage only: ${dmg.total + bonus}`);
+      const last = window.__lastCombatRoll || {};
+      if (!last.canDamage && !last.hit && !last.isCrit) {
+        toast('Score a hit with Roll Attack first');
+        setDamageRollEnabled(panel, false, 'Hit AC first');
+        return;
+      }
+      const expr = dmgEl?.value || last.dmgExpr || '1d8';
+      let dmg = rollDieExpr(expr);
+      const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || last.dmgBonus || 0;
+      if (last.isCrit) {
+        const dmg2 = rollDieExpr(expr);
+        dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail };
+      }
+      let total = dmg.total + bonus;
+      const halfBox = !!panel.querySelector('#cr-half')?.checked;
+      // Preview half if checked (save) — actual apply also checks Rage/resistance
+      const previewHalf = halfBox ? Math.floor(total / 2) : total;
+      const rollHtml = `<div><strong>${escapeHtml(last.name || 'Attack')}</strong> · Damage Roll${last.isCrit ? ' (CRIT)' : ''}</div>
+          <div>Damage: <strong>${total}</strong> <span class="muted">(${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</span>${halfBox ? ' · half preview ' + previewHalf : ''}</div>`;
+      showRollHtml(rollHtml);
+      window.__lastCombatRoll = Object.assign({}, last, {
+        damage: total,
+        heal: 0,
+        hit: true,
+        canDamage: true,
+        applied: false
+      });
+      const applyAmt = panel.querySelector('#cr-apply-amt');
+      if (applyAmt) applyAmt.value = String(total);
+      appendLog(`Damage Roll: ${total}`);
+      // Auto-apply to selected targets (player + DM)
+      try {
+        const packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+        if (!packs.length) {
+          toast('Damage rolled — select a target to apply, or click Apply Damage (DM)');
+        } else {
+          packs.forEach(({ target }) => {
+            let amt = computeAppliedDamage(total, target, { half: halfBox });
+            let left = amt;
+            const temp = target.tempHp || 0;
+            if (temp > 0) {
+              const absorb = Math.min(temp, left);
+              target.tempHp = temp - absorb;
+              left -= absorb;
+            }
+            target.hp = Math.max(0, (target.hp || 0) - left);
+            if (target.concentrating && left > 0 && typeof concentrationCheck === 'function') {
+              try { concentrationCheck(target, left); } catch (e) {}
+            }
+            appendLog(`${target.name || 'Target'} takes ${amt} damage (${target.hp} HP)`);
+            try {
+              appendSharedCombatLog((cb.name || 'Attacker') + ' deals ' + amt + ' to ' + (target.name || 'target'), { names: [cb.name, target.name], ids: [cb.id, target.id] });
+            } catch (e) {}
+          });
+          window.__lastCombatRoll.applied = true;
+          // Consume the hit gate so spam-clicking Damage Roll requires a new hit
+          window.__lastCombatRoll.canDamage = false;
+          setDamageRollEnabled(panel, false, 'Roll Attack again to hit');
+          toast('Damage applied');
+          try { save(); renderCombat(); renderMapRoster(); paintMapFrame(); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn(e);
+      }
     });
     panel.querySelector('#cr-roll-save')?.addEventListener('click', () => {
       const dc = parseInt(panel.querySelector('#cr-dc')?.value, 10) || 15;
@@ -8755,7 +8897,9 @@ function rollDieExpr(expr) {
             toast('No damage amount — Roll Attack / auto-hit first, or set Apply amount');
             return;
           }
-          if (half) amt = Math.floor(amt / 2);
+          amt = (typeof computeAppliedDamage === 'function')
+            ? computeAppliedDamage(amt, target, { half: half })
+            : (half ? Math.floor(amt / 2) : amt);
           let left = amt;
           const temp = target.tempHp || 0;
           if (temp > 0) {
