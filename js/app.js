@@ -2255,7 +2255,61 @@
   }
 
   /** Spend one Action (Attack, Cast, Dash, …). */
-  function spendAction(cb, label) {
+  
+  /**
+   * Linked economy: Cast OR Attack both spend 1 Action and reduce weapon-attack budget.
+   * After a Cast, weapon attacks are exhausted for the turn so you cannot also Attack.
+   * After an Attack action starts, Actions is spent so you cannot also Cast (unless Haste/Surge).
+   */
+  function spendMainCombatAction(cb, kind, label) {
+    if (!cb) return false;
+    if (cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) cb.actionsMax = 1;
+    if (cb.actionsUsed == null) cb.actionsUsed = 0;
+    if (cb.attacksMax == null) cb.attacksMax = 1;
+    if (cb.attacksUsed == null) cb.attacksUsed = 0;
+    const actMax = Number(cb.actionsMax) || 1;
+    const actUsed = Number(cb.actionsUsed) || 0;
+    const atkMax = Number(cb.attacksMax) || 1;
+    const atkUsed = Number(cb.attacksUsed) || 0;
+
+    if (kind === 'cast') {
+      if (actUsed >= actMax) {
+        toast('No actions left — cannot cast');
+        return false;
+      }
+      cb.actionsUsed = actUsed + 1;
+      cb.actionUsed = cb.actionsUsed >= actMax;
+      // Casting uses the Action: no weapon Attack action this turn
+      cb.attacksUsed = atkMax;
+      cb.lastAction = label || 'Cast';
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      return true;
+    }
+
+    if (kind === 'attack') {
+      // Continue Extra Attack series (action already paid this Attack action)
+      if (atkUsed > 0 && atkUsed < atkMax) {
+        cb.attacksUsed = atkUsed + 1;
+        try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+        return true;
+      }
+      // Need a free Action to start Attack (or new series after Action Surge)
+      if (actUsed >= actMax) {
+        toast('No actions left — cannot Attack (already cast or acted)');
+        return false;
+      }
+      cb.actionsUsed = actUsed + 1;
+      cb.actionUsed = cb.actionsUsed >= actMax;
+      cb.attacksUsed = 1;
+      cb.lastAction = label || 'Attack';
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      return true;
+    }
+
+    return false;
+  }
+
+function spendAction(cb, label) {
     if (!cb) return false;
     if (cb.actionsMax == null) cb.actionsMax = 1;
     if (cb.actionsUsed == null) cb.actionsUsed = 0;
@@ -3069,7 +3123,7 @@ function ensureCombatantTurnState(cb, ch) {
           <strong>Action</strong>
           ${badge(actLeft <= 0, actLeft <= 0 ? 'All used' : (actUsed > 0 ? actLeft + ' left' : 'Available'))}
         </div>
-        <p class="muted small">Actions this turn (base 1 + Haste / Action Surge). Cast, Attack, Dash… each spend 1 Action. Weapon Extra Attacks are separate below.</p>
+        <p class="muted small">Cast or Attack both spend your Action and lock the other. Weapon attacks also count Extra Attack swings within the Attack action.</p>
         <div class="action-menu" id="cd-action-menu">
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="attack" title="Use the Attack action">Attack</button>
           <button type="button" class="btn secondary btn-tiny act-opt" data-act="cast" title="Cast a 1-action spell (use Spellcasting panel)">Cast a spell</button>
@@ -3097,7 +3151,7 @@ function ensureCombatantTurnState(cb, ch) {
           ${cb.lastAction ? `<span class="muted small">Last: ${escapeHtml(cb.lastAction)}</span>` : ''}
         </div>
         <div class="turn-stage-sub">
-          <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(Extra Attack · within the Attack action)</span></div>
+          <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(also locked after Cast)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
@@ -8334,29 +8388,24 @@ function rollDieExpr(expr) {
       // Attack budget (Extra Attack)
       {
         const maxAtk = cb.attacksMax != null ? cb.attacksMax : 1;
-        // Attack action: first swing spends 1 Action; further swings use Extra Attack only.
-        // If Action was already spent (e.g. Cast a spell), block unless another Action remains.
-        const atkUsed = Number(cb.attacksUsed) || 0;
-        const actMax = Number(cb.actionsMax) || 1;
-        const actUsed = Number(cb.actionsUsed) || 0;
-        const actLeft = Math.max(0, actMax - actUsed);
-        if (atkUsed > 0 && atkUsed < maxAtk) {
-          // Continuing the Attack action already paid for
-          cb.attacksUsed = atkUsed + 1;
+        // Linked: Attack spends Action + weapon budget; blocked after Cast
+        if (typeof spendMainCombatAction === 'function') {
+          if (!spendMainCombatAction(cb, 'attack', 'Attack')) return;
         } else {
-          // Start a new Attack action (first swing, or new series after Action Surge / Haste)
-          if (actLeft <= 0) {
-            toast('No actions left — already used on ' + (cb.lastAction || 'another action (e.g. Cast)'));
+          const atkUsed = Number(cb.attacksUsed) || 0;
+          const actUsed = Number(cb.actionsUsed) || 0;
+          const actMax = Number(cb.actionsMax) || 1;
+          if (atkUsed > 0 && atkUsed < maxAtk) {
+            cb.attacksUsed = atkUsed + 1;
+          } else if (actUsed >= actMax) {
+            toast('No actions left — already used on ' + (cb.lastAction || 'Cast'));
             return;
-          }
-          if (typeof spendAction === 'function') {
-            if (!spendAction(cb, 'Attack')) return;
           } else {
             cb.actionsUsed = actUsed + 1;
-            cb.actionUsed = cb.actionsUsed >= actMax;
+            cb.actionUsed = true;
+            cb.attacksUsed = 1;
             cb.lastAction = 'Attack';
           }
-          cb.attacksUsed = 1; // new Attack action resets Extra Attack series
         }
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
@@ -8761,9 +8810,14 @@ function rollDieExpr(expr) {
           toast('No actions left — cannot spend slot as a new cast');
           return;
         }
-        cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
-        cb.actionUsed = true;
-        cb.lastAction = 'Cast (slot L' + L + ')';
+        if (typeof spendMainCombatAction === 'function') {
+          if (!spendMainCombatAction(cb, 'cast', 'Cast (slot L' + L + ')')) return;
+        } else {
+          cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+          cb.actionUsed = true;
+          cb.attacksUsed = Number(cb.attacksMax) || 1;
+          cb.lastAction = 'Cast (slot L' + L + ')';
+        }
       }
       s.used = (s.used || 0) + 1;
       const act = window.__activeCombatAction;
@@ -8890,10 +8944,15 @@ function rollDieExpr(expr) {
             toast('No actions left this turn');
             return;
           }
-          cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
-          cb.actionUsed = true;
-          cb.lastAction = 'Cast a spell';
-          toast('Action: Cast a spell — pick the spell and Cast / Spend Slot');
+          if (typeof spendMainCombatAction === 'function') {
+            if (!spendMainCombatAction(cb, 'cast', 'Cast a spell')) return;
+          } else {
+            cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+            cb.actionUsed = true;
+            cb.attacksUsed = Number(cb.attacksMax) || 1;
+            cb.lastAction = 'Cast a spell';
+          }
+          toast('Action+Attack budget: Cast a spell — pick spell and Cast / Spend Slot');
           try { appendSharedCombatLog((cb.name || 'Caster') + ' uses Action to Cast a spell', { names: [cb.name], ids: [cb.id] }); } catch (e) {}
         } else if (typeof spendAction === 'function') {
           if (!spendAction(cb, labels[act] || act)) return;
@@ -9237,21 +9296,30 @@ function rollDieExpr(expr) {
         } else {
           const alreadyPaid = (Number(cb.actionsUsed) || 0) > 0 && cb.lastAction && /^Cast/i.test(String(cb.lastAction));
           if (!alreadyPaid) {
-            if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
-              toast('No actions left this turn — cannot cast');
-              return false;
+            if (typeof spendMainCombatAction === 'function') {
+              if (!spendMainCombatAction(cb, 'cast', 'Cast ' + spellLabel)) return false;
+            } else {
+              if ((Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1)) {
+                toast('No actions left this turn — cannot cast');
+                return false;
+              }
+              cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+              cb.actionUsed = true;
+              cb.attacksUsed = Number(cb.attacksMax) || 1;
+              cb.lastAction = 'Cast ' + spellLabel;
             }
-            cb.actionsUsed = (Number(cb.actionsUsed) || 0) + 1;
+          } else {
+            cb.lastAction = 'Cast ' + spellLabel;
+            // Ensure weapon attacks stay locked after cast
+            cb.attacksUsed = Number(cb.attacksMax) || 1;
+            cb.actionUsed = true;
           }
-          // Always pin action as used after an action-cast
-          cb.actionUsed = true;
-          if ((Number(cb.actionsUsed) || 0) < 1) cb.actionsUsed = 1;
-          cb.lastAction = 'Cast ' + spellLabel;
           try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
           const left = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
-          toast('Cast ' + spellLabel + ' · ' + left + ' action(s) left');
+          const atkLeft = Math.max(0, (Number(cb.attacksMax) || 1) - (Number(cb.attacksUsed) || 0));
+          toast('Cast ' + spellLabel + ' · Actions ' + left + ' · Weapon attacks ' + atkLeft);
           try {
-            appendSharedCombatLog((cb.name || 'Caster') + ' casts ' + spellLabel + ' (Action · ' + left + ' left)', { names: [cb.name], ids: [cb.id] });
+            appendSharedCombatLog((cb.name || 'Caster') + ' casts ' + spellLabel + ' (Action+Attack budget)', { names: [cb.name], ids: [cb.id] });
           } catch (e) {}
         }
         if (sp && sp.level > 0) {
@@ -13327,6 +13395,22 @@ function escapeHtml(str) {
       map.ruler = null;
       try { save(); } catch (err) {}
       renderBattleMap();
+    if (!window.__mapMeasureEscBound) {
+      window.__mapMeasureEscBound = true;
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Escape') return;
+        try {
+          const map = getCombatMap();
+          if (!map) return;
+          if (!map.ruler && !map.aoe) return;
+          map.ruler = null;
+          map.aoe = null;
+          window.__rulerDrag = false;
+          try { save(); } catch (e) {}
+          renderBattleMap();
+        } catch (e) {}
+      });
+    }
       toast('AoE / ruler cleared');
     });
     document.getElementById('map-apply-aoe-targets')?.addEventListener('click', () => {
