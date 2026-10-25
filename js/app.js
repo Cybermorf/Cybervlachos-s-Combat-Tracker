@@ -12579,6 +12579,7 @@ function escapeHtml(str) {
         reason: reason || 'token-move',
         at: at,
         clientId: window.__vttClientId || null,
+        from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
         tokens: JSON.parse(JSON.stringify(c.combatMap.tokens || {})),
         fogEnabled: !!c.combatMap.fogEnabled,
         fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
@@ -12609,17 +12610,20 @@ function escapeHtml(str) {
   }
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
-    // Players never drag tokens — always accept DM updates
-    if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-      window.__tokenDragActive = false;
-    }
-    // Never clobber an in-progress local drag (DM)
-    if (window.__tokenDragActive && !(typeof isPlayerRole === 'function' && isPlayerRole())) return;
-    const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
+    // Ignore our own echo
+    if (msg.clientId && window.__vttClientId && msg.clientId === window.__vttClientId) return;
+    // While DM is dragging, still accept remote player updates for other tokens
+    const localDragId = window.__tokenDragActive ? window.__mapDragId : null;
+    // Keep local drag position while merging remote tokens
+    let room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
     const msgRoom = msg.room || '';
+    if (!room && msgRoom) {
+      try { sessionStorage.setItem('vtt_room', String(msgRoom).toUpperCase()); } catch (e) {}
+      room = String(msgRoom).toUpperCase();
+    }
     // Only filter when BOTH sides have a room code and they differ
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
-    // Ignore our own echo
+    // Ignore exact echo of our last send
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
     // Don't skip forever if drag flag stuck
     if (window.__tokenDragActive && window.__tokenDragStartedAt && Date.now() - window.__tokenDragStartedAt > 3000) {
@@ -12629,13 +12633,25 @@ function escapeHtml(str) {
       const map = getCombatMap();
       if (!map) return;
       if (msg.type === 'vtt-tokens' && msg.tokens) {
-        map.tokens = msg.tokens;
-        if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
-        if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
+        map.tokens = map.tokens || {};
+        Object.keys(msg.tokens).forEach(k => {
+          if (localDragId && String(k) === String(localDragId)) return;
+          map.tokens[k] = msg.tokens[k];
+        });
+        if (msg.fogRevealed && msg.from !== 'player') map.fogRevealed = msg.fogRevealed;
+        if (msg.fogEnabled != null && msg.from !== 'player') map.fogEnabled = msg.fogEnabled;
+        try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         try { renderMapRoster(); } catch (e) {}
+        if (msg.from === 'player' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          try { save(); } catch (e) {}
+        }
       } else if (msg.type === 'vtt-state' && msg.map && msg.map.tokens) {
-        map.tokens = msg.map.tokens;
+        map.tokens = map.tokens || {};
+        Object.keys(msg.map.tokens).forEach(k => {
+          if (localDragId && String(k) === String(localDragId)) return;
+          map.tokens[k] = msg.map.tokens[k];
+        });
         if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
         if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
@@ -12820,6 +12836,25 @@ function escapeHtml(str) {
   }
 
   
+  
+  function startDmTokenPoll() {
+    if (window.__dmTokenPoll) return;
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+    window.__dmTokenPoll = setInterval(() => {
+      try {
+        const raw = localStorage.getItem('cybervlachos_vtt_tokens');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (!msg || msg.type !== 'vtt-tokens' || !msg.tokens) return;
+        if (msg.from !== 'player') return;
+        if (msg.at && msg.at === window.__lastDmTokenApplied) return;
+        if (msg.clientId && msg.clientId === window.__vttClientId) return;
+        window.__lastDmTokenApplied = msg.at;
+        applyTokenMessage(msg);
+      } catch (e) {}
+    }, 200);
+  }
+
   function startPlayerTokenPoll() {
     if (window.__playerTokenPoll) return;
     if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
@@ -12840,6 +12875,7 @@ function escapeHtml(str) {
     if (window.__vttSyncBound) return;
     window.__vttSyncBound = true;
     try { startPlayerTokenPoll(); } catch (e) {}
+    try { startDmTokenPoll(); } catch (e) {}
     if (!window.__vttClientId) {
       window.__vttClientId = 'c' + Math.random().toString(36).slice(2, 10);
     }
@@ -14255,7 +14291,11 @@ function bindMapCanvasInteractions(force) {
       if (!(typeof isPlayerRole === 'function' && isPlayerRole())) return true;
       try {
         const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
-        return !!(claimed && String(claimed.id) === String(id));
+        if (!claimed) return false;
+        const cid = String(claimed.id != null ? claimed.id : '');
+        const cname = String(claimed.name || '');
+        const tid = String(id || '');
+        return tid === cid || tid === cname || tid === String(claimed.sourceId || '') || tid === String(claimed.charId || '');
       } catch (e) { return false; }
     };
 
@@ -14416,9 +14456,12 @@ function bindMapCanvasInteractions(force) {
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 50) {
         window.__lastTokenDragBc = now;
         try {
-          if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
-            save();
-            if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('drag');
+          try { save(); } catch (e2) {}
+          // DM and player (claimed token) both broadcast so popups stay in sync both ways
+          if (typeof broadcastTokenPositions === 'function') {
+            broadcastTokenPositions(
+              (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-drag' : 'drag'
+            );
           }
         } catch (e) {}
       }
