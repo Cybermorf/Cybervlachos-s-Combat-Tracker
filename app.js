@@ -12751,8 +12751,30 @@ function escapeHtml(str) {
       const showHp = !cb.hideHp && !(playerMode && isEnemy);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = fill;
-      ctx.fill();
+      const tokImg = (typeof getTokenImageForCombatant === 'function') ? getTokenImageForCombatant(cb) : null;
+      if (tokImg && tokImg.complete && tokImg.naturalWidth) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.clip();
+        // cover circle
+        const iw = tokImg.naturalWidth, ih = tokImg.naturalHeight;
+        const side = Math.max(iw, ih);
+        const dw = r * 2 * (iw / side) * (side / iw);
+        // draw image centered covering the circle
+        const size = r * 2;
+        ctx.drawImage(tokImg, x - size / 2, y - size / 2, size, size);
+        ctx.restore();
+        // subtle tint edge for side identity
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.strokeStyle = fill.replace('0.9', '0.95');
+        ctx.lineWidth = 3;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
       if (showHp && hp > 0) {
         ctx.beginPath();
         ctx.strokeStyle = ratio > 0.5 ? '#5dba6a' : (ratio > 0.25 ? '#d4a017' : '#c44');
@@ -12765,30 +12787,31 @@ function escapeHtml(str) {
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.stroke();
-      // Readable label plate (works on video + busy maps)
+      // Name plate only (HP is on the ring — keep plate uncluttered)
       const label = (playerMode && isEnemy)
-        ? (cb.hideName ? 'Creature' : (cb.name || 'Enemy').slice(0, 14))
-        : (cb.name || '?').slice(0, 14);
-      ctx.font = 'bold 12px system-ui,sans-serif';
+        ? (cb.hideName ? 'Creature' : (cb.name || 'Enemy').slice(0, 16))
+        : (cb.name || '?').slice(0, 16);
+      ctx.font = '600 11px system-ui,Segoe UI,sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      let hpBit = '';
-      if (showHp) hpBit = ' ' + hp + '/' + hpMax;
-      const fullLabel = label + hpBit;
-      ctx.font = 'bold 13px system-ui,Segoe UI,sans-serif';
-      const lw = Math.min(150, Math.max(40, ctx.measureText(fullLabel).width + 12));
-      const lh = 18;
+      const lw = Math.min(110, Math.max(28, ctx.measureText(label).width + 10));
+      const lh = 14;
       const lx = x - lw / 2;
-      const ly = y + r + 5;
-      ctx.fillStyle = 'rgba(6,4,2,0.9)';
-      ctx.strokeStyle = isEnemy ? 'rgba(220,90,90,0.95)' : 'rgba(212,175,95,0.95)';
-      ctx.lineWidth = 1.5;
+      const ly = y + r + 3;
+      ctx.fillStyle = 'rgba(6,4,2,0.78)';
+      ctx.strokeStyle = isEnemy ? 'rgba(200,80,80,0.75)' : 'rgba(196,163,90,0.7)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(lx, ly, lw, lh, 4);
+      if (ctx.roundRect) ctx.roundRect(lx, ly, lw, lh, 3);
       else ctx.rect(lx, ly, lw, lh);
       ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#f5f0e6';
-      ctx.fillText(fullLabel, x, ly + 2);
+      ctx.fillStyle = '#efe6d6';
+      ctx.fillText(label, x, ly + 1);
+      if (cb.concentrating) {
+        ctx.font = '600 9px system-ui,sans-serif';
+        ctx.fillStyle = '#9ec9ff';
+        ctx.fillText('Conc', x, ly + lh + 1);
+      }
       // Conditions under name
       let condStr = '';
       try {
@@ -13393,7 +13416,35 @@ function escapeHtml(str) {
       }
     } catch (e) {}
 
-    document.getElementById('map-clear-aoe')?.addEventListener('click', () => {
+    document.
+    document.getElementById('map-file-token')?.addEventListener('change', async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      ev.target.value = '';
+      if (!file) return;
+      try {
+        const c = getActive();
+        const combat = c ? getCombat(c) : null;
+        let cb = null;
+        if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+        if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
+        if (!cb) { toast('Select a combatant first'); return; }
+        await setTokenImageFromFile(file, cb);
+      } catch (e) {
+        console.error(e);
+        toast('Token import failed');
+      }
+    });
+    document.getElementById('map-token-clear-btn')?.addEventListener('click', () => {
+      try {
+        const c = getActive();
+        const combat = c ? getCombat(c) : null;
+        let cb = null;
+        if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+        if (!cb) { toast('Select a combatant first'); return; }
+        clearTokenImage(cb);
+      } catch (e) {}
+    });
+getElementById('map-clear-aoe')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
       map.aoe = null;
@@ -13552,7 +13603,60 @@ function escapeHtml(str) {
     }
 
     
-  function paintMapFrame() {
+  
+  const __tokenImgCache = {};
+  function getTokenImageForCombatant(cb) {
+    if (!cb) return null;
+    const src = cb.tokenImage || cb.tokenImg || cb.avatar || cb.portrait || '';
+    if (!src || typeof src !== 'string') return null;
+    if (__tokenImgCache[src] === false) return null;
+    if (__tokenImgCache[src] && __tokenImgCache[src].complete) return __tokenImgCache[src];
+    if (!__tokenImgCache[src]) {
+      const img = new Image();
+      img.onload = () => { try { renderBattleMap(); } catch (e) {} };
+      img.onerror = () => { __tokenImgCache[src] = false; };
+      img.src = src;
+      __tokenImgCache[src] = img;
+    }
+    return __tokenImgCache[src].complete ? __tokenImgCache[src] : null;
+  }
+
+  async function setTokenImageFromFile(file, cb) {
+    if (!file || !cb) return;
+    if (!/^image\//i.test(file.type || '')) {
+      toast('Choose an image file (png, jpg, webp, …)');
+      return;
+    }
+    // Prefer object URL + dataURL for persistence
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    // Mild size guard (~1.5MB data URL)
+    if (String(dataUrl).length > 1.8e6) {
+      toast('Image too large — try a smaller token (under ~1MB)');
+      return;
+    }
+    cb.tokenImage = dataUrl;
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try { save(); } catch (e) {}
+    try { renderBattleMap(); } catch (e) {}
+    try { renderCombat(); } catch (e) {}
+    toast('Token image set for ' + (cb.name || 'combatant'));
+  }
+
+  function clearTokenImage(cb) {
+    if (!cb) return;
+    delete cb.tokenImage;
+    delete cb.tokenImg;
+    try { save(); } catch (e) {}
+    try { renderBattleMap(); } catch (e) {}
+    toast('Token image cleared');
+  }
+
+function paintMapFrame() {
     try {
       const map = getCombatMap();
       const canvas = document.getElementById('map-canvas');
