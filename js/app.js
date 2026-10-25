@@ -8145,8 +8145,35 @@ function rollDieExpr(expr) {
     return el;
   }
 
+  function broadcastPopupDiceAnimation(html) {
+    try {
+      const payload = {
+        type: 'vtt-dice-anim',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
+        html: String(html || ''),
+        at: Date.now(),
+        clientId: window.__vttClientId || null
+      };
+      try { localStorage.setItem('cybervlachos_vtt_dice', JSON.stringify(payload)); } catch (e) {}
+      try {
+        const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        if (ch) ch.postMessage(payload);
+      } catch (e) {}
+      try {
+        if (window.__mapBc) window.__mapBc.postMessage(payload);
+      } catch (e) {}
+    } catch (e) {}
+  }
+
   function playPopupDiceAnimation(html, opts) {
-    if (!isPopupDiceClient()) return Promise.resolve();
+    opts = opts || {};
+    const rawHtml = String(html || '');
+    // Always allow DM mapPopout + player; optional force for synced playback
+    if (!opts.force && !isPopupDiceClient()) return Promise.resolve();
+    // Sync to other popups (DM mapPopout sees player rolls and vice versa)
+    if (!opts.noBroadcast) {
+      try { broadcastPopupDiceAnimation(rawHtml); } catch (e) {}
+    }
     try {
       const overlay = ensurePopupDiceOverlay();
       const row = document.getElementById('popup-dice-row');
@@ -8165,10 +8192,13 @@ function rollDieExpr(expr) {
       });
       if (res) {
         res.innerHTML = '';
-        // plain text summary for reveal
         const tmp = document.createElement('div');
         tmp.innerHTML = html || '';
-        res.textContent = (tmp.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+        let plain = (tmp.innerText || '').replace(/\s+/g, ' ').trim();
+        // Never show unresolved AC placeholders in the animation banner
+        plain = plain.replace(/\s*vs\s*AC\s*\?+\s*/gi, ' ').replace(/\s*vs\s*AC\s*$/i, '');
+        plain = plain.replace(/set Target AC to resolve hit/gi, '').replace(/\s+/g, ' ').trim();
+        res.textContent = plain.slice(0, 160);
       }
       if (label) label.textContent = 'Rolling…';
       overlay.classList.add('is-on', 'is-rolling');
@@ -8653,12 +8683,24 @@ function rollDieExpr(expr) {
         appendLog(`${atkName}: save ${total} vs DC ${dc} ${ok?'OK':'FAIL'}`);
         return;
       }
-      // Attack budget (Extra Attack)
+      // Attack budget (Extra Attack) — enforce before any dice
       {
         const maxAtk = cb.attacksMax != null ? cb.attacksMax : 1;
-        // Linked: Attack spends Action + weapon budget; blocked after Cast
+        const actLeft = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
+        const atkUsed0 = Number(cb.attacksUsed) || 0;
+        const canContinueAtk = atkUsed0 > 0 && atkUsed0 < maxAtk;
+        if (!canContinueAtk && actLeft <= 0) {
+          toast('No actions left — cannot Attack');
+          const rollBtn = panel.querySelector('#cr-roll-btn');
+          if (rollBtn) { rollBtn.disabled = true; rollBtn.title = 'No actions left this turn'; }
+          return;
+        }
         if (typeof spendMainCombatAction === 'function') {
-          if (!spendMainCombatAction(cb, 'attack', 'Attack')) return;
+          if (!spendMainCombatAction(cb, 'attack', 'Attack')) {
+            const rollBtn = panel.querySelector('#cr-roll-btn');
+            if (rollBtn) { rollBtn.disabled = true; rollBtn.title = 'No actions left this turn'; }
+            return;
+          }
         } else {
           const atkUsed = Number(cb.attacksUsed) || 0;
           const actUsed = Number(cb.actionsUsed) || 0;
@@ -8728,16 +8770,38 @@ function rollDieExpr(expr) {
         dmgBonus: parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || 0
       };
       setDamageRollEnabled(panel, hits, hits ? '' : 'Attack missed AC');
-      appendLog(`${atkName}: ${res.formula}${hits ? ' HIT' : ' MISS'} vs AC ${isNaN(acVal) ? '?' : acVal}`);
+      appendLog(`${atkName}: ${res.formula}` + (isNaN(acVal) ? '' : ((hits ? ' HIT' : ' MISS') + ' vs AC ' + acVal)));
       try {
-        appendSharedCombatLog((cb.name || 'Attacker') + ' · ' + atkName + ': ' + res.formula + (hits ? ' HIT' : ' MISS') + ' vs AC ' + (isNaN(acVal) ? '?' : acVal), { names: [cb.name], ids: [cb.id] });
+        appendSharedCombatLog((cb.name || 'Attacker') + ' · ' + atkName + ': ' + res.formula + (isNaN(acVal) ? '' : ((hits ? ' HIT' : ' MISS') + ' vs AC ' + acVal)), { names: [cb.name], ids: [cb.id] });
       } catch (e) {}
       try {
         if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-          toast(atkName + ': ' + res.formula + (hits ? ' HIT' : ' MISS') + (isNaN(acVal) ? '' : ' vs AC ' + acVal));
+          toast(atkName + ': ' + res.formula + (isNaN(acVal) ? '' : ((hits ? ' HIT' : ' MISS') + ' vs AC ' + acVal)));
         }
       } catch (e) {}
-      try { save(); renderCombat(); } catch (e) {}
+      // Refresh action economy UI (critical on player popup)
+      try {
+        if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb);
+        save();
+        if (typeof broadcastVttState === 'function') broadcastVttState('economy');
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+          renderPlayerCombatPanel();
+        } else {
+          renderCombat();
+        }
+      } catch (e) { try { renderCombat(); } catch (e2) {} }
+      // Hard-disable Roll Attack if no budget left
+      try {
+        const actLeft = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
+        const atkLeft = Math.max(0, (Number(cb.attacksMax) || 1) - (Number(cb.attacksUsed) || 0));
+        const rollBtn = panel.querySelector('#cr-roll-btn');
+        if (rollBtn && actLeft <= 0 && atkLeft <= 0) {
+          rollBtn.disabled = true;
+          rollBtn.title = 'No actions / attacks left this turn';
+        } else if (rollBtn && atkLeft <= 0 && actLeft <= 0) {
+          rollBtn.disabled = true;
+        }
+      } catch (e) {}
     });
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
       const last = window.__lastCombatRoll || {};
@@ -12601,6 +12665,14 @@ function escapeHtml(str) {
           const msg = JSON.parse(ev.newValue);
           if (msg && msg.type === 'vtt-tokens') applyTokenMessage(msg);
         }
+        if (ev.key === 'cybervlachos_vtt_dice' && ev.newValue) {
+          const msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-dice-anim' && msg.html) {
+            if (!(msg.clientId && msg.clientId === window.__vttClientId) && isPopupDiceClient()) {
+              playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true });
+            }
+          }
+        }
       } catch (e) {}
     });
 
@@ -12613,6 +12685,15 @@ function escapeHtml(str) {
           // Ignore our own echoes
           if (msg.clientId && msg.clientId === window.__vttClientId) return;
 
+          if (msg.type === 'vtt-dice-anim' && msg.html) {
+            if (msg.clientId && msg.clientId === window.__vttClientId) return;
+            try {
+              if (isPopupDiceClient()) {
+                playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true });
+              }
+            } catch (e) {}
+            return;
+          }
           if (msg.type === 'vtt-tokens') {
             applyTokenMessage(msg);
             return;
