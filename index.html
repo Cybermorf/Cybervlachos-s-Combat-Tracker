@@ -67,7 +67,7 @@
   <meta name="theme-color" content="#0c0a09" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Cybervlachos's Combat Tracker</title>
+  <title>Cybervlachos's Combat Tracker <span class="app-version" id="app-version">v1.4.0</span></title>
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀</text></svg>" />
   <link rel="stylesheet" href="css/styles.css" />
@@ -212,6 +212,9 @@
           <div class="combat-meta">
             <span class="stat-pill">Round <strong id="combat-round">1</strong></span>
             <span class="stat-pill" id="combat-turn-label">—</span>
+          </div>
+          <div id="combat-turn-banner" class="combat-turn-banner" hidden></div>
+          <div class="stat-pills" style="display:none">
           </div>
           <div class="tool-btns">
             <button id="combat-add-party-btn" class="btn secondary">+ From Party</button>

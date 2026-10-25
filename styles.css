@@ -3835,3 +3835,28 @@ body.vtt-player #player-roll-result.is-active {
   top: 0;
   z-index: 5;
 }
+
+
+/* Active turn banner */
+.combat-turn-banner {
+  display: block;
+  margin: 0.35rem 0 0.5rem;
+  padding: 0.45rem 0.75rem;
+  background: linear-gradient(90deg, rgba(40,28,12,0.95), rgba(24,18,10,0.9));
+  border: 1px solid #c4a35a88;
+  border-radius: 8px;
+  color: #f0e6d0;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.01em;
+}
+.combat-turn-banner.is-enemy {
+  border-color: #c44a4a88;
+  background: linear-gradient(90deg, rgba(40,12,12,0.95), rgba(24,10,10,0.9));
+}
+.combat-turn-banner[hidden] { display: none !important; }
+.app-version {
+  font-size: 0.75rem;
+  color: #a09080;
+  margin-left: 0.5rem;
+}

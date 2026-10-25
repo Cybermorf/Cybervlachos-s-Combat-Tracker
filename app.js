@@ -12772,18 +12772,23 @@ function escapeHtml(str) {
       ctx.font = 'bold 12px system-ui,sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const lw = Math.min(120, Math.max(36, ctx.measureText(label).width + 10));
+      let hpBit = '';
+      if (showHp) hpBit = ' ' + hp + '/' + hpMax;
+      const fullLabel = label + hpBit;
+      ctx.font = 'bold 13px system-ui,Segoe UI,sans-serif';
+      const lw = Math.min(150, Math.max(40, ctx.measureText(fullLabel).width + 12));
+      const lh = 18;
       const lx = x - lw / 2;
-      const ly = y + r + 4;
-      ctx.fillStyle = 'rgba(8,6,4,0.82)';
-      ctx.strokeStyle = isEnemy ? 'rgba(200,80,80,0.9)' : 'rgba(196,163,90,0.85)';
-      ctx.lineWidth = 1;
+      const ly = y + r + 5;
+      ctx.fillStyle = 'rgba(6,4,2,0.9)';
+      ctx.strokeStyle = isEnemy ? 'rgba(220,90,90,0.95)' : 'rgba(212,175,95,0.95)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      if (ctx.roundRect) ctx.roundRect(lx, ly, lw, 16, 4);
-      else ctx.rect(lx, ly, lw, 16);
+      if (ctx.roundRect) ctx.roundRect(lx, ly, lw, lh, 4);
+      else ctx.rect(lx, ly, lw, lh);
       ctx.fill(); ctx.stroke();
-      ctx.fillStyle = '#f5ecd7';
-      ctx.fillText(label, x, ly + 2);
+      ctx.fillStyle = '#f5f0e6';
+      ctx.fillText(fullLabel, x, ly + 2);
       // Conditions under name
       let condStr = '';
       try {
@@ -13844,7 +13849,8 @@ const canvas = document.getElementById('map-canvas');
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    try { const ve = document.getElementById('app-version'); if (ve && typeof APP_VERSION !== 'undefined') ve.textContent = 'v' + APP_VERSION; } catch (e) {}
+  document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
