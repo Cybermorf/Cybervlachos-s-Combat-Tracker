@@ -2346,6 +2346,71 @@
    * After a Cast, weapon attacks are exhausted for the turn so you cannot also Attack.
    * After an Attack action starts, Actions is spent so you cannot also Cast (unless Haste/Surge).
    */
+  
+  function combatRoundKey() {
+    try {
+      const combat = getCombat(getActive());
+      return String((combat && (combat.round != null ? combat.round : combat.turnIndex)) || 0);
+    } catch (e) { return '0'; }
+  }
+  function attackLockKey(cb) {
+    const id = String(cb && (cb.id != null ? cb.id : cb.name) || '');
+    return id + '@' + combatRoundKey();
+  }
+  function sessionAttackKey(cb) {
+    return 'cyber_atk_' + attackLockKey(cb);
+  }
+  function getSessionAttacksUsed(cb) {
+    try { return Number(sessionStorage.getItem(sessionAttackKey(cb)) || 0) || 0; } catch (e) { return 0; }
+  }
+  function bumpSessionAttacksUsed(cb) {
+    const n = getSessionAttacksUsed(cb) + 1;
+    try { sessionStorage.setItem(sessionAttackKey(cb), String(n)); } catch (e) {}
+    return n;
+  }
+  function clearSessionAttacksUsed(cb) {
+    try { sessionStorage.removeItem(sessionAttackKey(cb)); } catch (e) {}
+  }
+  function remainingWeaponAttacks(cb) {
+    if (!cb) return 0;
+    try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
+    const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
+    const atkUsed = Math.max(Number(cb.attacksUsed) || 0, getSessionAttacksUsed(cb));
+    cb.attacksUsed = atkUsed;
+    const actMax = Math.max(1, Number(cb.actionsMax) || 1);
+    let actUsed = Number(cb.actionsUsed) || 0;
+    if (atkUsed > 0 && actUsed < 1) {
+      actUsed = 1;
+      cb.actionsUsed = Math.max(actUsed, Number(cb.actionsUsed) || 0);
+    }
+    if (atkUsed > 0 && atkUsed < atkMax) return atkMax - atkUsed;
+    if (actUsed >= actMax && atkUsed >= atkMax) return 0;
+    if (actUsed >= actMax && atkUsed > 0) return Math.max(0, atkMax - atkUsed);
+    if (actUsed >= actMax) return 0;
+    return Math.max(0, atkMax - atkUsed);
+  }
+  function canRollWeaponAttack(cb) {
+    return remainingWeaponAttacks(cb) > 0;
+  }
+  function applyRollAttackButtonState(panel, cb) {
+    if (!panel || !cb) return;
+    const btn = panel.querySelector('#cr-roll-btn');
+    if (!btn) return;
+    const left = remainingWeaponAttacks(cb);
+    if (left <= 0) {
+      btn.disabled = true;
+      btn.setAttribute('disabled', 'disabled');
+      btn.title = 'No weapon attacks left this turn';
+      btn.classList.add('is-budget-locked');
+    } else {
+      btn.disabled = false;
+      btn.removeAttribute('disabled');
+      btn.title = left + ' attack(s) left this turn';
+      btn.classList.remove('is-budget-locked');
+    }
+  }
+
+
   function spendMainCombatAction(cb, kind, label) {
     if (!cb) return false;
     if (cb.actionsMax == null || !(Number(cb.actionsMax) > 0)) cb.actionsMax = 1;
@@ -2387,7 +2452,9 @@
       cb.actionUsed = cb.actionsUsed >= actMax;
       cb.attacksUsed = 1;
       cb.lastAction = label || 'Attack';
+      try { bumpSessionAttacksUsed(cb); } catch (e) {}
       try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try { save(); } catch (e) {}
       return true;
     }
 
@@ -2922,6 +2989,11 @@ function ensureCombatantTurnState(cb, ch) {
       const rollBtn = panel.querySelector('#cr-roll-btn');
       if (rollBtn && allowMain && !canContinueAtk && actLeft2 <= 0) {
         setDisabled(rollBtn, true, 'No actions left for Attack (already cast or acted)');
+      }
+      try { applyRollAttackButtonState(panel, cb); } catch (e) {}
+      // Player: even if allowMain, respect hard budget
+      if (rollBtn && typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
+        setDisabled(rollBtn, true, 'No weapon attacks left this turn');
       }
       const castBtn = panel.querySelector('#cr-spell-cast');
       if (castBtn && allowMain && actLeft2 <= 0) {
@@ -8683,22 +8755,17 @@ function rollDieExpr(expr) {
         appendLog(`${atkName}: save ${total} vs DC ${dc} ${ok?'OK':'FAIL'}`);
         return;
       }
-      // Attack budget (Extra Attack) — enforce before any dice
+      // Attack budget — hard gate before any dice
       {
-        const maxAtk = cb.attacksMax != null ? cb.attacksMax : 1;
-        const actLeft = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
-        const atkUsed0 = Number(cb.attacksUsed) || 0;
-        const canContinueAtk = atkUsed0 > 0 && atkUsed0 < maxAtk;
-        if (!canContinueAtk && actLeft <= 0) {
-          toast('No actions left — cannot Attack');
-          const rollBtn = panel.querySelector('#cr-roll-btn');
-          if (rollBtn) { rollBtn.disabled = true; rollBtn.title = 'No actions left this turn'; }
+        try { restoreTurnEconomy(cb); } catch (e) {}
+        if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
+          toast('No weapon attacks left this turn');
+          try { applyRollAttackButtonState(panel, cb); } catch (e) {}
           return;
         }
         if (typeof spendMainCombatAction === 'function') {
           if (!spendMainCombatAction(cb, 'attack', 'Attack')) {
-            const rollBtn = panel.querySelector('#cr-roll-btn');
-            if (rollBtn) { rollBtn.disabled = true; rollBtn.title = 'No actions left this turn'; }
+            try { applyRollAttackButtonState(panel, cb); } catch (e) {}
             return;
           }
         } else {
@@ -13060,11 +13127,13 @@ function escapeHtml(str) {
     } catch (e) {}
 
     // Auto-activate turn for claimed PC so Action/Cast/Roll are not locked behind "Start turn"
+    // Do NOT reset attacksUsed/actionsUsed — only mark phase active and restore saved economy
     try {
       if (!me.turnPhase || me.turnPhase === 'ready' || me.turnPhase === 'pending') {
         me.turnPhase = 'active';
-        if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(me, null);
       }
+      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(me, null);
+      if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(me);
     } catch (e) {}
     // Full combat detail + attack/spell roller (same as DM panel)
     try {
@@ -13077,6 +13146,7 @@ function escapeHtml(str) {
       console.error(e);
       body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
     }
+    try { applyRollAttackButtonState(body, me); } catch (e) {}
     try { restorePlayerRollResult(me); } catch (e) {}
   }
 
