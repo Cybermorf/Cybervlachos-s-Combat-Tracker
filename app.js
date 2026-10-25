@@ -13283,11 +13283,8 @@ function escapeHtml(str) {
   function initBattleMapUi() {
     // Always ensure workspace exists
     try { ensureCombatWorkspace(); } catch (e) {}
-    if (window.__mapUiReady) {
-      refreshMapTokenSelect();
-      return;
-    }
-    window.__mapUiReady = true;
+    // Always refresh token dropdown; controls/canvas bind only once each
+    try { refreshMapTokenSelect(); } catch (e) {}
 
     function triggerImageImport() {
       const inp = document.getElementById('map-file-image');
@@ -13301,6 +13298,8 @@ function escapeHtml(str) {
     }
 
     // Labels use for="map-file-*" — native open. Also allow programmatic click.
+    if (!window.__mapUiControlsBound) {
+    window.__mapUiControlsBound = true;
     document.getElementById('map-import-image-btn')?.addEventListener('click', (e) => {
       if (e.target && e.target.tagName === 'LABEL') return; // native for=
       triggerImageImport();
@@ -13432,34 +13431,51 @@ function escapeHtml(str) {
       }
     } catch (e) {}
 
-    document.
-    document.getElementById('map-file-token')?.addEventListener('change', async (ev) => {
-      const file = ev.target.files && ev.target.files[0];
-      ev.target.value = '';
-      if (!file) return;
-      try {
-        const c = getActive();
-        const combat = c ? getCombat(c) : null;
-        let cb = null;
-        if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
-        if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
-        if (!cb) { toast('Select a combatant first'); return; }
-        await setTokenImageFromFile(file, cb);
-      } catch (e) {
-        console.error(e);
-        toast('Token import failed');
-      }
-    });
-    document.getElementById('map-token-clear-btn')?.addEventListener('click', () => {
-      try {
-        const c = getActive();
-        const combat = c ? getCombat(c) : null;
-        let cb = null;
-        if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
-        if (!cb) { toast('Select a combatant first'); return; }
-        clearTokenImage(cb);
-      } catch (e) {}
-    });
+    (function bindTokenImageInput() {
+      const inp = document.getElementById('map-file-token');
+      if (!inp || inp.dataset.bound === '1') return;
+      inp.dataset.bound = '1';
+      inp.addEventListener('change', async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (!file) return;
+        try {
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          let cb = null;
+          if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+          if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
+          // Also try map token select
+          if (!cb) {
+            const sel = document.getElementById('map-token-combatant');
+            if (sel && sel.value && combat) {
+              cb = (combat.combatants || []).find(x => String(x.id) === String(sel.value));
+            }
+          }
+          if (!cb) { toast('Select a combatant in the list first'); return; }
+          await setTokenImageFromFile(file, cb);
+        } catch (e) {
+          console.error(e);
+          toast('Token import failed: ' + (e && e.message ? e.message : e));
+        }
+      });
+    })();
+    (function bindTokenClear() {
+      const btn = document.getElementById('map-token-clear-btn');
+      if (!btn || btn.dataset.bound === '1') return;
+      btn.dataset.bound = '1';
+      btn.addEventListener('click', () => {
+        try {
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          let cb = null;
+          if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+          if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
+          if (!cb) { toast('Select a combatant first'); return; }
+          clearTokenImage(cb);
+        } catch (e) { console.error(e); }
+      });
+    })();
 getElementById('map-clear-aoe')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map) return;
@@ -13765,11 +13781,25 @@ function paintMapFrame() {
     }
   }
 
-const canvas = document.getElementById('map-canvas');
+// end one-time control wiring
+    }
+
+    let canvas = document.getElementById('map-canvas');
+    // Recover from older builds that set mapBound before listeners attached
+    if (canvas && canvas.dataset.mapBound && canvas.dataset.tokenDrag !== '1') {
+      try {
+        const clone = canvas.cloneNode(false);
+        // keep dimensions
+        clone.width = canvas.width;
+        clone.height = canvas.height;
+        canvas.parentNode.replaceChild(clone, canvas);
+        canvas = clone;
+      } catch (e) {
+        delete canvas.dataset.mapBound;
+      }
+    }
     if (canvas && !canvas.dataset.mapBound) {
-      canvas.dataset.mapBound = '1';
-      // mark for debugging
-      canvas.dataset.tokenDrag = '1';
+      // NOTE: set mapBound only AFTER listeners attach (see end of block)
   // Clear sticky fog brush when user switches to token/pan/aoe tools
   document.addEventListener('change', (ev) => {
     if (ev.target && ev.target.id === 'map-tool') {
@@ -13781,7 +13811,7 @@ const canvas = document.getElementById('map-canvas');
     }
   });
 
-      let dragId = null;
+      window.__mapDragId = null;
       canvas.addEventListener('pointerdown', (ev) => {
         if (ev.button !== 0) return;
         const map = getCombatMap();
@@ -13847,18 +13877,18 @@ const canvas = document.getElementById('map-canvas');
                 if (claimed && String(claimed.id) === String(found)) allowed = true;
               } catch (e) {}
               if (!allowed) {
-                dragId = null;
+                window.__mapDragId = null;
                 toast('Selected ' + (listNameForToken(found) || found));
                 return;
               }
             }
             // Hold Alt for select-only without move
             if (ev.altKey || (tool === 'pan' && ev.shiftKey)) {
-              dragId = null;
+              window.__mapDragId = null;
               toast('Selected ' + (listNameForToken(found) || found));
               return;
             }
-            dragId = found;
+            window.__mapDragId = found;
             window.__tokenDragActive = true;
             try {
               if (ev.pointerId != null) canvas.setPointerCapture(ev.pointerId);
@@ -13930,9 +13960,9 @@ const canvas = document.getElementById('map-canvas');
           redrawMapLive();
           return;
         }
-        if (!dragId) return;
+        if (!window.__mapDragId) return;
         // Update position every move (video maps need immediate paintMapFrame)
-        map.tokens[dragId] = snapWorldToGrid(map, x, y);
+        map.tokens[window.__mapDragId] = snapWorldToGrid(map, x, y);
         const now = Date.now();
         if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
           window.__lastTokenDragBc = now;
@@ -14008,7 +14038,7 @@ const canvas = document.getElementById('map-canvas');
           } catch (err) {}
           try { broadcastTokenPositions('token-move'); } catch (err) {}
           try { if (!isPlayerRole()) broadcastVttState('token-move'); } catch (err) {}
-          dragId = null;
+          window.__mapDragId = null;
         }
       });
       canvas.addEventListener('mouseleave', () => { /* keep drag if captured */ });
@@ -14023,6 +14053,25 @@ const canvas = document.getElementById('map-canvas');
         try { save(); } catch (err) {}
         renderBattleMap();
       });
+      // Mark bound only after all listeners are in place
+      canvas.dataset.mapBound = '1';
+      canvas.dataset.tokenDrag = '1';
+      // Window-level up so drag ends even outside canvas
+      if (!window.__mapPointerUpBound) {
+        window.__mapPointerUpBound = true;
+        window.addEventListener('pointerup', () => {
+          try {
+            if (window.__tokenDragActive || window.__fogDrag || window.__gridDrag || window.__rulerDrag) {
+              window.__tokenDragActive = false;
+              window.__fogDrag = null;
+              window.__gridDrag = null;
+              window.__rulerDrag = false;
+              try { save(); } catch (e) {}
+              try { broadcastVttState('token-move'); } catch (e) {}
+            }
+          } catch (e) {}
+        });
+      }
     }
   }
 
