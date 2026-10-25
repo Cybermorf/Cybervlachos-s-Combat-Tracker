@@ -12806,23 +12806,31 @@ function escapeHtml(str) {
       ctx.arc(x, y, r, 0, Math.PI * 2);
       const tokImg = (typeof getTokenImageForCombatant === 'function') ? getTokenImageForCombatant(cb) : null;
       if (tokImg && tokImg.complete && tokImg.naturalWidth) {
+        // Circular token portrait (template: clipped art + bold ring)
         ctx.save();
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.closePath();
         ctx.clip();
-        // cover circle
-        const iw = tokImg.naturalWidth, ih = tokImg.naturalHeight;
-        const side = Math.max(iw, ih);
-        const dw = r * 2 * (iw / side) * (side / iw);
-        // draw image centered covering the circle
         const size = r * 2;
-        ctx.drawImage(tokImg, x - size / 2, y - size / 2, size, size);
+        // Cover-fit: scale image to fill circle
+        const iw = tokImg.naturalWidth, ih = tokImg.naturalHeight;
+        const cover = Math.max(size / iw, size / ih);
+        const dw = iw * cover, dh = ih * cover;
+        ctx.drawImage(tokImg, x - dw / 2, y - dh / 2, dw, dh);
         ctx.restore();
-        // subtle tint edge for side identity
+        // Outer ring — enemy red / ally gold / pc green-tinted
+        const ring = isEnemy ? '#c23b22' : (isAlly ? '#c4a35a' : '#2d6a4f');
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = fill.replace('0.9', '0.95');
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = ring;
+        ctx.lineWidth = Math.max(3, r * 0.18);
+        ctx.stroke();
+        // Inner rim
+        ctx.beginPath();
+        ctx.arc(x, y, Math.max(1, r - ctx.lineWidth * 0.35), 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(0,0,0,0.45)';
+        ctx.lineWidth = 1.5;
         ctx.stroke();
       } else {
         ctx.fillStyle = fill;
@@ -13500,7 +13508,34 @@ function escapeHtml(str) {
   }
 
 
-  function bindMapCanvasInteractions(force) {
+  
+  function bindMapMeasureClear() {
+    if (window.__mapMeasureClearBound) return;
+    window.__mapMeasureClearBound = true;
+    const clearMeasures = () => {
+      const map = getCombatMap();
+      if (!map) return;
+      map.aoe = null;
+      map.ruler = null;
+      window.__rulerDrag = false;
+      window.__aoeDrag = null;
+      try { save(); } catch (e) {}
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('AoE / ruler cleared');
+    };
+    document.getElementById('map-clear-aoe')?.addEventListener('click', clearMeasures);
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape') return;
+      try {
+        const map = getCombatMap();
+        if (!map || (!map.ruler && !map.aoe)) return;
+        clearMeasures();
+      } catch (e) {}
+    });
+  }
+
+function bindMapCanvasInteractions(force) {
     // Simple, single document-level binder — works on main + DM popout + player
     if (window.__simpleMapDragBound && !force) {
       return true;
@@ -13587,6 +13622,25 @@ function escapeHtml(str) {
         return;
       }
 
+      // AoE tools — click origin, drag to set size/direction
+      if (tool && tool.startsWith('aoe-')) {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+        const shape = tool.replace('aoe-', '') || 'sphere';
+        const ft = Number(document.getElementById('map-aoe-ft')?.value) || 20;
+        map.aoe = {
+          shape: shape === 'sphere' ? 'sphere' : shape,
+          x: x, y: y,
+          ft: ft,
+          angle: -Math.PI / 2,
+          x2: x, y2: y
+        };
+        window.__aoeDrag = { x0: x, y0: y, shape: map.aoe.shape };
+        map.ruler = null;
+        paintNow();
+        try { save(); } catch (e) {}
+        return;
+      }
+
       if (tool === 'token' || tool === 'pan' || !tool) {
         const found = hitToken(map, x, y);
         if (found) {
@@ -13654,6 +13708,25 @@ function escapeHtml(str) {
         paintNow();
         return;
       }
+      if (window.__aoeDrag && map.aoe) {
+        const d = window.__aoeDrag;
+        map.aoe.x2 = x;
+        map.aoe.y2 = y;
+        map.aoe.angle = Math.atan2(y - d.y0, x - d.x0);
+        // Size from drag distance (5 ft per grid square)
+        const g = Number(map.gridSize) || 70;
+        const dist = Math.hypot(x - d.x0, y - d.y0);
+        const squares = Math.max(1, Math.round(dist / g));
+        const ftInput = Number(document.getElementById('map-aoe-ft')?.value) || 0;
+        if (map.aoe.shape === 'sphere' || map.aoe.shape === 'cube') {
+          map.aoe.ft = ftInput > 0 ? Math.max(ftInput, squares * 5) : squares * 5;
+        } else {
+          // cone / line length
+          map.aoe.ft = ftInput > 0 ? Math.max(ftInput, squares * 5) : squares * 5;
+        }
+        paintNow();
+        return;
+      }
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
@@ -13672,12 +13745,13 @@ function escapeHtml(str) {
     };
 
     const onUp = (ev) => {
-      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
+      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag || window.__aoeDrag;
       window.__mapDragId = null;
       window.__tokenDragActive = false;
       window.__fogDrag = null;
       window.__gridDrag = null;
       window.__rulerDrag = false;
+      window.__aoeDrag = null;
       if (had) {
         try { save(); } catch (e) {}
         try {
@@ -13790,6 +13864,7 @@ function escapeHtml(str) {
     try { bindMapMediaInputs(); } catch (e) { console.error(e); }
     try { bindTokenImageControls(); } catch (e) { console.error(e); }
     try { bindMapCanvasInteractions(false); } catch (e) { console.error(e); }
+    try { bindMapMeasureClear(); } catch (e) {}
 
     function triggerImageImport() {
       const inp = document.getElementById('map-file-image');
@@ -13988,8 +14063,13 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
       if (!map) return;
       map.aoe = null;
       map.ruler = null;
+      window.__rulerDrag = false;
+      window.__aoeDrag = null;
       try { save(); } catch (err) {}
-      renderBattleMap();
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('AoE / ruler cleared');
+    });
     if (!window.__mapMeasureEscBound) {
       window.__mapMeasureEscBound = true;
       document.addEventListener('keydown', (ev) => {
@@ -14001,13 +14081,14 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
           map.ruler = null;
           map.aoe = null;
           window.__rulerDrag = false;
+          window.__aoeDrag = null;
           try { save(); } catch (e) {}
-          renderBattleMap();
+          try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+          try { renderBattleMap(); } catch (e) {}
+          toast('AoE / ruler cleared');
         } catch (e) {}
       });
     }
-      toast('AoE / ruler cleared');
-    });
     document.getElementById('map-apply-aoe-targets')?.addEventListener('click', () => {
       const map = getCombatMap();
       if (!map || !map.aoe) { toast('Draw an AoE first'); return; }
@@ -14315,6 +14396,7 @@ function paintMapFrame() {
     
     // Canvas interactions: only via bindMapCanvasInteractions (no legacy dual-bind)
     try { bindMapCanvasInteractions(false); } catch (e) { console.error(e); }
+    try { bindMapMeasureClear(); } catch (e) {}
     try { bindTokenImageControls(); } catch (e) { console.error(e); }
     try { bindMapMediaInputs(); } catch (e) { console.error(e); }
   }
