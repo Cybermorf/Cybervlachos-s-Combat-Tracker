@@ -8850,7 +8850,8 @@ function rollDieExpr(expr) {
       try {
         if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb);
         save();
-        if (typeof broadcastVttState === 'function') broadcastVttState('economy');
+        try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'economy', attacksUsed: cb.attacksUsed, actionsUsed: cb.actionsUsed }); } catch (e) {}
+        if (typeof broadcastVttState === 'function' && !(typeof isPlayerRole === 'function' && isPlayerRole())) broadcastVttState('economy');
         if (typeof isPlayerRole === 'function' && isPlayerRole()) {
           renderPlayerCombatPanel();
         } else {
@@ -8930,7 +8931,29 @@ function rollDieExpr(expr) {
           window.__lastCombatRoll.canDamage = false;
           setDamageRollEnabled(panel, false, 'Roll Attack again to hit');
           toast('Damage applied');
-          try { save(); renderCombat(); renderMapRoster(); paintMapFrame(); } catch (e) {}
+          try { save(); } catch (e) {}
+          // Sync player → DM
+          try {
+            packs.forEach(({ target }) => {
+              if (typeof broadcastPlayerAction === 'function') {
+                broadcastPlayerAction({
+                  kind: 'damage',
+                  targetId: target.id || target.name,
+                  amount: window.__lastCombatRoll.damage,
+                  name: window.__lastCombatRoll.name || 'Attack'
+                });
+              }
+            });
+          } catch (e) {}
+          try {
+            if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'damage' });
+          } catch (e) {}
+          try {
+            if (typeof isPlayerRole === 'function' && isPlayerRole()) renderPlayerCombatPanel();
+            else { renderCombat(); }
+            renderMapRoster();
+            paintMapFrame();
+          } catch (e) {}
         }
       } catch (e) {
         console.warn(e);
@@ -10051,8 +10074,24 @@ function rollDieExpr(expr) {
       });
     })();
 
-    panel.querySelector('#cr-apply-dmg')?.addEventListener('click', () => { applyToTarget('damage'); try { save(); renderCombat(); } catch (e) {} });
-    panel.querySelector('#cr-apply-heal')?.addEventListener('click', () => { applyToTarget('heal'); try { save(); renderCombat(); } catch (e) {} });
+    panel.querySelector('#cr-apply-dmg')?.addEventListener('click', () => {
+      applyToTarget('damage');
+      try { save(); } catch (e) {}
+      try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'damage' }); } catch (e) {}
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) renderPlayerCombatPanel();
+        else renderCombat();
+      } catch (e) {}
+    });
+    panel.querySelector('#cr-apply-heal')?.addEventListener('click', () => {
+      applyToTarget('heal');
+      try { save(); } catch (e) {}
+      try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'heal' }); } catch (e) {}
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) renderPlayerCombatPanel();
+        else renderCombat();
+      } catch (e) {}
+    });
     panel.querySelector('#cr-apply-cond')?.addEventListener('click', () => applyToTarget('cond'));
 
     window.__activeCombatAction = null;
@@ -12740,6 +12779,14 @@ function escapeHtml(str) {
             }
           }
         }
+        if (ev.key === 'cybervlachos_vtt_player_action' && ev.newValue && !isPlayerRole()) {
+          const msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-player-action') applyPlayerActionMessage(msg);
+        }
+        if (ev.key === 'cybervlachos_vtt_sync' && ev.newValue && !isPlayerRole()) {
+          const msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-state' && msg.from === 'player') applyPlayerCombatPatch(msg);
+        }
       } catch (e) {}
     });
 
@@ -12862,8 +12909,8 @@ function escapeHtml(str) {
         if (!local) return;
         const fields = [
           'hp','hpMax','tempHp','conditions','concentrating','dead',
-          'turnState','turnPhase','actionUsed','bonusUsed','reactionUsed','moveUsed',
-          'attacksUsed','combatSpellSlots','combatResources','spellSlots','deathSaves'
+          'turnState','turnPhase','actionUsed','actionsUsed','actionsMax','bonusUsed','reactionUsed','moveUsed',
+          'attacksUsed','attacksMax','lastAction','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
         fields.forEach(f => {
           if (remote[f] !== undefined && remote[f] !== null) {
@@ -12873,6 +12920,10 @@ function escapeHtml(str) {
           }
         });
       });
+      if (msg.combat && msg.combat.turnEconomy) {
+        combat.turnEconomy = Object.assign({}, combat.turnEconomy || {}, msg.combat.turnEconomy);
+        changed = true;
+      }
       // Fog reveal from player? usually no — skip map unless tokens moved by player
       if (msg.map && msg.map.tokens) {
         const map = getCombatMap();
@@ -12951,50 +13002,96 @@ function escapeHtml(str) {
   }
   function broadcastPlayerAction(action) {
     try {
+      const room = getVttRoomCode() || sessionStorage.getItem('vtt_room') || '';
       const payload = {
         type: 'vtt-player-action',
-        room: getVttRoomCode() || '',
+        room: room,
         at: Date.now(),
-        claimedId: getClaimedId(),
+        clientId: window.__vttClientId || null,
+        claimedId: typeof getClaimedId === 'function' ? getClaimedId() : '',
         action: action || {}
       };
-      localStorage.setItem('cybervlachos_vtt_player_action', JSON.stringify(payload));
-      const ch = getVttChannel();
-      if (ch) try { ch.postMessage(payload); } catch (e) {}
-      // Also refresh full state token/HP snapshot for other clients
+      try { localStorage.setItem('cybervlachos_vtt_player_action', JSON.stringify(payload)); } catch (e) {}
       try {
-        if (!isPlayerRole()) broadcastVttState('player-action');
-        else {
-          // player: push light HP update via token channel style
-          const c = getActive();
-          const combat = c ? getCombat(c) : null;
-          if (combat) {
-            const lite = {
-              type: 'vtt-state',
-              room: getVttRoomCode() || '',
-              reason: 'player-hp',
-              at: Date.now(),
-              combat: {
-                round: combat.round,
-                current: combat.current,
-                combatants: (combat.combatants || []).map(cb => ({
-                  id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
-                  init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp
-                }))
-              },
-              map: c.combatMap ? {
-                tokens: c.combatMap.tokens || {},
-                fogEnabled: c.combatMap.fogEnabled,
-                fogRevealed: c.combatMap.fogRevealed || {}
-              } : null
-            };
-            localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(lite));
-            if (ch) try { ch.postMessage(lite); } catch (e) {}
-          }
-        }
+        const ch = getVttChannel();
+        if (ch) ch.postMessage(payload);
       } catch (e) {}
+      // Always push a player combat patch so DM receives HP / economy
+      try { syncPlayerCombatToDm(action); } catch (e) { console.warn(e); }
     } catch (e) { console.warn('broadcastPlayerAction', e); }
   }
+
+  function syncPlayerCombatToDm(action) {
+    if (typeof isPlayerRole === 'function' && !isPlayerRole()) {
+      // DM side can still broadcast full state
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('dm-action'); } catch (e) {}
+      return;
+    }
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (!combat) return;
+      const room = getVttRoomCode() || sessionStorage.getItem('vtt_room') || '';
+      const lite = {
+        type: 'vtt-state',
+        from: 'player',
+        room: room,
+        reason: (action && action.kind) || 'player-combat',
+        at: Date.now(),
+        clientId: window.__vttClientId || null,
+        action: action || null,
+        combat: {
+          round: combat.round,
+          current: combat.current,
+          turnIndex: combat.turnIndex,
+          turnEconomy: combat.turnEconomy || {},
+          combatants: (combat.combatants || []).map(cb => ({
+            id: cb.id,
+            name: cb.name,
+            hp: cb.hp,
+            hpMax: cb.hpMax,
+            tempHp: cb.tempHp,
+            ac: cb.ac,
+            init: cb.init,
+            side: cb.side,
+            conditions: cb.conditions,
+            hideHp: cb.hideHp,
+            concentrating: cb.concentrating,
+            dead: cb.dead,
+            turnPhase: cb.turnPhase,
+            actionUsed: cb.actionUsed,
+            actionsUsed: cb.actionsUsed,
+            actionsMax: cb.actionsMax,
+            bonusUsed: cb.bonusUsed,
+            reactionUsed: cb.reactionUsed,
+            moveUsed: cb.moveUsed,
+            attacksUsed: cb.attacksUsed,
+            attacksMax: cb.attacksMax,
+            lastAction: cb.lastAction,
+            combatSpellSlots: cb.combatSpellSlots,
+            combatResources: cb.combatResources,
+            spellSlots: cb.spellSlots,
+            deathSaves: cb.deathSaves
+          }))
+        },
+        map: c.combatMap ? {
+          tokens: c.combatMap.tokens || {},
+          fogEnabled: c.combatMap.fogEnabled,
+          fogRevealed: c.combatMap.fogRevealed || {}
+        } : null
+      };
+      try { localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(lite)); } catch (e) {}
+      try {
+        const ch = getVttChannel();
+        if (ch) ch.postMessage(lite);
+      } catch (e) {}
+      try {
+        if (window.__mapBc) window.__mapBc.postMessage(lite);
+      } catch (e) {}
+    } catch (e) { console.warn('syncPlayerCombatToDm', e); }
+  }
+
+
   function applyPlayerActionMessage(msg) {
     if (!msg || msg.type !== 'vtt-player-action') return;
     const room = getVttRoomCode();
