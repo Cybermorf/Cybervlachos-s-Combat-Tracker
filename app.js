@@ -10,6 +10,89 @@
 
   const STORAGE_KEY = 'cybervlachos_combat_v1';
 
+  // Token image API on window (always available to file-input handlers)
+  window.__tokenImgCache = window.__tokenImgCache || {};
+  window.loadTokenImageStore = function loadTokenImageStore() {
+    try { return JSON.parse(localStorage.getItem('cybervlachos_token_images_v1') || '{}') || {}; } catch (e) { return {}; }
+  };
+  window.saveTokenImageStore = function saveTokenImageStore(store) {
+    try { localStorage.setItem('cybervlachos_token_images_v1', JSON.stringify(store)); return true; } catch (e) { return false; }
+  };
+  window.tokenImageKey = function tokenImageKey(cb) {
+    return String(cb && (cb.id != null ? cb.id : cb.name) || '');
+  };
+  window.getTokenImageForCombatant = function getTokenImageForCombatant(cb) {
+    if (!cb) return null;
+    let src = cb.tokenImage || cb.tokenImg || cb.avatar || cb.portrait || '';
+    if (!src) {
+      try {
+        const store = window.loadTokenImageStore();
+        const k = window.tokenImageKey(cb);
+        if (k && store[k]) { src = store[k]; cb.tokenImage = src; }
+      } catch (e) {}
+    }
+    if (!src || typeof src !== 'string') return null;
+    const cache = window.__tokenImgCache;
+    if (cache[src] === false) return null;
+    if (cache[src] && cache[src].complete) return cache[src];
+    if (!cache[src]) {
+      const img = new Image();
+      img.onload = () => { try { if (typeof renderBattleMap === 'function') renderBattleMap(); if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {} };
+      img.onerror = () => { cache[src] = false; };
+      img.src = src;
+      cache[src] = img;
+    }
+    return cache[src].complete ? cache[src] : null;
+  };
+  window.setTokenImageFromFile = async function setTokenImageFromFile(file, cb) {
+    if (!file || !cb) return;
+    if (!/^image\//i.test(file.type || '')) {
+      if (typeof toast === 'function') toast('Choose an image file (png, jpg, webp, …)');
+      return;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    if (String(dataUrl).length > 1.8e6) {
+      if (typeof toast === 'function') toast('Image too large — try a smaller token (under ~1MB)');
+      return;
+    }
+    cb.tokenImage = dataUrl;
+    try {
+      const store = window.loadTokenImageStore();
+      store[window.tokenImageKey(cb)] = dataUrl;
+      window.saveTokenImageStore(store);
+    } catch (e) {}
+    try { if (typeof save === 'function') save(); } catch (e) {}
+    try {
+      delete window.__tokenImgCache[dataUrl];
+      window.getTokenImageForCombatant(cb);
+    } catch (e) {}
+    try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    if (typeof toast === 'function') toast('Token image set for ' + (cb.name || 'combatant'));
+  };
+  window.clearTokenImage = function clearTokenImage(cb) {
+    if (!cb) return;
+    const k = window.tokenImageKey(cb);
+    delete cb.tokenImage;
+    delete cb.tokenImg;
+    try {
+      const store = window.loadTokenImageStore();
+      if (k && store[k]) { delete store[k]; window.saveTokenImageStore(store); }
+    } catch (e) {}
+    try { if (typeof save === 'function') save(); } catch (e) {}
+    try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    if (typeof toast === 'function') toast('Token image cleared');
+  };
+
+
+
   const MAP_IDB_NAME = 'dsc_combat_map_v1';
   const MAP_IDB_STORE = 'maps';
   const ROSTER_BACKUP_KEY = 'cybervlachos_combat_roster_v1';
@@ -12804,7 +12887,7 @@ function escapeHtml(str) {
       const showHp = !cb.hideHp && !(playerMode && isEnemy);
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      const tokImg = (typeof getTokenImageForCombatant === 'function') ? getTokenImageForCombatant(cb) : null;
+      const tokImg = (typeof window.getTokenImageForCombatant === 'function') ? window.getTokenImageForCombatant(cb) : ((typeof getTokenImageForCombatant === 'function') ? getTokenImageForCombatant(cb) : null);
       if (tokImg && tokImg.complete && tokImg.naturalWidth) {
         // Circular token portrait (template: clipped art + bold ring)
         ctx.save();
@@ -13800,9 +13883,8 @@ function bindMapCanvasInteractions(force) {
             }
           }
           if (!cb) { toast('Select a combatant first (Combat list or Token for dropdown)'); return; }
-          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
-          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
-          await fn(file, cb);
+          if (typeof window.setTokenImageFromFile !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await window.setTokenImageFromFile(file, cb);
         } catch (err) {
           console.error(err);
           toast('Token import failed: ' + (err && err.message ? err.message : err));
@@ -13829,9 +13911,8 @@ function bindMapCanvasInteractions(force) {
             }
           }
           if (!cb) { toast('Select a combatant in Combat or Map list first'); return; }
-          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
-          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
-          await fn(file, cb);
+          if (typeof window.setTokenImageFromFile !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await window.setTokenImageFromFile(file, cb);
         } catch (err) {
           console.error(err);
           toast('Token import failed: ' + (err && err.message ? err.message : err));
@@ -13849,7 +13930,7 @@ function bindMapCanvasInteractions(force) {
           let cb = null;
           if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
           if (!cb) { toast('Select a combatant first'); return; }
-          clearTokenImage(cb);
+          if (typeof window.clearTokenImage === "function") window.clearTokenImage(cb); else if (typeof clearTokenImage === "function") clearTokenImage(cb);
         } catch (e) { console.error(e); }
       });
     }
@@ -14033,9 +14114,8 @@ function bindMapCanvasInteractions(force) {
             }
           }
           if (!cb) { toast('Select a combatant in the list first'); return; }
-          const fn = window.setTokenImageFromFile || setTokenImageFromFile;
-          if (typeof fn !== "function") { toast("Token image API missing — hard refresh"); return; }
-          await fn(file, cb);
+          if (typeof window.setTokenImageFromFile !== "function") { toast("Token image API missing — hard refresh"); return; }
+          await window.setTokenImageFromFile(file, cb);
         } catch (e) {
           console.error(e);
           toast('Token import failed: ' + (e && e.message ? e.message : e));
@@ -14054,7 +14134,7 @@ function bindMapCanvasInteractions(force) {
           if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
           if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
           if (!cb) { toast('Select a combatant first'); return; }
-          clearTokenImage(cb);
+          if (typeof window.clearTokenImage === "function") window.clearTokenImage(cb); else if (typeof clearTokenImage === "function") clearTokenImage(cb);
         } catch (e) { console.error(e); }
       });
     })();
