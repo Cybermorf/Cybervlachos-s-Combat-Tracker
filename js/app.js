@@ -1198,6 +1198,8 @@
     if (viewName === 'map') {
       try {
         if (typeof initBattleMapUi === 'function') initBattleMapUi();
+        if (typeof bindTokenImageControls === 'function') bindTokenImageControls();
+        if (typeof bindMapCanvasInteractions === 'function') bindMapCanvasInteractions(true);
         refreshMapTokenSelect();
         renderBattleMap();
       } catch (e) { console.warn(e); }
@@ -13280,11 +13282,240 @@ function escapeHtml(str) {
     return hits;
   }
 
+  
+  // ═══════════════════════════════════════════════════════════
+  // Map canvas interactions (main DM + popout + player)
+  // ═══════════════════════════════════════════════════════════
+  function bindMapCanvasInteractions(force) {
+    const canvas = document.getElementById('map-canvas');
+    if (!canvas) return false;
+    if (!force && canvas.dataset.cyberMapBound === '2') return true;
+
+    // Clone to drop any half-bound listeners from older code
+    let c = canvas;
+    try {
+      const fresh = canvas.cloneNode(true);
+      fresh.width = canvas.width;
+      fresh.height = canvas.height;
+      if (canvas.parentNode) {
+        canvas.parentNode.replaceChild(fresh, canvas);
+        c = fresh;
+      }
+    } catch (e) {
+      c = document.getElementById('map-canvas') || canvas;
+    }
+    c.dataset.cyberMapBound = '2';
+    c.dataset.tokenDrag = '1';
+    c.style.pointerEvents = 'auto';
+    c.style.touchAction = 'none';
+
+    const onDown = (ev) => {
+      if (ev.button != null && ev.button !== 0) return;
+      const map = getCombatMap();
+      if (!map) return;
+      const hasSurface = !!(map.imageDataUrl || map.videoObjectUrl || map.hasImageInIdb || map.width ||
+        (map.tokens && Object.keys(map.tokens).length));
+      if (!hasSurface) {
+        toast('Import a map image/video first');
+        return;
+      }
+      const toolEl = document.getElementById('map-tool');
+      const tool = (toolEl && toolEl.value) || 'token';
+      const { x, y } = mapCanvasToWorld(c, ev.clientX, ev.clientY);
+
+      // Fog tools (DM only)
+      const toolBlocksFog = (tool === 'token' || tool === 'pan' || tool === 'grid-offset' || tool === 'ruler' || (tool && tool.startsWith('aoe-')));
+      let fogMode = null;
+      if (!toolBlocksFog) {
+        if (tool === 'fog-reveal') fogMode = 'reveal';
+        else if (tool === 'fog-hide') fogMode = 'hide';
+        else if (window.__mapFogTool) fogMode = window.__mapFogTool;
+      }
+      if (fogMode && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+        paintFog(map, x, y, fogMode === 'reveal');
+        window.__fogDrag = fogMode;
+        try { save(); } catch (e) {}
+        try { redrawMapLive(); } catch (e) {}
+        try { broadcastVttState('fog-paint'); } catch (e) {}
+        return;
+      }
+      if (tool === 'grid-offset') {
+        window.__gridDrag = { startX: x, startY: y, ox: Number(map.gridOffsetX) || 0, oy: Number(map.gridOffsetY) || 0 };
+        return;
+      }
+      if (tool === 'ruler') {
+        map.ruler = { x1: x, y1: y, x2: x, y2: y };
+        window.__rulerDrag = true;
+        try { redrawMapLive(); } catch (e) {}
+        return;
+      }
+      if (tool === 'token' || tool === 'pan') {
+        const g = Number(map.gridSize) || 70;
+        const hitR = g * 0.8;
+        let found = null, foundDist = Infinity;
+        Object.keys(map.tokens || {}).forEach(id => {
+          const p = map.tokens[id];
+          if (!p) return;
+          const d = Math.hypot((p.x || 0) - x, (p.y || 0) - y);
+          if (d <= hitR && d < foundDist) { found = id; foundDist = d; }
+        });
+        if (found) {
+          try { selectCombatantById(found); } catch (e) {}
+          const sel = document.getElementById('map-token-combatant');
+          if (sel) sel.value = found;
+          if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+            let allowed = false;
+            try {
+              const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+              if (claimed && String(claimed.id) === String(found)) allowed = true;
+            } catch (e) {}
+            if (!allowed) {
+              toast('Selected ' + (found || ''));
+              return;
+            }
+          }
+          if (ev.altKey) return;
+          window.__mapDragId = found;
+          window.__tokenDragActive = true;
+          try { if (ev.pointerId != null) c.setPointerCapture(ev.pointerId); } catch (e) {}
+          return;
+        }
+        // Place new token (DM only)
+        if (tool === 'token' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          const sel = document.getElementById('map-token-combatant');
+          let id = sel && sel.value;
+          if (!id) {
+            try {
+              const combat = getCombat(getActive());
+              const cur = combat && combat.combatants && combat.combatants[combat.selectedIndex];
+              if (cur) id = String(cur.id);
+            } catch (e) {}
+          }
+          if (!id) { toast('Select a combatant first, then click the map'); return; }
+          map.tokens = map.tokens || {};
+          map.tokens[id] = snapWorldToGrid(map, x, y);
+          try { save(); } catch (e) {}
+          try { broadcastVttState('token-place'); } catch (e) {}
+          try { redrawMapLive(); } catch (e) {}
+          try { renderMapRoster(); } catch (e) {}
+        }
+      }
+    };
+
+    const onMove = (ev) => {
+      const map = getCombatMap();
+      if (!map) return;
+      const { x, y } = mapCanvasToWorld(c, ev.clientX, ev.clientY);
+      if (window.__fogDrag && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+        paintFog(map, x, y, window.__fogDrag === 'reveal');
+        try { redrawMapLive(); } catch (e) {}
+        return;
+      }
+      if (window.__gridDrag) {
+        const d = window.__gridDrag;
+        map.gridOffsetX = d.ox + (x - d.startX);
+        map.gridOffsetY = d.oy + (y - d.startY);
+        try { redrawMapLive(); } catch (e) {}
+        return;
+      }
+      if (window.__rulerDrag && map.ruler) {
+        map.ruler.x2 = x; map.ruler.y2 = y;
+        try { redrawMapLive(); } catch (e) {}
+        return;
+      }
+      if (!window.__mapDragId) return;
+      map.tokens = map.tokens || {};
+      map.tokens[window.__mapDragId] = snapWorldToGrid(map, x, y);
+      try { redrawMapLive(); } catch (e) {}
+      const now = Date.now();
+      if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
+        window.__lastTokenDragBc = now;
+        try { if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          save();
+          broadcastVttState('token-move');
+        } } catch (e) {}
+      }
+    };
+
+    const onUp = () => {
+      const was = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
+      window.__mapDragId = null;
+      window.__tokenDragActive = false;
+      window.__fogDrag = null;
+      window.__gridDrag = null;
+      window.__rulerDrag = false;
+      if (was) {
+        try { save(); } catch (e) {}
+        try { broadcastVttState('token-move'); } catch (e) {}
+        try { redrawMapLive(); } catch (e) {}
+      }
+    };
+
+    c.addEventListener('pointerdown', onDown);
+    c.addEventListener('pointermove', onMove);
+    c.addEventListener('pointerup', onUp);
+    c.addEventListener('pointercancel', onUp);
+    // Also on window so drag doesn't stick
+    if (!window.__mapGlobalUp) {
+      window.__mapGlobalUp = true;
+      window.addEventListener('pointerup', onUp);
+    }
+    return true;
+  }
+
+  function bindTokenImageControls() {
+    const inp = document.getElementById('map-file-token');
+    if (inp && inp.dataset.cyberBound !== '2') {
+      inp.dataset.cyberBound = '2';
+      inp.addEventListener('change', async (ev) => {
+        const file = ev.target.files && ev.target.files[0];
+        ev.target.value = '';
+        if (!file) return;
+        try {
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          let cb = null;
+          if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+          if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
+          if (!cb) {
+            const sel = document.getElementById('map-token-combatant');
+            if (sel && sel.value && combat) {
+              cb = (combat.combatants || []).find(x => String(x.id) === String(sel.value));
+            }
+          }
+          if (!cb) { toast('Select a combatant in Combat or Map list first'); return; }
+          await setTokenImageFromFile(file, cb);
+        } catch (err) {
+          console.error(err);
+          toast('Token import failed: ' + (err && err.message ? err.message : err));
+        }
+      });
+    }
+    ['map-token-clear-btn','map-token-clear-btn2'].forEach(cid => {
+    const clr = document.getElementById(cid);
+    if (clr && clr.dataset.cyberBound !== '2') {
+      clr.dataset.cyberBound = '2';
+      clr.addEventListener('click', () => {
+        try {
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          let cb = null;
+          if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+          if (!cb) { toast('Select a combatant first'); return; }
+          clearTokenImage(cb);
+        } catch (e) { console.error(e); }
+      });
+    }
+    });
+  }
+
+
   function initBattleMapUi() {
     // Always ensure workspace exists
     try { ensureCombatWorkspace(); } catch (e) {}
-    // Always refresh token dropdown; controls/canvas bind only once each
     try { refreshMapTokenSelect(); } catch (e) {}
+    try { bindTokenImageControls(); } catch (e) { console.error(e); }
+    try { bindMapCanvasInteractions(false); } catch (e) { console.error(e); }
 
     function triggerImageImport() {
       const inp = document.getElementById('map-file-image');
