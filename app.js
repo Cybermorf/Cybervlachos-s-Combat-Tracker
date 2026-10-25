@@ -2397,16 +2397,17 @@
     const btn = panel.querySelector('#cr-roll-btn');
     if (!btn) return;
     const left = remainingWeaponAttacks(cb);
+    // Keep enabled so click can show a toast (disabled buttons do not fire click)
+    btn.disabled = false;
+    btn.removeAttribute('disabled');
     if (left <= 0) {
-      btn.disabled = true;
-      btn.setAttribute('disabled', 'disabled');
       btn.title = 'No weapon attacks left this turn';
       btn.classList.add('is-budget-locked');
+      btn.dataset.budgetLocked = '1';
     } else {
-      btn.disabled = false;
-      btn.removeAttribute('disabled');
       btn.title = left + ' attack(s) left this turn';
       btn.classList.remove('is-budget-locked');
+      btn.dataset.budgetLocked = '0';
     }
   }
 
@@ -2987,15 +2988,7 @@ function ensureCombatantTurnState(cb, ch) {
       const actLeft2 = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
       const atkLeft2 = Math.max(0, (Number(cb.attacksMax) || 1) - (Number(cb.attacksUsed) || 0));
       const canContinueAtk = (Number(cb.attacksUsed) || 0) > 0 && atkLeft2 > 0;
-      const rollBtn = panel.querySelector('#cr-roll-btn');
-      if (rollBtn && allowMain && !canContinueAtk && actLeft2 <= 0) {
-        setDisabled(rollBtn, true, 'No actions left for Attack (already cast or acted)');
-      }
       try { applyRollAttackButtonState(panel, cb); } catch (e) {}
-      // Player: even if allowMain, respect hard budget
-      if (rollBtn && typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
-        setDisabled(rollBtn, true, 'No weapon attacks left this turn');
-      }
       const castBtn = panel.querySelector('#cr-spell-cast');
       if (castBtn && allowMain && actLeft2 <= 0) {
         setDisabled(castBtn, true, 'No actions left to cast');
@@ -8760,12 +8753,13 @@ function rollDieExpr(expr) {
       {
         try { restoreTurnEconomy(cb); } catch (e) {}
         if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
-          toast('No weapon attacks left this turn');
+          toast('No actions / weapon attacks left this turn');
           try { applyRollAttackButtonState(panel, cb); } catch (e) {}
           return;
         }
         if (typeof spendMainCombatAction === 'function') {
           if (!spendMainCombatAction(cb, 'attack', 'Attack')) {
+            toast('No actions left — cannot Attack');
             try { applyRollAttackButtonState(panel, cb); } catch (e) {}
             return;
           }
@@ -8863,13 +8857,7 @@ function rollDieExpr(expr) {
       try {
         const actLeft = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
         const atkLeft = Math.max(0, (Number(cb.attacksMax) || 1) - (Number(cb.attacksUsed) || 0));
-        const rollBtn = panel.querySelector('#cr-roll-btn');
-        if (rollBtn && actLeft <= 0 && atkLeft <= 0) {
-          rollBtn.disabled = true;
-          rollBtn.title = 'No actions / attacks left this turn';
-        } else if (rollBtn && atkLeft <= 0 && actLeft <= 0) {
-          rollBtn.disabled = true;
-        }
+        try { applyRollAttackButtonState(panel, cb); } catch (e) {}
       } catch (e) {}
     });
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
@@ -9267,12 +9255,25 @@ function rollDieExpr(expr) {
         }
         syncCombatResourcesToCharacter(cb);
         try { save(); } catch(e) {}
-        // Action Surge: grant +1 action this turn
+        // Action Surge: +1 Action this turn AND allow a fresh Attack series (Extra Attack again)
         if (String(id) === 'action-surge' || /action.?surge/i.test(String(r.label || ''))) {
           cb.extraActionsGranted = (Number(cb.extraActionsGranted) || 0) + 1;
-          cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, null) : ((Number(cb.actionsMax) || 1) + 1);
-          cb.actionUsed = (Number(cb.actionsUsed) || 0) >= (Number(cb.actionsMax) || 1);
-          toast('Action Surge — +1 Action this turn');
+          let newMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, null) : ((Number(cb.actionsMax) || 1) + 1);
+          const used = Number(cb.actionsUsed) || 0;
+          if (newMax <= used) newMax = used + 1;
+          cb.actionsMax = newMax;
+          cb.actionUsed = used >= newMax;
+          // New Action can be Attack → reset weapon-attack budget for Extra Attack
+          cb.attacksUsed = 0;
+          try { if (typeof clearSessionAttacksUsed === 'function') clearSessionAttacksUsed(cb); } catch (e) {}
+          try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+          try { save(); } catch (e) {}
+          toast('Action Surge — +1 Action · weapon attacks refreshed');
+          try {
+            if (typeof isPlayerRole === 'function' && isPlayerRole()) renderPlayerCombatPanel();
+            else { try { renderCombat(); } catch (e2) {} try { refreshCombatDetail(); } catch (e2) {} }
+          } catch (e) {}
+          try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'action-surge' }); } catch (e) {}
         }
         const leftAfter = (Number(r.max) || 0) >= 99 ? '∞' : Math.max(0, (Number(r.max) || 0) - (Number(r.used) || 0));
         if (String(id) !== 'action-surge' && !/action.?surge/i.test(String(r.label || ''))) {
@@ -12608,8 +12609,12 @@ function escapeHtml(str) {
   }
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
-    // Never clobber an in-progress local drag
-    if (window.__tokenDragActive) return;
+    // Players never drag tokens — always accept DM updates
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+      window.__tokenDragActive = false;
+    }
+    // Never clobber an in-progress local drag (DM)
+    if (window.__tokenDragActive && !(typeof isPlayerRole === 'function' && isPlayerRole())) return;
     const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
     const msgRoom = msg.room || '';
     // Only filter when BOTH sides have a room code and they differ
@@ -12814,9 +12819,27 @@ function escapeHtml(str) {
     } catch (e) {}
   }
 
+  
+  function startPlayerTokenPoll() {
+    if (window.__playerTokenPoll) return;
+    if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
+    window.__playerTokenPoll = setInterval(() => {
+      try {
+        const raw = localStorage.getItem('cybervlachos_vtt_tokens');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (!msg || msg.type !== 'vtt-tokens' || !msg.tokens) return;
+        if (msg.at && msg.at === window.__lastPlayerTokenApplied) return;
+        window.__lastPlayerTokenApplied = msg.at;
+        applyTokenMessage(msg);
+      } catch (e) {}
+    }, 200);
+  }
+
   function bindVttSync() {
     if (window.__vttSyncBound) return;
     window.__vttSyncBound = true;
+    try { startPlayerTokenPoll(); } catch (e) {}
     if (!window.__vttClientId) {
       window.__vttClientId = 'c' + Math.random().toString(36).slice(2, 10);
     }
