@@ -9768,6 +9768,16 @@ function rollDieExpr(expr) {
       function spendSlot(level) {
         level = Number(level) || 0;
         if (level <= 0) return true;
+        // Prefer shared helper (syncs to character + toast)
+        if (typeof expendCombatSpellSlot === 'function') {
+          const ok = expendCombatSpellSlot(cb, level);
+          if (ok) {
+            try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+            try { save(); } catch (e) {}
+            try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'slot', level: level }); } catch (e) {}
+          }
+          return ok;
+        }
         if (!cb.combatSpellSlots) cb.combatSpellSlots = {};
         if (!Object.keys(cb.combatSpellSlots).length) {
           try {
@@ -9792,6 +9802,8 @@ function rollDieExpr(expr) {
           return false;
         }
         row.used = (row.used || 0) + 1;
+        try { if (typeof syncCombatResourcesToCharacter === 'function') syncCombatResourcesToCharacter(cb); } catch (e) {}
+        try { save(); } catch (e) {}
         return true;
       }
 
@@ -9846,9 +9858,23 @@ function rollDieExpr(expr) {
             appendSharedCombatLog((cb.name || 'Caster') + ' casts ' + spellLabel + ' (Action+Attack budget)', { names: [cb.name], ids: [cb.id] });
           } catch (e) {}
         }
-        if (sp && sp.level > 0) {
-          const need = Math.max(Number(sp.level) || 0, Number(slotLevel) || Number(sp.level) || 0);
-          if (need > 0 && typeof spendSlot === 'function' && !spendSlot(need)) return false;
+        {
+          // Resolve leveled slot even if sp.level missing on imported spell objects
+          let need = Math.max(Number(sp && sp.level) || 0, Number(slotLevel) || 0);
+          try {
+            const up = panel.querySelector('#cr-upcast-level') || panel.querySelector('#cr-spell-slot') || panel.querySelector('#cr-slot-level');
+            if (up && up.value) need = Math.max(need, parseInt(up.value, 10) || 0);
+          } catch (e) {}
+          // Magic Missile etc. are level 1 minimum when recognized
+          const nm = String((sp && (sp.name || sp.label)) || '').toLowerCase();
+          if (need <= 0 && /missile|fireball|shield|mage armor|magic missile/.test(nm)) need = 1;
+          if (need > 0) {
+            if (typeof spendSlot === 'function') {
+              if (!spendSlot(need)) return false;
+            } else if (typeof expendCombatSpellSlot === 'function') {
+              if (!expendCombatSpellSlot(cb, need)) return false;
+            }
+          }
         }
         if (sp && sp.concentration) {
           cb.concentrating = sp.name;
@@ -9942,26 +9968,49 @@ function rollDieExpr(expr) {
             }
           }
         } else if (isAuto) {
-          const expr = spellDamageDice(sp, slotNeed || 1);
+          // Auto-hit (Magic Missile etc.): no attack roll, but damage dice ARE rolled
+          let expr = (typeof spellDamageDice === 'function') ? spellDamageDice(sp, slotNeed || 1) : '3d4+3';
+          if (!expr || expr === '1d8' || expr === '1d8+3') {
+            // Fallback Magic Missile: 3 darts at L1, +1 dart/level
+            const L = Math.max(1, slotNeed || sp.level || 1);
+            const darts = 2 + L; // L1 = 3 darts
+            expr = darts + 'd4+' + darts;
+          }
           if (dmgIn) dmgIn.value = expr;
           const rolled = rollDieExpr(expr);
+          const total = rolled.total;
+          const rollHtml = `<div><strong>${escapeHtml(sp.name)}</strong> · auto-hit</div>
+            <div>Damage: <strong>${total}</strong> <span class="muted">(${escapeHtml(rolled.detail)})</span></div>
+            <div class="muted">No attack roll — force darts hit automatically.</div>`;
+          try {
+            if (typeof publishCombatRollResult === 'function') publishCombatRollResult(rollHtml, cb);
+            else {
+              const box = panel.querySelector('#cr-result') || panel.querySelector('#combat-roll-result');
+              if (box) { box.classList.remove('muted'); box.style.display = 'block'; box.innerHTML = rollHtml; }
+            }
+          } catch (e) {}
           window.__lastCombatRoll = {
-            damage: rolled.total,
+            damage: total,
             heal: 0,
             hit: true,
             isHeal: false,
-            name: sp.name
+            isAuto: true,
+            name: sp.name,
+            dmgExpr: expr,
+            dmgDetail: rolled.detail
           };
-          if (applyAmt) applyAmt.value = String(rolled.total);
+          if (applyAmt) applyAmt.value = String(total);
           {
             const packs = getSelectedTargets();
             if (packs.length) {
               applyToTarget('damage');
-              toast(sp.name + ' dealt ' + rolled.total + ' to ' + packs.length + ' target(s)');
+              try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'damage', name: sp.name }); } catch (e) {}
+              toast(sp.name + ': rolled ' + total + ' damage → applied to ' + packs.length + ' target(s)');
             } else {
-              toast(sp.name + ' damage ' + rolled.total + ' — select target(s), then Apply Damage');
+              toast(sp.name + ': rolled ' + total + ' damage — select target(s), then Apply Damage');
             }
           }
+          try { appendLog(sp.name + ' damage ' + total + ' (' + rolled.detail + ')'); } catch (e) {}
         } else {
           const expr = spellDamageDice(sp, slotNeed || sp.level || 1);
           if (dmgIn && (!dmgIn.value || dmgIn.value === '1d8+3' || dmgIn.value === '1d4+1')) dmgIn.value = expr;
