@@ -8043,9 +8043,134 @@ function rollDieExpr(expr) {
 
 
 
+  
+  function isPopupDiceClient() {
+    try {
+      if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) return true;
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return true;
+      // body class fallback
+      if (document.body && (document.body.classList.contains('map-popout') || document.body.classList.contains('vtt-player'))) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function extractDiceFromRollHtml(html) {
+    const text = String(html || '').replace(/<[^>]+>/g, ' ');
+    // Prefer d20: "17", "(d20: 17)", "rolled 17"
+    const d20 = text.match(/\b(?:d20[:\s]+)?(\d{1,2})\s*(?:\+|vs|to hit)/i) || text.match(/\b(1[0-9]|20|[1-9])\b/);
+    const faces = [];
+    if (d20) {
+      const n = parseInt(d20[1], 10);
+      if (n >= 1 && n <= 20) faces.push({ sides: 20, value: n });
+    }
+    // Extra dice like 2d6 → show up to 2 dice with totals if present
+    const multi = text.match(/(\d+)d(\d+)/gi) || [];
+    multi.slice(0, 2).forEach(m => {
+      const p = m.match(/(\d+)d(\d+)/i);
+      if (!p) return;
+      const sides = parseInt(p[2], 10) || 6;
+      if (sides === 20 && faces.some(f => f.sides === 20)) return;
+      // unknown individual faces — will animate then show total from html
+      faces.push({ sides: sides, value: null });
+    });
+    if (!faces.length) faces.push({ sides: 20, value: null });
+    return faces.slice(0, 3);
+  }
+
+  function ensurePopupDiceOverlay() {
+    let el = document.getElementById('popup-dice-overlay');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'popup-dice-overlay';
+    el.className = 'popup-dice-overlay';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = '<div class="popup-dice-stage"><div class="popup-dice-label">Rolling…</div><div class="popup-dice-row" id="popup-dice-row"></div><div class="popup-dice-result" id="popup-dice-result"></div></div>';
+    document.body.appendChild(el);
+    el.addEventListener('click', () => {
+      el.classList.remove('is-on', 'is-rolling', 'is-reveal');
+      el.setAttribute('aria-hidden', 'true');
+    });
+    return el;
+  }
+
+  function playPopupDiceAnimation(html, opts) {
+    if (!isPopupDiceClient()) return Promise.resolve();
+    try {
+      const overlay = ensurePopupDiceOverlay();
+      const row = document.getElementById('popup-dice-row');
+      const res = document.getElementById('popup-dice-result');
+      const label = overlay.querySelector('.popup-dice-label');
+      if (!row) return Promise.resolve();
+      const faces = extractDiceFromRollHtml(html);
+      row.innerHTML = '';
+      faces.forEach((f, idx) => {
+        const d = document.createElement('div');
+        d.className = 'popup-die';
+        d.dataset.sides = String(f.sides || 20);
+        d.dataset.final = f.value != null ? String(f.value) : '';
+        d.textContent = '?';
+        row.appendChild(d);
+      });
+      if (res) {
+        res.innerHTML = '';
+        // plain text summary for reveal
+        const tmp = document.createElement('div');
+        tmp.innerHTML = html || '';
+        res.textContent = (tmp.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+      }
+      if (label) label.textContent = 'Rolling…';
+      overlay.classList.add('is-on', 'is-rolling');
+      overlay.classList.remove('is-reveal');
+      overlay.setAttribute('aria-hidden', 'false');
+
+      // Spin numbers
+      const diceEls = row.querySelectorAll('.popup-die');
+      let tick = 0;
+      const spin = setInterval(() => {
+        tick++;
+        diceEls.forEach(d => {
+          const sides = parseInt(d.dataset.sides, 10) || 20;
+          d.textContent = String(1 + Math.floor(Math.random() * sides));
+        });
+      }, 70);
+
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          clearInterval(spin);
+          diceEls.forEach(d => {
+            const sides = parseInt(d.dataset.sides, 10) || 20;
+            let final = parseInt(d.dataset.final, 10);
+            if (!(final >= 1 && final <= sides)) final = 1 + Math.floor(Math.random() * sides);
+            d.textContent = String(final);
+            d.classList.toggle('is-crit', sides === 20 && final === 20);
+            d.classList.toggle('is-fumble', sides === 20 && final === 1);
+          });
+          overlay.classList.remove('is-rolling');
+          overlay.classList.add('is-reveal');
+          if (label) label.textContent = 'Result';
+          setTimeout(() => {
+            overlay.classList.remove('is-on', 'is-reveal');
+            overlay.setAttribute('aria-hidden', 'true');
+            resolve();
+          }, 1400);
+        }, 650);
+      });
+    } catch (e) {
+      console.warn('popup dice anim', e);
+      return Promise.resolve();
+    }
+  }
+
+
   function publishCombatRollResult(html, cb) {
     const raw = String(html || '').trim();
     if (!raw) return;
+    // Popup-only dice animation (never blocks combat math)
+    try {
+      if (isPopupDiceClient()) {
+        playPopupDiceAnimation(raw).catch(() => {});
+      }
+    } catch (e) {}
     try {
       if (cb) cb.lastRollHtml = raw;
       const id = cb && (cb.id != null ? String(cb.id) : '');

@@ -3878,3 +3878,95 @@ body.vtt-player #player-roll-result.is-active {
   pointer-events: auto !important;
   touch-action: none !important;
 }
+
+
+/* ── Popup-only dice roll animation ───────────────────────── */
+body:not(.map-popout):not(.vtt-player) .popup-dice-overlay {
+  display: none !important;
+}
+.popup-dice-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(8, 6, 4, 0.45);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.popup-dice-overlay.is-on {
+  opacity: 1;
+  pointer-events: auto;
+}
+.popup-dice-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  border-radius: 14px;
+  background: linear-gradient(160deg, rgba(40,32,22,0.95), rgba(18,14,10,0.96));
+  border: 1px solid rgba(196,163,90,0.45);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+  min-width: 180px;
+}
+.popup-dice-row {
+  display: flex;
+  gap: 0.65rem;
+  align-items: center;
+  justify-content: center;
+}
+.popup-die {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: radial-gradient(circle at 30% 30%, #f5e6c8, #c4a35a 55%, #8a7035);
+  color: #1a1208;
+  font-weight: 800;
+  font-size: 1.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,0.25), 0 4px 12px rgba(0,0,0,0.4);
+  transform: rotate(0deg);
+}
+.popup-dice-overlay.is-rolling .popup-die {
+  animation: popupDieSpin 0.12s linear infinite;
+}
+.popup-die.is-crit {
+  background: radial-gradient(circle at 30% 30%, #fff3c4, #e8b923 50%, #a67c00);
+  box-shadow: 0 0 18px rgba(232,185,35,0.7), inset 0 0 0 2px rgba(255,255,255,0.4);
+}
+.popup-die.is-fumble {
+  background: radial-gradient(circle at 30% 30%, #f0c0c0, #a33 55%, #5c1515);
+  color: #fff;
+}
+@keyframes popupDieSpin {
+  0%   { transform: rotate(0deg) scale(1); }
+  50%  { transform: rotate(180deg) scale(1.08); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+.popup-dice-label {
+  color: #e8d5a3;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.popup-dice-result {
+  color: #f5f0e6;
+  font-size: 0.95rem;
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.35;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.popup-dice-overlay.is-reveal .popup-dice-result {
+  opacity: 1;
+}
+.popup-dice-overlay.is-reveal .popup-die {
+  animation: none;
+  transform: scale(1.05);
+}
