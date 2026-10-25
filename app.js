@@ -12030,10 +12030,14 @@ function escapeHtml(str) {
         map.tokens = msg.tokens;
         if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
         if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
+        try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
+        try { renderMapRoster(); } catch (e) {}
       } else if (msg.type === 'vtt-state' && msg.map && msg.map.tokens) {
         map.tokens = msg.map.tokens;
         if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
         if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+        try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
+        try { renderMapRoster(); } catch (e) {}
       } else return;
       // Persist token positions into workspace even from player window (local only)
       try {
@@ -13287,6 +13291,39 @@ function escapeHtml(str) {
   // Map canvas interactions (main DM + popout + player)
   // ═══════════════════════════════════════════════════════════
   
+  
+  function adjustTokensForNewMap(map, prevW, prevH, newW, newH) {
+    if (!map || !map.tokens) return;
+    const ids = Object.keys(map.tokens);
+    if (!ids.length) return;
+    if (!prevW || !prevH || !newW || !newH) {
+      // Center tokens on new map in a small cluster
+      const cx = newW / 2, cy = newH / 2;
+      const g = Number(map.gridSize) || 70;
+      ids.forEach((id, i) => {
+        const col = i % 4, row = Math.floor(i / 4);
+        map.tokens[id] = snapWorldToGrid(map, cx + (col - 1.5) * g, cy + (row - 1) * g);
+      });
+      return;
+    }
+    const sx = newW / prevW, sy = newH / prevH;
+    ids.forEach(id => {
+      const p = map.tokens[id];
+      if (!p) return;
+      map.tokens[id] = snapWorldToGrid(map, (p.x || 0) * sx, (p.y || 0) * sy);
+    });
+  }
+
+  function measureImageDataUrl(dataUrl) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ w: img.naturalWidth || img.width, h: img.naturalHeight || img.height });
+      img.onerror = () => resolve(null);
+      img.src = dataUrl;
+    });
+  }
+
+
   function bindMapMediaInputs() {
     if (window.__mapMediaInputsBound) return;
     window.__mapMediaInputsBound = true;
@@ -13308,6 +13345,8 @@ function escapeHtml(str) {
             }
             map.videoObjectUrl = null;
             map.mediaType = 'image';
+            const prevW = map._fitSrcW || map.width || 0;
+            const prevH = map._fitSrcH || map.height || 0;
             map.imageDataUrl = reader.result;
             map.hasImageInIdb = false;
             map.tokens = map.tokens || {};
@@ -13316,10 +13355,18 @@ function escapeHtml(str) {
             map._fitSrcW = null; map._fitSrcH = null; map.scale = null;
             const gs = document.getElementById('map-grid-size');
             if (gs) map.gridSize = Number(gs.value) || 70;
-            try { save(); } catch (err) { console.warn(err); }
-            try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
-            renderBattleMap();
-            toast('Map image loaded');
+            measureImageDataUrl(reader.result).then((dim) => {
+              if (dim) {
+                adjustTokensForNewMap(map, prevW, prevH, dim.w, dim.h);
+                map.width = dim.w; map.height = dim.h;
+              }
+              try { save(); } catch (err) { console.warn(err); }
+              try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
+              renderBattleMap();
+              try { bindMapCanvasInteractions(true); } catch (e) {}
+              toast('Map image loaded');
+            });
+            return;
           };
           reader.onerror = () => toast('Failed to read image');
           reader.readAsDataURL(f);
@@ -13482,7 +13529,7 @@ function escapeHtml(str) {
               if (claimed && String(claimed.id) === String(found)) allowed = true;
             } catch (e) {}
             if (!allowed) {
-              toast('Selected ' + (found || ''));
+              toast('Selected ' + ((typeof listNameForToken === 'function' ? listNameForToken(found) : null) || found || ''));
               return;
             }
           }
@@ -13542,10 +13589,13 @@ function escapeHtml(str) {
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
         window.__lastTokenDragBc = now;
-        try { if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
-          save();
-          broadcastVttState('token-move');
-        } } catch (e) {}
+        try {
+          if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+            save();
+            if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-drag');
+            else broadcastVttState('token-move');
+          }
+        } catch (e) {}
       }
     };
 
@@ -13558,7 +13608,10 @@ function escapeHtml(str) {
       window.__rulerDrag = false;
       if (was) {
         try { save(); } catch (e) {}
-        try { broadcastVttState('token-move'); } catch (e) {}
+        try {
+          if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-up');
+          else broadcastVttState('token-move');
+        } catch (e) {}
         try { redrawMapLive(); } catch (e) {}
       }
     };
@@ -13576,6 +13629,34 @@ function escapeHtml(str) {
   }
 
   function bindTokenImageControls() {
+    if (!window.__tokenImageDocBound) {
+      window.__tokenImageDocBound = true;
+      document.addEventListener('change', async (ev) => {
+        const el = ev.target;
+        if (!el || el.id !== 'map-file-token') return;
+        const file = el.files && el.files[0];
+        el.value = '';
+        if (!file) return;
+        try {
+          const c = getActive();
+          const combat = c ? getCombat(c) : null;
+          let cb = null;
+          if (combat && combat.selectedIndex != null) cb = combat.combatants[combat.selectedIndex];
+          if (!cb && combat && combat.turnIndex != null) cb = combat.combatants[combat.turnIndex];
+          if (!cb) {
+            const sel = document.getElementById('map-token-combatant');
+            if (sel && sel.value && combat) {
+              cb = (combat.combatants || []).find(x => String(x.id) === String(sel.value));
+            }
+          }
+          if (!cb) { toast('Select a combatant first (Combat list or Token for dropdown)'); return; }
+          await setTokenImageFromFile(file, cb);
+        } catch (err) {
+          console.error(err);
+          toast('Token import failed: ' + (err && err.message ? err.message : err));
+        }
+      }, true);
+    }
     const inp = document.getElementById('map-file-token');
     if (inp && inp.dataset.cyberBound !== '2') {
       inp.dataset.cyberBound = '2';
@@ -14128,295 +14209,11 @@ function paintMapFrame() {
 // end one-time control wiring
     }
 
-    let canvas = document.getElementById('map-canvas');
-    // Recover from older builds that set mapBound before listeners attached
-    if (canvas && canvas.dataset.mapBound && canvas.dataset.tokenDrag !== '1') {
-      try {
-        const clone = canvas.cloneNode(false);
-        // keep dimensions
-        clone.width = canvas.width;
-        clone.height = canvas.height;
-        canvas.parentNode.replaceChild(clone, canvas);
-        canvas = clone;
-      } catch (e) {
-        delete canvas.dataset.mapBound;
-      }
-    }
-    if (canvas && !canvas.dataset.mapBound) {
-      // NOTE: set mapBound only AFTER listeners attach (see end of block)
-  // Clear sticky fog brush when user switches to token/pan/aoe tools
-  document.addEventListener('change', (ev) => {
-    if (ev.target && ev.target.id === 'map-tool') {
-      const v = ev.target.value;
-      if (v === 'token' || v === 'pan' || v === 'grid-offset' || (v && v.startsWith('aoe-'))) {
-        window.__mapFogTool = null;
-      } else if (v === 'fog-reveal') window.__mapFogTool = 'reveal';
-      else if (v === 'fog-hide') window.__mapFogTool = 'hide';
-    }
-  });
-
-      window.__mapDragId = null;
-      canvas.addEventListener('pointerdown', (ev) => {
-        if (ev.button !== 0) return;
-        const map = getCombatMap();
-        if (!map) return;
-        // Allow token tools even when bitmap still loading from IDB
-        const hasSurface = !!(map.imageDataUrl || map.videoObjectUrl || map.hasImageInIdb || map.width || (map.tokens && Object.keys(map.tokens).length));
-        if (!hasSurface) return;
-        const tool = document.getElementById('map-tool')?.value || 'token';
-        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
-        // Fog brush (DM only) — never override Place/move token, pan, AoE, or grid-offset
-        const toolBlocksFog = (tool === 'token' || tool === 'pan' || tool === 'grid-offset' || (tool && tool.startsWith('aoe-')));
-        let fogMode = null;
-        if (!toolBlocksFog) {
-          if (tool === 'fog-reveal') fogMode = 'reveal';
-          else if (tool === 'fog-hide') fogMode = 'hide';
-          else if (window.__mapFogTool) fogMode = window.__mapFogTool;
-        }
-        if (fogMode && !isPlayerRole()) {
-          const map0 = getCombatMap();
-          if (!map0) return;
-          paintFog(map0, x, y, fogMode === 'reveal');
-          window.__fogDrag = fogMode;
-          try { save(); } catch (e) {}
-          // Video tick redraws overlays; only full-render for static images
-          try {
-            const mm = getCombatMap();
-            if (!(mm && mm.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
-          } catch (e) { try { renderBattleMap(); } catch (e2) {} }
-          try { renderMapRoster(); } catch (e) {}
-          try { broadcastVttState('fog-paint'); } catch (e) {}
-          return;
-        }
-        if (tool === 'grid-offset') {
-          window.__gridDrag = {
-            startX: x, startY: y,
-            ox: Number(map.gridOffsetX) || 0,
-            oy: Number(map.gridOffsetY) || 0
-          };
-          return;
-        }
-        if (tool === 'token' || tool === 'pan') {
-          // hit-test existing token
-          const g = Number(map.gridSize) || 70;
-          const hitR = g * 0.75;
-          let found = null;
-          let foundDist = Infinity;
-          Object.keys(map.tokens || {}).forEach(id => {
-            const p = map.tokens[id];
-            if (!p) return;
-            const d = Math.hypot(p.x - x, p.y - y);
-            if (d <= hitR && d < foundDist) { found = id; foundDist = d; }
-          });
-          if (found) {
-            const sel = document.getElementById('map-token-combatant');
-            if (sel) sel.value = found;
-            try { selectCombatantById(found); } catch (e) {}
-            // Players: select only. DM: always drag (toolbar is hidden on popout; default was pan).
-            if (isPlayerRole()) {
-              // Players may drag only their claimed token
-              let allowed = false;
-              try {
-                const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
-                if (claimed && String(claimed.id) === String(found)) allowed = true;
-              } catch (e) {}
-              if (!allowed) {
-                window.__mapDragId = null;
-                toast('Selected ' + (listNameForToken(found) || found));
-                return;
-              }
-            }
-            // Hold Alt for select-only without move
-            if (ev.altKey || (tool === 'pan' && ev.shiftKey)) {
-              window.__mapDragId = null;
-              toast('Selected ' + (listNameForToken(found) || found));
-              return;
-            }
-            window.__mapDragId = found;
-            window.__tokenDragActive = true;
-            try {
-              if (ev.pointerId != null) canvas.setPointerCapture(ev.pointerId);
-            } catch (e) {}
-            return;
-          }
-        }
-        if (tool === 'token') {
-          if (isPlayerRole()) { toast('Only the DM can place tokens'); return; }
-          const sel = document.getElementById('map-token-combatant');
-          const id = sel && sel.value;
-          if (!id) { toast('Pick a combatant from the list or Place on roster'); return; }
-          map.tokens[id] = snapWorldToGrid(map, x, y);
-          try { save(); } catch (err) {}
-          try {
-            if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-place');
-            else broadcastVttState('token-move');
-          } catch (e) {}
-          redrawMapLive();
-          try { renderMapRoster(); } catch (e) {}
-        } else if (tool.startsWith('aoe-')) {
-          const shape = tool.replace('aoe-', '');
-          const ft = Number(document.getElementById('map-aoe-ft')?.value) || 20;
-          map.aoe = { shape: shape === 'sphere' ? 'sphere' : shape, x, y, ft, angle: -Math.PI / 2 };
-          try { save(); } catch (err) {}
-          renderBattleMap();
-        } else if (tool === 'ruler') {
-          map.ruler = { x1: x, y1: y, x2: x, y2: y };
-          window.__rulerDrag = true;
-          redrawMapLive();
-        }
-      });
-      canvas.addEventListener('pointermove', (ev) => {
-        const map = getCombatMap();
-        if (!map) return;
-        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
-        if (window.__fogDrag && !isPlayerRole()) {
-          paintFog(map, x, y, window.__fogDrag === 'reveal');
-          try {
-            const mm = getCombatMap();
-            if (!(mm && mm.mediaType === 'video' && window.__mapVideoTicking)) renderBattleMap();
-          } catch (e) {}
-          const now = Date.now();
-          if (!window.__lastFogBc || now - window.__lastFogBc > 150) {
-            window.__lastFogBc = now;
-            try { broadcastVttState('fog-drag'); } catch (e) {}
-          }
-          return;
-        }
-        if (window.__gridDrag) {
-          const d = window.__gridDrag;
-          map.gridOffsetX = d.ox + (x - d.startX);
-          map.gridOffsetY = d.oy + (y - d.startY);
-          const ox = document.getElementById('map-grid-ox');
-          const oy = document.getElementById('map-grid-oy');
-          if (ox) ox.value = String(Math.round(map.gridOffsetX));
-          if (oy) oy.value = String(Math.round(map.gridOffsetY));
-          // Only redraw overlays if video (avoid restarting stream every move)
-          if (map.mediaType === 'video' && window.__mapRaf) {
-            // next video frame will pick up offset via drawMapOverlays
-          } else {
-            renderBattleMap();
-          }
-          return;
-        }
-        if (window.__rulerDrag && map.ruler) {
-          map.ruler.x2 = x;
-          map.ruler.y2 = y;
-          redrawMapLive();
-          return;
-        }
-        if (!window.__mapDragId) return;
-        // Update position every move (video maps need immediate paintMapFrame)
-        map.tokens[window.__mapDragId] = snapWorldToGrid(map, x, y);
-        const now = Date.now();
-        if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 80) {
-          window.__lastTokenDragBc = now;
-          try {
-            if (!isPlayerRole()) {
-              save();
-              if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-drag');
-              else broadcastVttState('token-move');
-            }
-          } catch (e) {}
-        }
-        redrawMapLive();
-      });
-      canvas.addEventListener('mouseup', () => {
-        if (window.__rulerDrag) {
-          window.__rulerDrag = false;
-          const mapR = getCombatMap();
-          if (mapR && mapR.ruler) {
-            const dx = (mapR.ruler.x2 || 0) - mapR.ruler.x1;
-            const dy = (mapR.ruler.y2 || 0) - mapR.ruler.y1;
-            const ft = Math.sqrt(dx * dx + dy * dy) / ((Number(mapR.gridSize) || 70) / 5);
-            toast('Range: ' + (Math.round(ft * 2) / 2) + ' ft');
-            try { save(); } catch (e) {}
-          }
-        }
-        if (window.__fogDrag) {
-          window.__fogDrag = null;
-          try { save(); } catch (e) {}
-          try { broadcastVttState('fog'); } catch (e) {}
-          const st = document.getElementById('map-status');
-          const map3 = getCombatMap();
-          if (st && map3) st.textContent = (st.textContent || '') + ' · revealed ' + Object.keys(map3.fogRevealed || {}).length;
-        }
-        if (window.__gridDrag) {
-          window.__gridDrag = null;
-          const map2 = getCombatMap();
-          if (map2) snapAllMapTokens(map2);
-          try { save(); } catch (err) {}
-          renderBattleMap();
-          toast('Grid offset updated — tokens re-centered');
-        }
-        if (dragId) {
-          window.__lastTokenSent = Date.now();
-          window.__tokenDragActive = false;
-          try {
-            if (!isPlayerRole()) {
-              save();
-              try {
-                if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('token-up');
-                else broadcastVttState('token-move');
-              } catch (e) {}
-            }
-            else {
-              // Player/popout: persist token positions into main storage key lightly
-              try {
-                const map = getCombatMap();
-                if (map) {
-                  const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
-                  const raw = localStorage.getItem(key);
-                  if (raw) {
-                    const data = JSON.parse(raw);
-                    const camps = data.campaigns || data.state?.campaigns || [];
-                    const camp = camps.find(x => x.id === (data.activeCampaignId || data.state?.activeCampaignId)) || camps[0];
-                    if (camp) {
-                      if (!camp.combatMap) camp.combatMap = map;
-                      else camp.combatMap.tokens = map.tokens;
-                      localStorage.setItem(key, JSON.stringify(data));
-                    }
-                  }
-                }
-              } catch (e) { console.warn('player token persist', e); }
-            }
-          } catch (err) {}
-          try { broadcastTokenPositions('token-move'); } catch (err) {}
-          try { if (!isPlayerRole()) broadcastVttState('token-move'); } catch (err) {}
-          window.__mapDragId = null;
-        }
-      });
-      canvas.addEventListener('mouseleave', () => { /* keep drag if captured */ });
-
-
-      canvas.addEventListener('contextmenu', (ev) => {
-        ev.preventDefault();
-        const map = getCombatMap();
-        if (!map || !map.aoe) return;
-        const { x, y } = mapCanvasToWorld(canvas, ev.clientX, ev.clientY);
-        map.aoe.angle = Math.atan2(y - map.aoe.y, x - map.aoe.x);
-        try { save(); } catch (err) {}
-        renderBattleMap();
-      });
-      // Mark bound only after all listeners are in place
-      canvas.dataset.mapBound = '1';
-      canvas.dataset.tokenDrag = '1';
-      // Window-level up so drag ends even outside canvas
-      if (!window.__mapPointerUpBound) {
-        window.__mapPointerUpBound = true;
-        window.addEventListener('pointerup', () => {
-          try {
-            if (window.__tokenDragActive || window.__fogDrag || window.__gridDrag || window.__rulerDrag) {
-              window.__tokenDragActive = false;
-              window.__fogDrag = null;
-              window.__gridDrag = null;
-              window.__rulerDrag = false;
-              try { save(); } catch (e) {}
-              try { broadcastVttState('token-move'); } catch (e) {}
-            }
-          } catch (e) {}
-        });
-      }
-    }
+    
+    // Canvas interactions: only via bindMapCanvasInteractions (no legacy dual-bind)
+    try { bindMapCanvasInteractions(true); } catch (e) { console.error(e); }
+    try { bindTokenImageControls(); } catch (e) { console.error(e); }
+    try { bindMapMediaInputs(); } catch (e) { console.error(e); }
   }
 
   if (document.readyState === 'loading') {
