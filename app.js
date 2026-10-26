@@ -12230,7 +12230,18 @@ function escapeHtml(str) {
       const bc = new BroadcastChannel('dsc_combat_map_sync');
       window.__mapBc = bc;
       bc.onmessage = (ev) => {
-        if (!ev.data || ev.data.type !== 'state') return;
+        if (!ev.data) return;
+        // Live token stream (player ↔ DM)
+        if (ev.data.type === 'vtt-tokens' || ev.data.type === 'tokens') {
+          try {
+            const msg = ev.data.type === 'tokens'
+              ? { type: 'vtt-tokens', tokens: ev.data.tokens, at: ev.data.at, from: ev.data.from || 'dm', room: ev.data.room || '' }
+              : ev.data;
+            if (typeof applyTokenMessage === 'function') applyTokenMessage(msg);
+          } catch (err) {}
+          return;
+        }
+        if (ev.data.type !== 'state') return;
         // Pop-out: reload light state; main: merge without dropping media
         try { if (typeof load === 'function') load(); } catch (err) {}
         const after = () => {
@@ -12652,6 +12663,12 @@ function escapeHtml(str) {
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
     // Ignore exact echo of our last send
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
+    // Don't let stale DM broadcasts snap a token back while/after local drag
+    if (window.__lastLocalTokenChange && msg.at && msg.at < window.__lastLocalTokenChange) return;
+    if (window.__lastLocalTokenChange && msg.from !== 'player' && (Date.now() - window.__lastLocalTokenChange) < 400) {
+      // brief grace so our broadcast can land on DM first
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+    }
     // Don't skip forever if drag flag stuck
     if (window.__tokenDragActive && window.__tokenDragStartedAt && Date.now() - window.__tokenDragStartedAt > 3000) {
       window.__tokenDragActive = false;
@@ -14319,10 +14336,11 @@ function bindMapCanvasInteractions(force) {
       try {
         const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
         if (!claimed) {
-          // No claim yet — allow drag only if single party token matches nothing else
+          try { toast('Claim your character first to move a token'); } catch (e) {}
           return false;
         }
         const tid = String(id || '');
+        const cname = String(claimed.name || '').trim().toLowerCase();
         const ids = new Set([
           String(claimed.id != null ? claimed.id : ''),
           String(claimed.name || ''),
@@ -14331,7 +14349,8 @@ function bindMapCanvasInteractions(force) {
           String(claimed.characterId || '')
         ].filter(Boolean));
         if (ids.has(tid)) return true;
-        // Token key may be index or aliased — resolve combatant under that token id
+        if (cname && tid.toLowerCase() === cname) return true;
+        // Resolve combatant for this token key
         try {
           const combat = getCombat(getActive());
           const list = (combat && combat.combatants) || [];
@@ -14339,8 +14358,14 @@ function bindMapCanvasInteractions(force) {
             String(x.id) === tid || String(x.name) === tid || String(i) === tid ||
             String(x.sourceId || '') === tid || String(x.charId || '') === tid
           );
-          if (cb && (ids.has(String(cb.id)) || ids.has(String(cb.name)))) return true;
+          if (cb) {
+            if (ids.has(String(cb.id)) || ids.has(String(cb.name))) return true;
+            if (cname && String(cb.name || '').trim().toLowerCase() === cname) return true;
+          }
         } catch (e2) {}
+        // Last resort: token key contains claimed name
+        if (cname && tid.toLowerCase().includes(cname)) return true;
+        try { toast('You can only move ' + (claimed.name || 'your character')); } catch (e) {}
         return false;
       } catch (e) { return false; }
     };
@@ -14424,7 +14449,13 @@ function bindMapCanvasInteractions(force) {
           window.__mapDragId = found;
           window.__tokenDragActive = true;
           window.__tokenDragStartedAt = Date.now();
+          window.__lastLocalTokenChange = Date.now();
           try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
+          try {
+            if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+              toast('Moving token…');
+            }
+          } catch (e) {}
           paintNow();
           return;
         }
@@ -14497,6 +14528,7 @@ function bindMapCanvasInteractions(force) {
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
       map.tokens[window.__mapDragId] = pos;
+      window.__lastLocalTokenChange = Date.now();
       paintNow();
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 50) {
@@ -14522,9 +14554,23 @@ function bindMapCanvasInteractions(force) {
       window.__rulerDrag = false;
       window.__aoeDrag = null;
       if (had) {
+        window.__lastLocalTokenChange = Date.now();
         try { save(); } catch (e) {}
         try {
-          if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('up');
+          if (typeof broadcastTokenPositions === 'function') {
+            broadcastTokenPositions(
+              (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-up' : 'up'
+            );
+          }
+        } catch (e) {}
+        // Extra belt-and-suspenders for player → DM
+        try {
+          if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
+            playerPersistAndSyncCombat();
+          }
+        } catch (e) {}
+        try {
+          if (typeof notifyMapWindows === 'function') notifyMapWindows();
         } catch (e) {}
         paintNow();
       }
