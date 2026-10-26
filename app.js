@@ -8057,6 +8057,14 @@ function rollDieExpr(expr) {
       camp.combat.combatants = remoteList;
       if (combat.round != null) camp.combat.round = combat.round;
       if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
+      // Merge map tokens so player token moves persist for DM (same-browser localStorage)
+      if (c.combatMap && c.combatMap.tokens) {
+        if (!camp.combatMap) camp.combatMap = Object.assign({}, c.combatMap);
+        camp.combatMap.tokens = camp.combatMap.tokens || {};
+        Object.keys(c.combatMap.tokens).forEach(k => {
+          camp.combatMap.tokens[k] = c.combatMap.tokens[k];
+        });
+      }
       data.activeCampaignId = camp.id || data.activeCampaignId;
       localStorage.setItem(key, JSON.stringify(data));
     } catch (e) { console.warn('playerPersist storage', e); }
@@ -8096,6 +8104,25 @@ function rollDieExpr(expr) {
       };
       localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(snapshot));
       localStorage.setItem('cybervlachos_vtt_player_combat', JSON.stringify(snapshot));
+      // Dedicated token channel so DM popups/main pick up player moves
+      if (c.combatMap && c.combatMap.tokens) {
+        const tokPayload = {
+          type: 'vtt-tokens',
+          from: 'player',
+          room: room,
+          reason: 'player-persist',
+          at: Date.now(),
+          clientId: window.__vttClientId || null,
+          tokens: JSON.parse(JSON.stringify(c.combatMap.tokens || {})),
+          fogEnabled: !!c.combatMap.fogEnabled,
+          fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
+        };
+        localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(tokPayload));
+        try {
+          const ch2 = typeof getVttChannel === 'function' ? getVttChannel() : null;
+          if (ch2) ch2.postMessage(tokPayload);
+        } catch (e3) {}
+      }
       const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
       if (ch) try { ch.postMessage(snapshot); } catch (e) {}
     } catch (e) { console.warn('playerPersist broadcast', e); }
@@ -14291,11 +14318,30 @@ function bindMapCanvasInteractions(force) {
       if (!(typeof isPlayerRole === 'function' && isPlayerRole())) return true;
       try {
         const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
-        if (!claimed) return false;
-        const cid = String(claimed.id != null ? claimed.id : '');
-        const cname = String(claimed.name || '');
+        if (!claimed) {
+          // No claim yet — allow drag only if single party token matches nothing else
+          return false;
+        }
         const tid = String(id || '');
-        return tid === cid || tid === cname || tid === String(claimed.sourceId || '') || tid === String(claimed.charId || '');
+        const ids = new Set([
+          String(claimed.id != null ? claimed.id : ''),
+          String(claimed.name || ''),
+          String(claimed.sourceId || ''),
+          String(claimed.charId || ''),
+          String(claimed.characterId || '')
+        ].filter(Boolean));
+        if (ids.has(tid)) return true;
+        // Token key may be index or aliased — resolve combatant under that token id
+        try {
+          const combat = getCombat(getActive());
+          const list = (combat && combat.combatants) || [];
+          const cb = list.find((x, i) =>
+            String(x.id) === tid || String(x.name) === tid || String(i) === tid ||
+            String(x.sourceId || '') === tid || String(x.charId || '') === tid
+          );
+          if (cb && (ids.has(String(cb.id)) || ids.has(String(cb.name)))) return true;
+        } catch (e2) {}
+        return false;
       } catch (e) { return false; }
     };
 
