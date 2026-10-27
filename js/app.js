@@ -12212,7 +12212,17 @@ function escapeHtml(str) {
     window.addEventListener('storage', (e) => {
       if (!e.key) return;
       if (e.key !== STORAGE_KEY && e.key !== ROSTER_BACKUP_KEY) return;
-      try { if (typeof load === 'function') load(); } catch (err) {}
+      // Player with token authority: do not full-reload from STORAGE_KEY (causes bounce)
+      let skippedLoad = false;
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole() &&
+            (window.__tokenDragActive || (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil))) {
+          skippedLoad = true;
+        }
+      } catch (err) {}
+      if (!skippedLoad) {
+        try { if (typeof load === 'function') load(); } catch (err) {}
+      }
       try {
         if (typeof isPlayerRole === 'function' && isPlayerRole()) {
           const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
@@ -12746,7 +12756,8 @@ function escapeHtml(str) {
       y: pos && pos.y,
       at: Date.now()
     };
-    window.__tokenAuthorityUntil = Date.now() + 2500;
+    // Hold long enough that late DM broadcasts cannot bounce the token
+    window.__tokenAuthorityUntil = Date.now() + 5000;
   }
   function applyTokenAuthorityToMap(map) {
     if (!map || !window.__tokenAuthority) return;
@@ -12801,11 +12812,13 @@ function escapeHtml(str) {
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
     // Ignore our own echo
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
-    // Player: ignore pure DM token floods while we hold authority (prevents snap-back)
+    // Player: while dragging or holding authority, IGNORE all non-player token streams.
+    // Applying then re-correcting causes the visible jump/bounce.
     try {
-      if (typeof isPlayerRole === 'function' && isPlayerRole() && msg.from !== 'player') {
-        if (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil) {
-          // Apply other tokens from DM, but we will force our authority positions after
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        const fromPlayer = msg.from === 'player';
+        if (!fromPlayer && (window.__tokenDragActive || (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil))) {
+          return;
         }
       }
     } catch (e) {}
@@ -13069,8 +13082,8 @@ function escapeHtml(str) {
         const msg = JSON.parse(raw);
         if (!msg || msg.type !== 'vtt-tokens' || !msg.tokens) return;
         if (msg.at && msg.at === window.__lastPlayerTokenApplied) return;
-        // While player holds token authority, skip pure DM floods (snap-back source)
-        if (msg.from !== 'player' && window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil) {
+        // While dragging or authority active, skip all non-player token messages
+        if (msg.from !== 'player' && (window.__tokenDragActive || (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil))) {
           return;
         }
         window.__lastPlayerTokenApplied = msg.at;
@@ -14652,6 +14665,7 @@ function bindMapCanvasInteractions(force) {
     };
 
     const onUp = (ev) => {
+      const dragId = window.__mapDragId;
       const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
       window.__mapDragId = null;
       window.__tokenDragActive = false;
@@ -14659,6 +14673,14 @@ function bindMapCanvasInteractions(force) {
       window.__gridDrag = null;
       window.__rulerDrag = false;
       if (had) {
+        try {
+          if (typeof isPlayerRole === 'function' && isPlayerRole() && dragId) {
+            const map2 = getCombatMap();
+            if (map2 && map2.tokens && map2.tokens[dragId] && typeof notePlayerTokenAuthority === 'function') {
+              notePlayerTokenAuthority(dragId, map2.tokens[dragId]);
+            }
+          }
+        } catch (e) {}
         try { save(); } catch (e) {}
         pushTokens((typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-up' : 'up');
         paintNow();
