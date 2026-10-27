@@ -8189,6 +8189,10 @@ function rollDieExpr(expr) {
 
 
   
+  const POPUP_DICE_SPIN_MS = 900;
+  const POPUP_DICE_REVEAL_MS = 1200;
+  const POPUP_DICE_TICK_MS = 70;
+
   function isPopupDiceClient() {
     try {
       if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) return true;
@@ -8201,25 +8205,49 @@ function rollDieExpr(expr) {
 
   function extractDiceFromRollHtml(html) {
     const text = String(html || '').replace(/<[^>]+>/g, ' ');
-    // Prefer d20: "17", "(d20: 17)", "rolled 17"
-    const d20 = text.match(/\b(?:d20[:\s]+)?(\d{1,2})\s*(?:\+|vs|to hit)/i) || text.match(/\b(1[0-9]|20|[1-9])\b/);
     const faces = [];
-    if (d20) {
-      const n = parseInt(d20[1], 10);
-      if (n >= 1 && n <= 20) faces.push({ sides: 20, value: n });
-    }
-    // Extra dice like 2d6 → show up to 2 dice with totals if present
+    // Explicit NdM notations first (damage, etc.)
     const multi = text.match(/(\d+)d(\d+)/gi) || [];
-    multi.slice(0, 2).forEach(m => {
-      const p = m.match(/(\d+)d(\d+)/i);
+    multi.forEach(m => {
+      const p = String(m).match(/(\d+)d(\d+)/i);
       if (!p) return;
+      const count = Math.min(6, Math.max(1, parseInt(p[1], 10) || 1));
       const sides = parseInt(p[2], 10) || 6;
-      if (sides === 20 && faces.some(f => f.sides === 20)) return;
-      // unknown individual faces — will animate then show total from html
-      faces.push({ sides: sides, value: null });
+      for (let i = 0; i < count; i++) {
+        faces.push({ sides: sides, value: null });
+      }
+    });
+    // Parenthetical face list: (3+5+2) with a dX nearby
+    if (!faces.length) {
+      const d20 = text.match(/\b(?:d20[:\s]+)(\d{1,2})\b/i) || text.match(/\b(1[0-9]|20|[1-9])\s*(?:\+|vs|to hit)/i);
+      if (d20) {
+        const n = parseInt(d20[1], 10);
+        if (n >= 1 && n <= 20) faces.push({ sides: 20, value: n });
+      }
+    } else {
+      // If we already have d20 notation from NdM skip; else try attach attack d20 total
+      const atk = text.match(/(?:to hit|attack)[^\d]*(\d{1,2})/i) || text.match(/\b(\d{1,2})\s*vs\s*AC/i);
+      if (atk && !faces.some(f => f.sides === 20)) {
+        const n = parseInt(atk[1], 10);
+        if (n >= 1 && n <= 30) {
+          // total may include mod — still show as d20 face when plausible
+          faces.unshift({ sides: 20, value: n <= 20 ? n : null });
+        }
+      }
+    }
+    // Try to fill individual values from patterns like "d20: 17" or "rolled 17"
+    faces.forEach((f, idx) => {
+      if (f.value != null) return;
+      if (f.sides === 20) {
+        const m = text.match(/\bd20[:\s]+(\d{1,2})\b/i) || text.match(/\b(1[0-9]|20|[1-9])\s*(?:\+|vs)/i);
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n >= 1 && n <= 20) f.value = n;
+        }
+      }
     });
     if (!faces.length) faces.push({ sides: 20, value: null });
-    return faces.slice(0, 3);
+    return faces.slice(0, 6);
   }
 
   function ensurePopupDiceOverlay() {
@@ -8238,13 +8266,18 @@ function rollDieExpr(expr) {
     return el;
   }
 
-  function broadcastPopupDiceAnimation(html) {
+  function broadcastPopupDiceAnimation(html, meta) {
     try {
+      meta = meta || {};
       const payload = {
         type: 'vtt-dice-anim',
         room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
         html: String(html || ''),
         at: Date.now(),
+        startAt: meta.startAt || Date.now(),
+        spinMs: meta.spinMs || (typeof POPUP_DICE_SPIN_MS !== 'undefined' ? POPUP_DICE_SPIN_MS : 900),
+        revealMs: meta.revealMs || (typeof POPUP_DICE_REVEAL_MS !== 'undefined' ? POPUP_DICE_REVEAL_MS : 1200),
+        faces: meta.faces || null,
         clientId: window.__vttClientId || null
       };
       try { localStorage.setItem('cybervlachos_vtt_dice', JSON.stringify(payload)); } catch (e) {}
@@ -8255,40 +8288,74 @@ function rollDieExpr(expr) {
       try {
         if (window.__mapBc) window.__mapBc.postMessage(payload);
       } catch (e) {}
-    } catch (e) {}
+    } catch (e) {
+      console.warn('dice bc', e);
+    }
   }
 
   function playPopupDiceAnimation(html, opts) {
     opts = opts || {};
     const rawHtml = String(html || '');
-    // Always allow DM mapPopout + player; optional force for synced playback
     if (!opts.force && !isPopupDiceClient()) return Promise.resolve();
-    // Sync to other popups (DM mapPopout sees player rolls and vice versa)
+
+    const spinMs = Number(opts.spinMs) > 0 ? Number(opts.spinMs) : (typeof POPUP_DICE_SPIN_MS !== 'undefined' ? POPUP_DICE_SPIN_MS : 900);
+    const revealMs = Number(opts.revealMs) > 0 ? Number(opts.revealMs) : (typeof POPUP_DICE_REVEAL_MS !== 'undefined' ? POPUP_DICE_REVEAL_MS : 1200);
+    const tickMs = typeof POPUP_DICE_TICK_MS !== 'undefined' ? POPUP_DICE_TICK_MS : 70;
+    const startAt = Number(opts.startAt) > 0 ? Number(opts.startAt) : Date.now();
+    const facesIn = Array.isArray(opts.faces) && opts.faces.length
+      ? opts.faces
+      : (typeof extractDiceFromRollHtml === 'function' ? extractDiceFromRollHtml(rawHtml) : [{ sides: 20, value: null }]);
+
+    // Originating client broadcasts shared clock + faces so DM/player stay in sync
     if (!opts.noBroadcast) {
-      try { broadcastPopupDiceAnimation(rawHtml); } catch (e) {}
+      try {
+        broadcastPopupDiceAnimation(rawHtml, {
+          startAt: startAt,
+          spinMs: spinMs,
+          revealMs: revealMs,
+          faces: facesIn
+        });
+      } catch (e) {}
     }
+
     try {
+      // Cancel any prior run so late packets don't stack different timers
+      if (window.__popupDiceSpinTimer) {
+        try { clearInterval(window.__popupDiceSpinTimer); } catch (e) {}
+        window.__popupDiceSpinTimer = null;
+      }
+      if (window.__popupDiceSpinTimeout) {
+        try { clearTimeout(window.__popupDiceSpinTimeout); } catch (e) {}
+        window.__popupDiceSpinTimeout = null;
+      }
+      if (window.__popupDiceRevealTimeout) {
+        try { clearTimeout(window.__popupDiceRevealTimeout); } catch (e) {}
+        window.__popupDiceRevealTimeout = null;
+      }
+
       const overlay = ensurePopupDiceOverlay();
       const row = document.getElementById('popup-dice-row');
       const res = document.getElementById('popup-dice-result');
       const label = overlay.querySelector('.popup-dice-label');
       if (!row) return Promise.resolve();
-      const faces = extractDiceFromRollHtml(html);
+
       row.innerHTML = '';
-      faces.forEach((f, idx) => {
+      facesIn.forEach((f) => {
+        const sides = parseInt(f.sides, 10) || 20;
         const d = document.createElement('div');
-        d.className = 'popup-die';
-        d.dataset.sides = String(f.sides || 20);
+        d.className = 'popup-die die-d' + sides;
+        d.dataset.sides = String(sides);
         d.dataset.final = f.value != null ? String(f.value) : '';
-        d.textContent = '?';
+        d.setAttribute('title', 'd' + sides);
+        d.innerHTML = '<span class="popup-die-face">?</span>';
         row.appendChild(d);
       });
+
       if (res) {
         res.innerHTML = '';
         const tmp = document.createElement('div');
-        tmp.innerHTML = html || '';
+        tmp.innerHTML = rawHtml || '';
         let plain = (tmp.innerText || '').replace(/\s+/g, ' ').trim();
-        // Never show unresolved AC placeholders in the animation banner
         plain = plain.replace(/\s*vs\s*AC\s*\?+\s*/gi, ' ').replace(/\s*vs\s*AC\s*$/i, '');
         plain = plain.replace(/set Target AC to resolve hit/gi, '').replace(/\s+/g, ' ').trim();
         res.textContent = plain.slice(0, 160);
@@ -8298,37 +8365,42 @@ function rollDieExpr(expr) {
       overlay.classList.remove('is-reveal');
       overlay.setAttribute('aria-hidden', 'false');
 
-      // Spin numbers
       const diceEls = row.querySelectorAll('.popup-die');
-      let tick = 0;
       const spin = setInterval(() => {
-        tick++;
         diceEls.forEach(d => {
           const sides = parseInt(d.dataset.sides, 10) || 20;
-          d.textContent = String(1 + Math.floor(Math.random() * sides));
+          const face = d.querySelector('.popup-die-face') || d;
+          face.textContent = String(1 + Math.floor(Math.random() * sides));
         });
-      }, 70);
+      }, tickMs);
+      window.__popupDiceSpinTimer = spin;
+
+      // Align to shared startAt so DM/player reveal at the same wall-clock time
+      const elapsed = Math.max(0, Date.now() - startAt);
+      const remainingSpin = Math.max(120, spinMs - elapsed);
 
       return new Promise((resolve) => {
-        setTimeout(() => {
-          clearInterval(spin);
+        window.__popupDiceSpinTimeout = setTimeout(() => {
+          try { clearInterval(spin); } catch (e) {}
+          window.__popupDiceSpinTimer = null;
           diceEls.forEach(d => {
             const sides = parseInt(d.dataset.sides, 10) || 20;
             let final = parseInt(d.dataset.final, 10);
             if (!(final >= 1 && final <= sides)) final = 1 + Math.floor(Math.random() * sides);
-            d.textContent = String(final);
+            const face = d.querySelector('.popup-die-face') || d;
+            face.textContent = String(final);
             d.classList.toggle('is-crit', sides === 20 && final === 20);
             d.classList.toggle('is-fumble', sides === 20 && final === 1);
           });
           overlay.classList.remove('is-rolling');
           overlay.classList.add('is-reveal');
           if (label) label.textContent = 'Result';
-          setTimeout(() => {
+          window.__popupDiceRevealTimeout = setTimeout(() => {
             overlay.classList.remove('is-on', 'is-reveal');
             overlay.setAttribute('aria-hidden', 'true');
             resolve();
-          }, 1400);
-        }, 650);
+          }, revealMs);
+        }, remainingSpin);
       });
     } catch (e) {
       console.warn('popup dice anim', e);
@@ -13095,7 +13167,7 @@ function escapeHtml(str) {
           const msg = JSON.parse(ev.newValue);
           if (msg && msg.type === 'vtt-dice-anim' && msg.html) {
             if (!(msg.clientId && msg.clientId === window.__vttClientId) && isPopupDiceClient()) {
-              playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true });
+              playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true, startAt: msg.startAt, spinMs: msg.spinMs, revealMs: msg.revealMs, faces: msg.faces });
             }
           }
         }
@@ -13123,7 +13195,7 @@ function escapeHtml(str) {
             if (msg.clientId && msg.clientId === window.__vttClientId) return;
             try {
               if (isPopupDiceClient()) {
-                playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true });
+                playPopupDiceAnimation(msg.html, { noBroadcast: true, force: true, startAt: msg.startAt, spinMs: msg.spinMs, revealMs: msg.revealMs, faces: msg.faces });
               }
             } catch (e) {}
             return;
