@@ -4132,3 +4132,19 @@ html.vtt-player #cr-apply-dmg {
   filter: grayscale(0.35);
   transform: scale(0.92);
 }
+
+/* Player popup: no manual budget adjusters */
+body.vtt-player #cd-act-dec,
+body.vtt-player #cd-act-inc,
+body.vtt-player #cd-act-reset,
+body.vtt-player #cd-atk-dec,
+body.vtt-player #cd-atk-inc,
+body.vtt-player #cd-atk-reset,
+html.vtt-player #cd-act-dec,
+html.vtt-player #cd-act-inc,
+html.vtt-player #cd-act-reset,
+html.vtt-player #cd-atk-dec,
+html.vtt-player #cd-atk-inc,
+html.vtt-player #cd-atk-reset {
+  display: none !important;
+}

@@ -2816,6 +2816,36 @@ function ensureCombatantTurnState(cb, ch) {
     };
   }
 
+  
+  function sanitizeSpellDescription(sp) {
+    if (!sp) return '';
+    let d = String(sp.description || sp.summary || '');
+    const name = String(sp.name || '').toLowerCase();
+    const cutMarkers = [
+      'Otherworldly Steed',
+      'MOD SAVE MOD SAVE',
+      'MOD SAVE Str ',
+      'Find Steed',
+      'Phantom Steed'
+    ];
+    if (name && !name.includes('steed')) {
+      for (const mk of cutMarkers) {
+        const i = d.indexOf(mk);
+        if (i > 80) { d = d.slice(0, i).trim(); break; }
+      }
+    }
+    if (name === 'fireball' || name === 'delayed blast fireball') {
+      const m = d.match(/^([\s\S]*?Using a Higher-Level Spell Slot\.\s*The damage increases by 1d6 for each spell slot level above \d+\.)/i);
+      if (m) d = m[1];
+    }
+    if (d.length > 1200) {
+      let cut = d.lastIndexOf('.', 1100);
+      if (cut > 400) d = d.slice(0, cut + 1);
+    }
+    return d.trim();
+  }
+
+
   function lookupSpellByName(name) {
     if (!name) return null;
     const bare = String(name).replace(/\s*\(\d+\w*\)\s*$/, '').trim().toLowerCase();
@@ -3140,7 +3170,7 @@ function ensureCombatantTurnState(cb, ch) {
         <p class="muted small">${sp.level === 0 ? 'Cantrip' : (sp.level + (sp.level===1?'st':sp.level===2?'nd':sp.level===3?'rd':'th') + '-level')} ${escapeHtml(sp.school || '')}</p>
         <p><strong>Time:</strong> ${escapeHtml(sp.time || 'Action')} · <strong>Range:</strong> ${escapeHtml(sp.range || '—')} · <strong>Duration:</strong> ${escapeHtml(sp.duration || '—')}</p>
         <p><strong>Components:</strong> ${escapeHtml(sp.components || '—')}${sp.concentration ? ' · <strong>Concentration</strong>' : ''}${sp.ritual ? ' · Ritual' : ''}</p>
-        <div class="detail-text" style="margin-top:0.5rem">${formatRichText(sp.description || 'No full text in catalog.')}</div>
+        <div class="detail-text" style="margin-top:0.5rem">${formatRichText(sanitizeSpellDescription(sp) || 'No full text in catalog.')}</div>
         ${sp.higher ? `<div class="detail-block" style="margin-top:0.5rem"><div class="detail-label">At higher levels</div><div class="detail-text">${formatRichText(sp.higher)}</div></div>` : ''}
         ${ctx.slotOptionsHtml ? `<div class="field" style="margin-top:0.75rem"><label>Cast at level</label><select id="modal-spell-slot">${ctx.slotOptionsHtml}</select></div>` : ''}
       </div>`;
@@ -3201,6 +3231,7 @@ function ensureCombatantTurnState(cb, ch) {
   }
 
   function combatAttacksBudgetHtml(cb, ch) {
+    const _playerBudgetSimple = (typeof isPlayerRole === 'function' && isPlayerRole());
     const max = cb.attacksMax != null ? cb.attacksMax : 1;
     const used = cb.attacksUsed || 0;
     const left = Math.max(0, max - used);
@@ -3300,9 +3331,9 @@ function ensureCombatantTurnState(cb, ch) {
           <div class="turn-stage-sub-head">Actions budget <span class="muted small">(1 + Haste / Action Surge)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${actLeft}</strong> left of ${actMax}${actUsed ? ' · used ' + actUsed : ''}</span>
-            <button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
+            ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-inc" title="Spend 1 action">+</button>
-            <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>`}
             <button type="button" class="btn secondary btn-tiny" id="cd-action-toggle">${actLeft <= 0 ? 'Mark available' : 'Mark used'}</button>
           </div>
           ${cb.lastAction ? `<span class="muted small">Last: ${escapeHtml(cb.lastAction)}</span>` : ''}
@@ -3311,9 +3342,9 @@ function ensureCombatantTurnState(cb, ch) {
           <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(also locked after Cast)</span></div>
           <div class="combat-res-row">
             <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
-            <button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
+            ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-inc">+</button>
-            <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>
+            <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>`}
           </div>
         </div>
       </section>
