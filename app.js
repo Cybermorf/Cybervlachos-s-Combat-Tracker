@@ -7496,6 +7496,35 @@ function rollDieExpr(expr) {
   }
 
   
+  
+  // Delegated combat roll clicks — survive panel rebuilds
+  if (!window.__combatRollDelegated) {
+    window.__combatRollDelegated = true;
+    document.addEventListener('click', function combatRollDelegate(ev) {
+      const dmgBtn = ev.target && ev.target.closest && ev.target.closest('#cr-roll-dmg');
+      const atkBtn = ev.target && ev.target.closest && ev.target.closest('#cr-roll-btn');
+      if (!dmgBtn && !atkBtn) return;
+      // Prefer native bound handlers on the live panel; only run fallback for damage enable
+      if (dmgBtn && dmgBtn.disabled) {
+        const last = window.__lastCombatRoll || {};
+        let allowed = !!(last.canDamage || last.hit || last.isCrit);
+        if (!allowed && last.hitTotal != null && last.ac != null && !last.isFumble) {
+          allowed = Number(last.hitTotal) >= Number(last.ac);
+        }
+        if (allowed) {
+          dmgBtn.disabled = false;
+          dmgBtn.removeAttribute('disabled');
+          // re-dispatch so bound handler runs
+          setTimeout(() => { try { dmgBtn.click(); } catch (e) {} }, 0);
+        } else {
+          try { toast('Score a hit with Roll Attack first'); } catch (e) {}
+        }
+        return;
+      }
+    }, true);
+  }
+
+
   function restoreDamageRollButtonState(root) {
     try {
       const last = window.__lastCombatRoll || {};
@@ -8358,6 +8387,12 @@ function rollDieExpr(expr) {
     const revealMs = Number(opts.revealMs) > 0 ? Number(opts.revealMs) : (typeof POPUP_DICE_REVEAL_MS !== 'undefined' ? POPUP_DICE_REVEAL_MS : 1200);
     const tickMs = typeof POPUP_DICE_TICK_MS !== 'undefined' ? POPUP_DICE_TICK_MS : 70;
     const startAt = Number(opts.startAt) > 0 ? Number(opts.startAt) : Date.now();
+    // Skip duplicate packet for the same animation wave (keeps DM/player clocks aligned)
+    if (opts.noBroadcast && window.__diceAnimStartAt && startAt === window.__diceAnimStartAt && window.__diceAnimPlaying) {
+      return window.__diceAnimPromise || Promise.resolve();
+    }
+    window.__diceAnimStartAt = startAt;
+    window.__diceAnimPlaying = true;
     let facesIn = Array.isArray(opts.faces) && opts.faces.length ? opts.faces : null;
     if (!facesIn || !facesIn.length) {
       try {
@@ -8445,7 +8480,7 @@ function rollDieExpr(expr) {
       const elapsed = Math.max(0, Date.now() - startAt);
       const remainingSpin = Math.max(120, spinMs - elapsed);
 
-      return new Promise((resolve) => {
+      const animPromise = new Promise((resolve) => {
         window.__popupDiceSpinTimeout = setTimeout(() => {
           try { clearInterval(spin); } catch (e) {}
           window.__popupDiceSpinTimer = null;
@@ -8479,12 +8514,16 @@ function rollDieExpr(expr) {
           window.__popupDiceRevealTimeout = setTimeout(() => {
             overlay.classList.remove('is-on', 'is-reveal');
             overlay.setAttribute('aria-hidden', 'true');
+            window.__diceAnimPlaying = false;
             resolve();
           }, revealMs);
         }, remainingSpin);
       });
+      window.__diceAnimPromise = animPromise;
+      return animPromise;
     } catch (e) {
       console.warn('popup dice anim', e);
+      window.__diceAnimPlaying = false;
       return Promise.resolve();
     }
   }
@@ -8962,8 +9001,11 @@ function rollDieExpr(expr) {
       }
       const forceCrit = !!panel.querySelector('#cr-force-crit')?.checked;
       // Attack roll only — damage is a separate step after HIT
+      const advNow = (document.getElementById('cr-adv') && document.getElementById('cr-adv').value)
+        || (panel.querySelector('#cr-adv') && panel.querySelector('#cr-adv').value)
+        || 'normal';
       const res = rollCombatAttack({
-        adv: panel.querySelector('#cr-adv')?.value || 'normal',
+        adv: advNow,
         toHit: parseInt(toHitEl?.value, 10) || 0,
         hitBonus: parseInt(panel.querySelector('#cr-hit-bonus')?.value, 10) || 0,
         damage: '0',
@@ -9031,23 +9073,31 @@ function rollDieExpr(expr) {
         save();
         try { if (typeof syncPlayerCombatToDm === 'function') syncPlayerCombatToDm({ kind: 'economy', attacksUsed: cb.attacksUsed, actionsUsed: cb.actionsUsed }); } catch (e) {}
         if (typeof broadcastVttState === 'function' && !(typeof isPlayerRole === 'function' && isPlayerRole())) broadcastVttState('economy');
-        if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-          renderPlayerCombatPanel();
-        } else {
-          renderCombat();
-        }
+        // Do NOT full-rebuild the combat panel here — it resets Advantage to Normal
+        // and destroys the enabled Damage Roll button / click wiring.
+        try {
+          if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb);
+        } catch (e) {}
         try {
           const last = window.__lastCombatRoll || {};
-          if (last.canDamage || last.hit || last.isCrit) {
-            document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+          if (typeof setDamageRollEnabled === 'function') {
+            setDamageRollEnabled(panel, !!(last.canDamage || last.hit || last.isCrit), last.canDamage ? '' : 'Hit AC first');
+          }
+          document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+            if (last.canDamage || last.hit || last.isCrit) {
               btn.disabled = false;
               btn.removeAttribute('disabled');
               btn.classList.add('is-ready');
-              btn.title = 'Roll damage and apply to selected target(s)';
-            });
-          }
+            }
+          });
         } catch (e) {}
-      } catch (e) { try { renderCombat(); } catch (e2) {} }
+        // Light HP/economy text refresh only
+        try {
+          panel.querySelectorAll('[data-economy], .turn-economy, #pc-economy').forEach(el => {
+            el.textContent = el.textContent; // no-op placeholder
+          });
+        } catch (e) {}
+      } catch (e) { /* do not full renderCombat — preserves adv + damage button */ }
       // Hard-disable Roll Attack if no budget left
       try {
         const actLeft = Math.max(0, (Number(cb.actionsMax) || 1) - (Number(cb.actionsUsed) || 0));
@@ -9069,7 +9119,8 @@ function rollDieExpr(expr) {
       }
       last.canDamage = true;
       last.hit = true;
-      const expr = (dmgEl && dmgEl.value) || last.dmgExpr || '1d8';
+      const liveDmg = document.getElementById('cr-dmg');
+      const expr = (liveDmg && liveDmg.value) || (dmgEl && dmgEl.value) || last.dmgExpr || '1d8';
       let dmg = rollDieExpr(expr);
       const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || last.dmgBonus || 0;
       let faces = (dmg.faces || []).slice();
