@@ -2768,9 +2768,9 @@ function ensureCombatantTurnState(cb, ch) {
           const maxL = r.max >= 99 ? '∞' : r.max;
           return `<div class="combat-res-row" data-res="${escapeAttr(k)}">
             <span class="combat-res-name" title="${escapeAttr(r.recover || '')}">${escapeHtml(r.label)}</span>
-            <button type="button" class="btn secondary btn-tiny cd-res-dec" data-res="${escapeAttr(k)}">−</button>
+            ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<button type="button" class="btn secondary btn-tiny cd-res-dec" data-res="${escapeAttr(k)}">−</button>`}
             <span class="combat-res-val"><strong>${left}</strong>/${maxL}</span>
-            <button type="button" class="btn secondary btn-tiny cd-res-inc" data-res="${escapeAttr(k)}">+</button>
+            ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<button type="button" class="btn secondary btn-tiny cd-res-inc" data-res="${escapeAttr(k)}">+</button>`}
             <button type="button" class="btn secondary btn-tiny cd-res-spend" data-res="${escapeAttr(k)}" title="Spend 1">Use</button>
           </div>`;
         }).join('')}
@@ -9062,7 +9062,7 @@ function parseAttackLines(ch) {
             <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
-            <label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>
+            ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>`}
         <div class="form-row" style="margin-top:0.35rem;gap:0.35rem;flex-wrap:wrap">
           <button type="button" class="btn secondary btn-tiny" id="cd-death-save">Death Save</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-leg-resist">Legendary Resistance</button>

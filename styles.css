@@ -4148,3 +4148,37 @@ html.vtt-player #cd-atk-inc,
 html.vtt-player #cd-atk-reset {
   display: none !important;
 }
+
+/* Player popup: DM-only controls */
+body.vtt-player .cd-res-dec,
+body.vtt-player .cd-res-inc,
+body.vtt-player .slot-dec,
+body.vtt-player .slot-inc,
+body.vtt-player #cd-act-dec,
+body.vtt-player #cd-act-inc,
+body.vtt-player #cd-act-reset,
+body.vtt-player #cd-atk-dec,
+body.vtt-player #cd-atk-inc,
+body.vtt-player #cd-atk-reset,
+body.vtt-player #cd-hidden-hp,
+body.vtt-player label:has(#cd-hidden-hp),
+html.vtt-player .cd-res-dec,
+html.vtt-player .cd-res-inc,
+html.vtt-player .slot-dec,
+html.vtt-player .slot-inc,
+html.vtt-player #cd-act-dec,
+html.vtt-player #cd-act-inc,
+html.vtt-player #cd-act-reset,
+html.vtt-player #cd-atk-dec,
+html.vtt-player #cd-atk-inc,
+html.vtt-player #cd-atk-reset,
+html.vtt-player #cd-hidden-hp,
+html.vtt-player label:has(#cd-hidden-hp) {
+  display: none !important;
+}
+/* Player map: never show enemy HP numbers in roster/summary if still present */
+body.vtt-player .map-roster .enemy-hp,
+body.vtt-player .map-roster [data-side="enemy"] .hp-text,
+html.vtt-player .map-roster .enemy-hp {
+  display: none !important;
+}
