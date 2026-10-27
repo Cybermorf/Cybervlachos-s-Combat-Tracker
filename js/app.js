@@ -12215,7 +12215,25 @@ function escapeHtml(str) {
       // While this tab is dragging a token, skip reload (DM windows rely on __tokenDragActive in apply only;
       // player also skips STORAGE reload mid-drag because player save() path differs).
       if (window.__tokenDragActive) return;
+      // Snapshot tokens if we have a newer local version than storage
+      let guardTokens = null;
+      let guardVer = Number(window.__tokenVerApplied) || 0;
+      try {
+        const map0 = typeof getCombatMap === 'function' ? getCombatMap() : null;
+        if (map0 && map0.tokens && guardVer) guardTokens = JSON.parse(JSON.stringify(map0.tokens));
+      } catch (err) {}
       try { if (typeof load === 'function') load(); } catch (err) {}
+      try {
+        if (guardTokens && guardVer) {
+          const map1 = typeof getCombatMap === 'function' ? getCombatMap() : null;
+          const storedVer = map1 && map1.tokenVer != null ? Number(map1.tokenVer) : 0;
+          if (map1 && guardVer >= storedVer) {
+            map1.tokens = guardTokens;
+            map1.tokenVer = guardVer;
+            window.__tokenVerApplied = guardVer;
+          }
+        }
+      } catch (err) {}
       const after = () => {
         if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
           try { refreshMapTokenSelect(); renderBattleMap(); renderMapRoster(); } catch (err) {}
@@ -12697,21 +12715,24 @@ function escapeHtml(str) {
       if (!c || !c.combatMap) return;
       const at = Date.now();
       window.__lastTokenSent = at;
+      window.__tokenVerLocal = (Number(window.__tokenVerLocal) || 0) + 1;
+      // Ensure local ver always wins over concurrent remote packets we already had
+      const tokenVer = Math.max(at, (Number(window.__tokenVerApplied) || 0) + 1, window.__tokenVerLocal);
+      window.__tokenVerApplied = tokenVer;
       const tokens = JSON.parse(JSON.stringify(c.combatMap.tokens || {}));
       const payload = {
         type: 'vtt-tokens',
         room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
         reason: reason || 'token-move',
         at: at,
+        tokenVer: tokenVer,
         clientId: window.__vttClientId || null,
         from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
         tokens: tokens,
         fogEnabled: !!c.combatMap.fogEnabled,
         fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
       };
-      // Shared token channel
       try { localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(payload)); } catch (e) {}
-      // CRITICAL: merge tokens into STORAGE_KEY for every role (player save() otherwise skips this)
       try {
         const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
         let data = null;
@@ -12721,6 +12742,7 @@ function escapeHtml(str) {
           if (camp) {
             if (!camp.combatMap) camp.combatMap = {};
             camp.combatMap.tokens = tokens;
+            camp.combatMap.tokenVer = tokenVer;
             localStorage.setItem(key, JSON.stringify(data));
           }
         }
@@ -12728,7 +12750,7 @@ function escapeHtml(str) {
       try {
         const full = Object.assign(
           (typeof buildVttStatePayload === 'function' ? buildVttStatePayload(reason) : null) || { type: 'vtt-state', at: at },
-          { map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed } }
+          { map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed }, tokenVer: tokenVer }
         );
         localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(full));
       } catch (e) {}
@@ -12791,20 +12813,59 @@ function escapeHtml(str) {
   }
 
 
+  
+  /** Resolve all possible keys a combatant token may be stored under. */
+  function tokenKeysForCombatant(cb, idx) {
+    if (!cb) return idx != null ? [String(idx)] : [];
+    const keys = [];
+    const add = (v) => {
+      if (v == null || v === '') return;
+      const s = String(v);
+      if (!keys.includes(s)) keys.push(s);
+    };
+    add(cb.id);
+    add(cb.name);
+    add(cb.sourceId);
+    add(cb.charId);
+    add(cb.characterId);
+    if (idx != null) add(idx);
+    return keys;
+  }
+  /** Get token position for a combatant from map.tokens (id/name/aliases). */
+  function tokenPosForCombatant(map, cb, idx) {
+    if (!map || !map.tokens) return null;
+    const keys = tokenKeysForCombatant(cb, idx);
+    for (let i = 0; i < keys.length; i++) {
+      const p = map.tokens[keys[i]];
+      if (p && (p.x != null || p.y != null)) return { pos: p, key: keys[i] };
+    }
+    return null;
+  }
+  /** Canonical key used when writing a combatant token. */
+  function canonicalTokenKey(cb, idx) {
+    if (cb && cb.id != null && String(cb.id) !== '') return String(cb.id);
+    if (cb && cb.name) return String(cb.name);
+    return String(idx != null ? idx : '');
+  }
+
+
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
-    // Same as DM windows: ignore only while THIS tab is mid-drag
     if (window.__tokenDragActive) return;
     const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
     const msgRoom = msg.room || '';
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
+    // Monotonic version: ignore stale packets (main cause of intermittent snap-back)
+    const ver = Number(msg.tokenVer != null ? msg.tokenVer : msg.at) || 0;
+    if (ver && window.__tokenVerApplied && ver < window.__tokenVerApplied) return;
     try {
       const map = getCombatMap();
       if (!map) return;
       const tokens = (msg.type === 'vtt-tokens') ? msg.tokens : (msg.map && msg.map.tokens);
       if (!tokens) return;
       map.tokens = tokens;
+      if (ver) window.__tokenVerApplied = ver;
       if (msg.type === 'vtt-tokens') {
         if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
         if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
@@ -12812,7 +12873,6 @@ function escapeHtml(str) {
         if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
         if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
       }
-      // Keep in-memory campaign in sync so later save() does not rewrite old positions
       try {
         const c = getActive();
         if (c) c.combatMap = map;
@@ -13641,7 +13701,8 @@ function escapeHtml(str) {
     ensureMapFog(map);
     list.forEach((cb, idx) => {
       const id = String(cb.id || idx);
-      const pos = map.tokens[id];
+      const resolved = typeof tokenPosForCombatant === 'function' ? tokenPosForCombatant(map, cb, idx) : null;
+      const pos = resolved ? resolved.pos : (map.tokens[id]);
       if (!pos) return;
       // Player / shared popout: hide tokens in unrevealed fog cells
       // Only true player clients hide tokens in fog; DM mapPopout must see all tokens to move them
@@ -14536,7 +14597,19 @@ function bindMapCanvasInteractions(force) {
       }
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
-      map.tokens[window.__mapDragId] = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
+      const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
+      map.tokens[window.__mapDragId] = pos;
+      // Normalize: also write under combatant id/name so draw/hit/sync share one position
+      try {
+        const combat = typeof getCombat === 'function' ? getCombat(getActive()) : null;
+        const list = (combat && combat.combatants) || [];
+        const tid = String(window.__mapDragId);
+        const cb = list.find((x, i) => String(x.id) === tid || String(x.name) === tid || String(i) === tid);
+        if (cb) {
+          const keys = typeof tokenKeysForCombatant === 'function' ? tokenKeysForCombatant(cb, list.indexOf(cb)) : [tid];
+          keys.forEach(k => { map.tokens[k] = pos; });
+        }
+      } catch (e) {}
       paintNow();
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 40) {
