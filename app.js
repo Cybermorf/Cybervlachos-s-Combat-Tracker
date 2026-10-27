@@ -12605,6 +12605,89 @@ function escapeHtml(str) {
     };
   }
   
+  
+  /**
+   * Write token positions the same way DM mapPopout does.
+   * Player save() takes a different path (combat-only); token drags must NOT depend on it.
+   */
+  function syncTokensLikeMapPopout(reason) {
+    try {
+      const c = getActive();
+      if (!c) return;
+      if (!c.combatMap) c.combatMap = { tokens: {}, gridSize: 70, fogEnabled: false, fogRevealed: {} };
+      const at = Date.now();
+      window.__lastTokenSent = at;
+      window.__lastLocalTokenChange = at;
+      const tokens = JSON.parse(JSON.stringify(c.combatMap.tokens || {}));
+      const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
+      const payload = {
+        type: 'vtt-tokens',
+        room: room,
+        reason: reason || 'token-move',
+        at: at,
+        clientId: window.__vttClientId || null,
+        from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
+        tokens: tokens,
+        fogEnabled: !!c.combatMap.fogEnabled,
+        fogRevealed: Object.assign({}, c.combatMap.fogRevealed || {})
+      };
+      // 1) Token channel (storage event + polls)
+      try { localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(payload)); } catch (e) {}
+      // 2) Merge tokens into shared campaign storage (same as DM mapPopout) — critical for player
+      try {
+        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+        let data = null;
+        try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e2) { data = null; }
+        if (data && Array.isArray(data.campaigns) && data.campaigns.length) {
+          let camp = data.campaigns.find(x => x && x.id === data.activeCampaignId) || data.campaigns[0];
+          if (camp) {
+            if (!camp.combatMap) camp.combatMap = {};
+            camp.combatMap.tokens = tokens;
+            // keep other map fields if present on local
+            if (c.combatMap.gridSize != null) camp.combatMap.gridSize = c.combatMap.gridSize;
+            if (c.combatMap.gridOffsetX != null) camp.combatMap.gridOffsetX = c.combatMap.gridOffsetX;
+            if (c.combatMap.gridOffsetY != null) camp.combatMap.gridOffsetY = c.combatMap.gridOffsetY;
+            localStorage.setItem(key, JSON.stringify(data));
+          }
+        } else if (c) {
+          // Minimal write so other windows still get tokens via campaign load
+          const payload2 = {
+            campaigns: [Object.assign({}, c, { combatMap: Object.assign({}, c.combatMap, { tokens: tokens }) })],
+            activeCampaignId: c.id
+          };
+          try { localStorage.setItem(key, JSON.stringify(payload2)); } catch (e3) {}
+        }
+      } catch (e) {}
+      // 3) BroadcastChannel (same channels DM mapPopout uses)
+      try {
+        const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        if (ch) ch.postMessage(payload);
+      } catch (e) {}
+      try {
+        if (window.__mapBc) window.__mapBc.postMessage(payload);
+      } catch (e) {}
+      try {
+        if (!window.__mapBc2 && typeof BroadcastChannel !== 'undefined') {
+          try { window.__mapBc2 = new BroadcastChannel('dsc_combat_map_sync'); } catch (e2) {}
+        }
+        if (window.__mapBc2) window.__mapBc2.postMessage(payload);
+      } catch (e) {}
+      // 4) Also update in-memory state campaigns so this tab stays consistent
+      try {
+        if (typeof state !== 'undefined' && state && Array.isArray(state.campaigns)) {
+          const camp = state.campaigns.find(x => x && x.id === state.activeCampaignId) || state.campaigns[0];
+          if (camp) {
+            if (!camp.combatMap) camp.combatMap = c.combatMap;
+            camp.combatMap.tokens = tokens;
+          }
+        }
+      } catch (e) {}
+    } catch (e) {
+      console.warn('syncTokensLikeMapPopout', e);
+    }
+  }
+
+
   function broadcastTokenPositions(reason) {
     try {
       const c = getActive();
@@ -12613,7 +12696,7 @@ function escapeHtml(str) {
       window.__lastTokenSent = at;
       const payload = {
         type: 'vtt-tokens',
-        room: getVttRoomCode() || sessionStorage.getItem('vtt_room') || '',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
         reason: reason || 'token-move',
         at: at,
         clientId: window.__vttClientId || null,
@@ -12624,94 +12707,60 @@ function escapeHtml(str) {
       };
       try { localStorage.setItem('cybervlachos_vtt_tokens', JSON.stringify(payload)); } catch (e) {}
       try {
-        const full = Object.assign(buildVttStatePayload(reason) || { type: 'vtt-state', at: at }, {
-          map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed }
-        });
+        const full = Object.assign(
+          (typeof buildVttStatePayload === 'function' ? buildVttStatePayload(reason) : null) || { type: 'vtt-state', at: at },
+          { map: { tokens: payload.tokens, fogEnabled: payload.fogEnabled, fogRevealed: payload.fogRevealed } }
+        );
         localStorage.setItem('cybervlachos_vtt_sync', JSON.stringify(full));
       } catch (e) {}
-      const ch = getVttChannel();
-      if (ch) {
-        try { ch.postMessage(payload); } catch (e) {}
-      }
-      // Also map BC used by older popout path
+      try {
+        const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        if (ch) ch.postMessage(payload);
+      } catch (e) {}
       try {
         if (window.__mapBc) window.__mapBc.postMessage(payload);
       } catch (e) {}
-      try {
-        // Secondary channel name some popouts listen on
-        if (!window.__mapBc2 && typeof BroadcastChannel !== 'undefined') {
-          try { window.__mapBc2 = new BroadcastChannel('dsc_combat_map_sync'); } catch (e2) {}
-        }
-        if (window.__mapBc2) window.__mapBc2.postMessage(payload);
-      } catch (e) {}
-    } catch (e) { console.warn('token bc', e); }
+    } catch (e) {
+      console.warn('token bc', e);
+    }
   }
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
-    // Ignore our own echo
-    if (msg.clientId && window.__vttClientId && msg.clientId === window.__vttClientId) return;
-    // While DM is dragging, still accept remote player updates for other tokens
-    const localDragId = window.__tokenDragActive ? window.__mapDragId : null;
-    // Keep local drag position while merging remote tokens
-    let room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
-    const msgRoom = msg.room || '';
-    if (!room && msgRoom) {
-      try { sessionStorage.setItem('vtt_room', String(msgRoom).toUpperCase()); } catch (e) {}
-      room = String(msgRoom).toUpperCase();
+    // Never clobber an in-progress local drag
+    if (window.__tokenDragActive) {
+      if (window.__tokenDragStartedAt && Date.now() - window.__tokenDragStartedAt > 3000) {
+        window.__tokenDragActive = false;
+      } else {
+        return;
+      }
     }
+    const room = (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '';
+    const msgRoom = msg.room || '';
     // Only filter when BOTH sides have a room code and they differ
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
-    // Ignore exact echo of our last send
+    // Ignore our own echo
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
-    // Don't let stale DM broadcasts snap a token back while/after local drag
-    if (window.__lastLocalTokenChange && msg.at && msg.at < window.__lastLocalTokenChange) return;
-    if (window.__lastLocalTokenChange && msg.from !== 'player' && (Date.now() - window.__lastLocalTokenChange) < 400) {
-      // brief grace so our broadcast can land on DM first
-      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
-    }
-    // Don't skip forever if drag flag stuck
-    if (window.__tokenDragActive && window.__tokenDragStartedAt && Date.now() - window.__tokenDragStartedAt > 3000) {
-      window.__tokenDragActive = false;
-    }
     try {
       const map = getCombatMap();
       if (!map) return;
       if (msg.type === 'vtt-tokens' && msg.tokens) {
-        map.tokens = map.tokens || {};
-        Object.keys(msg.tokens).forEach(k => {
-          if (localDragId && String(k) === String(localDragId)) return;
-          map.tokens[k] = msg.tokens[k];
-        });
-        if (msg.fogRevealed && msg.from !== 'player') map.fogRevealed = msg.fogRevealed;
-        if (msg.fogEnabled != null && msg.from !== 'player') map.fogEnabled = msg.fogEnabled;
+        map.tokens = msg.tokens;
+        if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
+        if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         try { renderMapRoster(); } catch (e) {}
-        if (msg.from === 'player' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
-          try { save(); } catch (e) {}
-        }
       } else if (msg.type === 'vtt-state' && msg.map && msg.map.tokens) {
-        map.tokens = map.tokens || {};
-        Object.keys(msg.map.tokens).forEach(k => {
-          if (localDragId && String(k) === String(localDragId)) return;
-          map.tokens[k] = msg.map.tokens[k];
-        });
+        map.tokens = msg.map.tokens;
         if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
         if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+        try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         try { renderMapRoster(); } catch (e) {}
-      } else return;
-      // Persist token positions into workspace even from player window (local only)
-      try {
-        if (!isPlayerRole() || isMapPopoutMode()) {
-          // popout/player: write tokens into shared localStorage campaign via light merge
-          const raw = localStorage.getItem(typeof STORAGE_KEY !== 'undefined' ? STORAGE_KEY : 'cybervlachos_combat_v1');
-          // always update in-memory; DM save will persist full
-        }
-      } catch (e) {}
-      try { renderBattleMap(); } catch (e) {}
-      try { renderMapRoster(); } catch (e) {}
-    } catch (e) { console.warn('apply tokens', e); }
+      }
+    } catch (e) {
+      console.warn('applyTokenMessage', e);
+    }
   }
 
   function broadcastVttState(reason) {
@@ -14296,7 +14345,7 @@ function escapeHtml(str) {
   }
 
 function bindMapCanvasInteractions(force) {
-    // Simple, single document-level binder — works on main + DM popout + player
+    // Restored simple binder (working DM mapPopout path) + player claim-by-name + player broadcast
     if (window.__simpleMapDragBound && !force) {
       return true;
     }
@@ -14335,52 +14384,47 @@ function bindMapCanvasInteractions(force) {
       if (!(typeof isPlayerRole === 'function' && isPlayerRole())) return true;
       try {
         const claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
-        if (!claimed) {
-          try { toast('Claim your character first to move a token'); } catch (e) {}
-          return false;
-        }
+        if (!claimed) return false;
         const tid = String(id || '');
-        const cname = String(claimed.name || '').trim().toLowerCase();
-        const ids = new Set([
-          String(claimed.id != null ? claimed.id : ''),
-          String(claimed.name || ''),
-          String(claimed.sourceId || ''),
-          String(claimed.charId || ''),
-          String(claimed.characterId || '')
-        ].filter(Boolean));
-        if (ids.has(tid)) return true;
-        if (cname && tid.toLowerCase() === cname) return true;
-        // Resolve combatant for this token key
-        try {
-          const combat = getCombat(getActive());
-          const list = (combat && combat.combatants) || [];
-          const cb = list.find((x, i) =>
-            String(x.id) === tid || String(x.name) === tid || String(i) === tid ||
-            String(x.sourceId || '') === tid || String(x.charId || '') === tid
-          );
-          if (cb) {
-            if (ids.has(String(cb.id)) || ids.has(String(cb.name))) return true;
-            if (cname && String(cb.name || '').trim().toLowerCase() === cname) return true;
-          }
-        } catch (e2) {}
-        // Last resort: token key contains claimed name
-        if (cname && tid.toLowerCase().includes(cname)) return true;
-        try { toast('You can only move ' + (claimed.name || 'your character')); } catch (e) {}
+        if (String(claimed.id) === tid) return true;
+        if (String(claimed.name || '') === tid) return true;
+        // Resolve token key → combatant, compare to claim
+        const combat = typeof getCombat === 'function' ? getCombat(getActive()) : null;
+        const list = (combat && combat.combatants) || [];
+        const cb = list.find((x, i) => String(x.id) === tid || String(x.name) === tid || String(i) === tid);
+        if (cb && (String(cb.id) === String(claimed.id) || String(cb.name) === String(claimed.name))) return true;
         return false;
       } catch (e) { return false; }
+    };
+
+    const pushTokens = (reason) => {
+      try {
+        if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions(reason || 'token');
+      } catch (e) {}
+      // Also merge tokens into shared STORAGE_KEY so other tabs pick them up via storage/load
+      try {
+        const c = getActive();
+        if (!c || !c.combatMap) return;
+        const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+        let data = null;
+        try { data = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e2) { data = null; }
+        if (!data || !Array.isArray(data.campaigns)) return;
+        const camp = data.campaigns.find(x => x && x.id === data.activeCampaignId) || data.campaigns[0];
+        if (!camp) return;
+        if (!camp.combatMap) camp.combatMap = {};
+        camp.combatMap.tokens = JSON.parse(JSON.stringify(c.combatMap.tokens || {}));
+        localStorage.setItem(key, JSON.stringify(data));
+      } catch (e) {}
     };
 
     const onDown = (ev) => {
       if (ev.button != null && ev.button !== 0) return;
       const canvas = getCanvas();
       if (!canvas) return;
-      // Only when event is on the canvas (or its wrap)
       const tEl = ev.target;
       if (tEl !== canvas && !(tEl && tEl.id === 'map-canvas') && !(tEl && tEl.closest && tEl.closest('#map-canvas-wrap'))) {
-        // allow only if target is canvas wrap background
         if (!(tEl && tEl.id === 'map-canvas-wrap')) return;
       }
-      // Must be inside canvas bounds
       const rect = canvas.getBoundingClientRect();
       if (ev.clientX < rect.left || ev.clientX > rect.right || ev.clientY < rect.top || ev.clientY > rect.bottom) return;
 
@@ -14391,8 +14435,7 @@ function bindMapCanvasInteractions(force) {
       if (!w) return;
       const { x, y } = w;
 
-      // Fog (DM)
-      if ((tool === 'fog-reveal' || tool === 'fog-hide' || window.__mapFogTool) && tool !== 'token' && tool !== 'pan' && tool !== 'ruler' && !(tool && tool.startsWith('aoe-'))) {
+      if ((tool === 'fog-reveal' || tool === 'fog-hide' || window.__mapFogTool) && tool !== 'token' && tool !== 'pan' && tool !== 'ruler' && !(tool && String(tool).startsWith('aoe-'))) {
         if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
         const mode = tool === 'fog-hide' || window.__mapFogTool === 'hide' ? 'hide' : 'reveal';
         if (typeof paintFog === 'function') paintFog(map, x, y, mode === 'reveal');
@@ -14413,25 +14456,6 @@ function bindMapCanvasInteractions(force) {
         return;
       }
 
-      // AoE tools — click origin, drag to set size/direction
-      if (tool && tool.startsWith('aoe-')) {
-        if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
-        const shape = tool.replace('aoe-', '') || 'sphere';
-        const ft = Number(document.getElementById('map-aoe-ft')?.value) || 20;
-        map.aoe = {
-          shape: shape === 'sphere' ? 'sphere' : shape,
-          x: x, y: y,
-          ft: ft,
-          angle: -Math.PI / 2,
-          x2: x, y2: y
-        };
-        window.__aoeDrag = { x0: x, y0: y, shape: map.aoe.shape };
-        map.ruler = null;
-        paintNow();
-        try { save(); } catch (e) {}
-        return;
-      }
-
       if (tool === 'token' || tool === 'pan' || !tool) {
         const found = hitToken(map, x, y);
         if (found) {
@@ -14439,27 +14463,17 @@ function bindMapCanvasInteractions(force) {
           const sel = document.getElementById('map-token-combatant');
           if (sel) sel.value = found;
           if (!canDragToken(found)) {
-            try { toast('Selected (view only)'); } catch (e) {}
             return;
           }
-          if (tool === 'pan' && !ev.shiftKey) {
-            // pan tool = select only unless shift held
-            return;
-          }
+          if (tool === 'pan' && !ev.shiftKey) return;
           window.__mapDragId = found;
           window.__tokenDragActive = true;
           window.__tokenDragStartedAt = Date.now();
-          window.__lastLocalTokenChange = Date.now();
           try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
-          try {
-            if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-              toast('Moving token…');
-            }
-          } catch (e) {}
           paintNow();
           return;
         }
-        // Place token (DM)
+        // Place token (DM only)
         if (tool === 'token' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
           let id = null;
           const sel = document.getElementById('map-token-combatant');
@@ -14468,14 +14482,14 @@ function bindMapCanvasInteractions(force) {
             try {
               const combat = getCombat(getActive());
               const cur = combat && combat.combatants && combat.combatants[combat.selectedIndex];
-              if (cur) id = String(cur.id);
+              if (cur) id = String(cur.id != null ? cur.id : combat.selectedIndex);
             } catch (e) {}
           }
-          if (!id) { try { toast('Select a combatant first'); } catch (e) {} return; }
+          if (!id) return;
           map.tokens = map.tokens || {};
           map.tokens[id] = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
           try { save(); } catch (e) {}
-          try { if (typeof broadcastTokenPositions === 'function') broadcastTokenPositions('place'); } catch (e) {}
+          pushTokens('place');
           paintNow();
         }
       }
@@ -14505,78 +14519,33 @@ function bindMapCanvasInteractions(force) {
         paintNow();
         return;
       }
-      if (window.__aoeDrag && map.aoe) {
-        const d = window.__aoeDrag;
-        map.aoe.x2 = x;
-        map.aoe.y2 = y;
-        map.aoe.angle = Math.atan2(y - d.y0, x - d.x0);
-        // Size from drag distance (5 ft per grid square)
-        const g = Number(map.gridSize) || 70;
-        const dist = Math.hypot(x - d.x0, y - d.y0);
-        const squares = Math.max(1, Math.round(dist / g));
-        const ftInput = Number(document.getElementById('map-aoe-ft')?.value) || 0;
-        if (map.aoe.shape === 'sphere' || map.aoe.shape === 'cube') {
-          map.aoe.ft = ftInput > 0 ? Math.max(ftInput, squares * 5) : squares * 5;
-        } else {
-          // cone / line length
-          map.aoe.ft = ftInput > 0 ? Math.max(ftInput, squares * 5) : squares * 5;
-        }
-        paintNow();
-        return;
-      }
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
       map.tokens[window.__mapDragId] = pos;
-      window.__lastLocalTokenChange = Date.now();
       paintNow();
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 50) {
         window.__lastTokenDragBc = now;
-        try {
-          try { save(); } catch (e2) {}
-          // DM and player (claimed token) both broadcast so popups stay in sync both ways
-          if (typeof broadcastTokenPositions === 'function') {
-            broadcastTokenPositions(
-              (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-drag' : 'drag'
-            );
-          }
-        } catch (e) {}
+        // BOTH DM and player broadcast (player was missing this live path)
+        pushTokens((typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-drag' : 'drag');
       }
     };
 
     const onUp = (ev) => {
-      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag || window.__aoeDrag;
+      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
       window.__mapDragId = null;
       window.__tokenDragActive = false;
       window.__fogDrag = null;
       window.__gridDrag = null;
       window.__rulerDrag = false;
-      window.__aoeDrag = null;
       if (had) {
-        window.__lastLocalTokenChange = Date.now();
         try { save(); } catch (e) {}
-        try {
-          if (typeof broadcastTokenPositions === 'function') {
-            broadcastTokenPositions(
-              (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-up' : 'up'
-            );
-          }
-        } catch (e) {}
-        // Extra belt-and-suspenders for player → DM
-        try {
-          if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
-            playerPersistAndSyncCombat();
-          }
-        } catch (e) {}
-        try {
-          if (typeof notifyMapWindows === 'function') notifyMapWindows();
-        } catch (e) {}
+        pushTokens((typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-up' : 'up');
         paintNow();
       }
     };
 
-    // Capture phase on document — cannot be blocked by overlays
     document.addEventListener('pointerdown', onDown, true);
     document.addEventListener('pointermove', onMove, true);
     document.addEventListener('pointerup', onUp, true);
