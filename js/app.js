@@ -12213,7 +12213,19 @@ function escapeHtml(str) {
       if (!e.key) return;
       if (e.key !== STORAGE_KEY && e.key !== ROSTER_BACKUP_KEY) return;
       try { if (typeof load === 'function') load(); } catch (err) {}
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+          const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
+          if (map && typeof applyTokenAuthorityToMap === 'function') applyTokenAuthorityToMap(map);
+        }
+      } catch (err) {}
       const after = () => {
+        try {
+          if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+            const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
+            if (map && typeof applyTokenAuthorityToMap === 'function') applyTokenAuthorityToMap(map);
+          }
+        } catch (err) {}
         if (isMapPopoutMode() || document.getElementById('view-map')?.classList.contains('active')) {
           try { refreshMapTokenSelect(); renderBattleMap(); renderMapRoster(); } catch (err) {}
         }
@@ -12724,6 +12736,55 @@ function escapeHtml(str) {
       console.warn('token bc', e);
     }
   }
+  
+  /** Player token authority: prevents DM broadcasts from snapping player-moved tokens back. */
+  function notePlayerTokenAuthority(tokenId, pos) {
+    if (!window.__tokenAuthority) window.__tokenAuthority = {};
+    if (tokenId == null) return;
+    window.__tokenAuthority[String(tokenId)] = {
+      x: pos && pos.x,
+      y: pos && pos.y,
+      at: Date.now()
+    };
+    window.__tokenAuthorityUntil = Date.now() + 2500;
+  }
+  function applyTokenAuthorityToMap(map) {
+    if (!map || !window.__tokenAuthority) return;
+    const now = Date.now();
+    if (window.__tokenAuthorityUntil && now > window.__tokenAuthorityUntil) {
+      // Expire old locks
+      Object.keys(window.__tokenAuthority).forEach(k => {
+        const row = window.__tokenAuthority[k];
+        if (!row || (now - (row.at || 0)) > 2500) delete window.__tokenAuthority[k];
+      });
+    }
+    map.tokens = map.tokens || {};
+    Object.keys(window.__tokenAuthority).forEach(k => {
+      const row = window.__tokenAuthority[k];
+      if (!row) return;
+      if ((now - (row.at || 0)) > 2500) {
+        delete window.__tokenAuthority[k];
+        return;
+      }
+      map.tokens[k] = { x: row.x, y: row.y };
+    });
+  }
+  function shouldIgnoreRemoteTokens(msg) {
+    try {
+      if (!(typeof isPlayerRole === 'function' && isPlayerRole())) return false;
+      // Never ignore our own player broadcasts (already filtered by __lastTokenSent)
+      if (msg && msg.from === 'player') return false;
+      // While dragging or briefly after, ignore DM token streams that would snap back
+      if (window.__tokenDragActive) return true;
+      if (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil) {
+        // Allow merge but caller will re-apply authority
+        return false;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+
   function applyTokenMessage(msg) {
     if (!msg || (msg.type !== 'vtt-tokens' && msg.type !== 'vtt-state')) return;
     // Never clobber an in-progress local drag
@@ -12740,20 +12801,70 @@ function escapeHtml(str) {
     if (room && msgRoom && String(room).toUpperCase() !== String(msgRoom).toUpperCase()) return;
     // Ignore our own echo
     if (msg.at && window.__lastTokenSent && msg.at === window.__lastTokenSent) return;
+    // Player: ignore pure DM token floods while we hold authority (prevents snap-back)
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && msg.from !== 'player') {
+        if (window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil) {
+          // Apply other tokens from DM, but we will force our authority positions after
+        }
+      }
+    } catch (e) {}
     try {
       const map = getCombatMap();
       if (!map) return;
       if (msg.type === 'vtt-tokens' && msg.tokens) {
-        map.tokens = msg.tokens;
-        if (msg.fogRevealed) map.fogRevealed = msg.fogRevealed;
-        if (msg.fogEnabled != null) map.fogEnabled = msg.fogEnabled;
+        // Merge rather than blind replace when player holds authority
+        map.tokens = map.tokens || {};
+        const auth = window.__tokenAuthority || {};
+        Object.keys(msg.tokens).forEach(k => {
+          if (auth[k] && (Date.now() - (auth[k].at || 0)) < 2500) return; // keep local authority
+          map.tokens[k] = msg.tokens[k];
+        });
+        if (msg.fogRevealed && !(typeof isPlayerRole === 'function' && isPlayerRole() && window.__tokenDragActive)) {
+          if (msg.from !== 'player' || !map.fogRevealed) {
+            // only take fog from DM
+            if (msg.from !== 'player') map.fogRevealed = msg.fogRevealed;
+          }
+        }
+        if (msg.fogEnabled != null && msg.from !== 'player') map.fogEnabled = msg.fogEnabled;
+        try { if (typeof applyTokenAuthorityToMap === 'function') applyTokenAuthorityToMap(map); } catch (e) {}
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         try { renderMapRoster(); } catch (e) {}
+        // DM: persist player token moves into campaign so later DM saves don't overwrite
+        if (msg.from === 'player' && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          try {
+            const c = getActive();
+            if (c && c.combatMap) c.combatMap.tokens = map.tokens;
+            // Write STORAGE_KEY with updated tokens (DM path)
+            if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) {
+              try { save(); } catch (e2) {}
+            } else {
+              try {
+                const key = (typeof STORAGE_KEY !== 'undefined') ? STORAGE_KEY : 'cybervlachos_combat_v1';
+                let data = JSON.parse(localStorage.getItem(key) || 'null');
+                if (data && data.campaigns) {
+                  const camp = data.campaigns.find(x => x && x.id === data.activeCampaignId) || data.campaigns[0];
+                  if (camp) {
+                    if (!camp.combatMap) camp.combatMap = {};
+                    camp.combatMap.tokens = JSON.parse(JSON.stringify(map.tokens));
+                    localStorage.setItem(key, JSON.stringify(data));
+                  }
+                }
+              } catch (e3) {}
+            }
+          } catch (e) {}
+        }
       } else if (msg.type === 'vtt-state' && msg.map && msg.map.tokens) {
-        map.tokens = msg.map.tokens;
-        if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
-        if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+        map.tokens = map.tokens || {};
+        const auth = window.__tokenAuthority || {};
+        Object.keys(msg.map.tokens).forEach(k => {
+          if (auth[k] && (Date.now() - (auth[k].at || 0)) < 2500) return;
+          map.tokens[k] = msg.map.tokens[k];
+        });
+        if (msg.map.fogRevealed && msg.from !== 'player') map.fogRevealed = msg.map.fogRevealed;
+        if (msg.map.fogEnabled != null && msg.from !== 'player') map.fogEnabled = msg.map.fogEnabled;
+        try { if (typeof applyTokenAuthorityToMap === 'function') applyTokenAuthorityToMap(map); } catch (e) {}
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
         try { redrawMapLive(); } catch (e) { try { renderBattleMap(); } catch (e2) {} }
         try { renderMapRoster(); } catch (e) {}
@@ -12958,6 +13069,10 @@ function escapeHtml(str) {
         const msg = JSON.parse(raw);
         if (!msg || msg.type !== 'vtt-tokens' || !msg.tokens) return;
         if (msg.at && msg.at === window.__lastPlayerTokenApplied) return;
+        // While player holds token authority, skip pure DM floods (snap-back source)
+        if (msg.from !== 'player' && window.__tokenAuthorityUntil && Date.now() < window.__tokenAuthorityUntil) {
+          return;
+        }
         window.__lastPlayerTokenApplied = msg.at;
         applyTokenMessage(msg);
       } catch (e) {}
@@ -14523,11 +14638,15 @@ function bindMapCanvasInteractions(force) {
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
       map.tokens[window.__mapDragId] = pos;
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof notePlayerTokenAuthority === 'function') {
+          notePlayerTokenAuthority(window.__mapDragId, pos);
+        }
+      } catch (e) {}
       paintNow();
       const now = Date.now();
       if (!window.__lastTokenDragBc || now - window.__lastTokenDragBc > 50) {
         window.__lastTokenDragBc = now;
-        // BOTH DM and player broadcast (player was missing this live path)
         pushTokens((typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player-drag' : 'drag');
       }
     };
