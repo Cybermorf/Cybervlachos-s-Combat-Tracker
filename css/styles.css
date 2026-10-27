@@ -4122,3 +4122,13 @@ html.vtt-player #cr-apply-dmg {
   background: linear-gradient(145deg, #f0e8ff, #8a6cbf 55%, #3d2a66) !important;
   color: #120a20 !important;
 }
+
+.popup-die.is-kept {
+  box-shadow: 0 0 16px rgba(120, 220, 140, 0.75), 0 4px 14px rgba(0,0,0,0.45) !important;
+  outline: 2px solid #8d8;
+}
+.popup-die.is-dropped {
+  opacity: 0.45;
+  filter: grayscale(0.35);
+  transform: scale(0.92);
+}

@@ -7496,13 +7496,45 @@ function rollDieExpr(expr) {
   }
 
   
+  function restoreDamageRollButtonState(root) {
+    try {
+      const last = window.__lastCombatRoll || {};
+      let ok = !!(last.canDamage || last.hit || last.isCrit);
+      if (!ok && last.hitTotal != null && last.ac != null && !isNaN(Number(last.ac)) && !last.isFumble) {
+        if (Number(last.hitTotal) >= Number(last.ac)) ok = true;
+      }
+      const scope = root && root.querySelectorAll ? root : document;
+      scope.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+        if (ok) {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+          btn.title = 'Roll damage and apply to selected target(s)';
+        }
+      });
+    } catch (e) {}
+  }
+
   function setDamageRollEnabled(panel, enabled, reason) {
     try {
-      const btn = panel && panel.querySelector('#cr-roll-dmg');
-      if (!btn) return;
-      btn.disabled = !enabled;
-      btn.title = enabled ? 'Roll damage and apply to selected target(s)' : (reason || 'Hit the target AC first');
-      btn.classList.toggle('is-ready', !!enabled);
+      const roots = [];
+      if (panel && panel.querySelector) roots.push(panel);
+      roots.push(document);
+      roots.forEach(root => {
+        root.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+          if (enabled) {
+            btn.disabled = false;
+            btn.removeAttribute('disabled');
+            btn.classList.add('is-ready');
+            btn.title = 'Roll damage and apply to selected target(s)';
+          } else {
+            btn.disabled = true;
+            btn.setAttribute('disabled', 'disabled');
+            btn.classList.remove('is-ready');
+            btn.title = reason || 'Hit the target AC first';
+          }
+        });
+      });
     } catch (e) {}
   }
 
@@ -7554,9 +7586,19 @@ function rollDieExpr(expr) {
     const r2 = d20();
     let used = r1;
     let note = '';
-    if (adv === 'adv') { used = Math.max(r1, r2); note = `adv [${r1}, ${r2}] → ${used}`; }
-    else if (adv === 'dis') { used = Math.min(r1, r2); note = `dis [${r1}, ${r2}] → ${used}`; }
-    else { note = `d20=${used}`; }
+    let faces = [{ sides: 20, value: r1 }];
+    if (adv === 'adv') {
+      used = Math.max(r1, r2);
+      note = `Advantage [${r1}, ${r2}] → ${used}`;
+      faces = [{ sides: 20, value: r1 }, { sides: 20, value: r2 }];
+    } else if (adv === 'dis') {
+      used = Math.min(r1, r2);
+      note = `Disadvantage [${r1}, ${r2}] → ${used}`;
+      faces = [{ sides: 20, value: r1 }, { sides: 20, value: r2 }];
+    } else {
+      note = `d20=${used}`;
+      faces = [{ sides: 20, value: used }];
+    }
     const hitTotal = used + toHit + hitBonus;
     const isCrit = !!opts.forceCrit || used === 20;
     const isFumble = !opts.forceCrit && used === 1;
@@ -7570,7 +7612,7 @@ function rollDieExpr(expr) {
     }
     const formula = `${used}${toHit || hitBonus ? (toHit + hitBonus >= 0 ? '+' : '') + (toHit + hitBonus) : ''} = ${hitTotal}`;
     return {
-      hitTotal, used, note, isCrit, isFumble, toHit, hitBonus,
+      hitTotal, used, r1, r2, adv, faces, note, isCrit, isFumble, toHit, hitBonus,
       formula: formula,
       dmgTotal: dmg.total + (opts.attackOnly ? 0 : dmgBonus),
       dmgDetail: dmg.detail + (!opts.attackOnly && dmgBonus ? ((dmgBonus >= 0 ? '+' : '') + dmgBonus) : '')
@@ -8416,6 +8458,21 @@ function rollDieExpr(expr) {
             d.classList.toggle('is-crit', sides === 20 && final === 20);
             d.classList.toggle('is-fumble', sides === 20 && final === 1);
           });
+          // Advantage / disadvantage: highlight kept die
+          try {
+            const d20s = [...diceEls].filter(d => parseInt(d.dataset.dieSides || d.dataset.sides, 10) === 20);
+            if (d20s.length === 2) {
+              const v0 = parseInt(d20s[0].dataset.final, 10);
+              const v1 = parseInt(d20s[1].dataset.final, 10);
+              const plain = (res && res.textContent) || '';
+              const isDis = /disadvantage/i.test(plain) || /dis \[/i.test(plain);
+              const keepIdx = isDis ? (v0 <= v1 ? 0 : 1) : (v0 >= v1 ? 0 : 1);
+              d20s.forEach((d, i) => {
+                d.classList.toggle('is-kept', i === keepIdx);
+                d.classList.toggle('is-dropped', i !== keepIdx);
+              });
+            }
+          } catch (e) {}
           overlay.classList.remove('is-rolling');
           overlay.classList.add('is-reveal');
           if (label) label.textContent = 'Result';
@@ -8939,6 +8996,10 @@ function rollDieExpr(expr) {
       const rollHtml = `<div><strong>${escapeHtml(atkName)}</strong> · ${escapeHtml(res.note)}</div>
           <div>To hit: <strong>${res.formula}</strong>${res.isCrit ? ' · CRIT' : ''}${res.isFumble ? ' · FUMBLE' : ''}${hitLine}</div>
           <div class="muted">${hits ? 'Damage Roll is ready.' : 'Miss — Damage Roll locked.'}</div>`;
+      // Adv/dis: animate both d20s; normal: single d20
+      try {
+        window.__pendingDiceFaces = (res.faces && res.faces.length) ? res.faces : [{ sides: 20, value: res.used }];
+      } catch (e) {}
       showRollHtml(rollHtml);
       try { cb.lastRollHtml = rollHtml; } catch (e) {}
       window.__lastCombatRoll = {
@@ -8975,6 +9036,17 @@ function rollDieExpr(expr) {
         } else {
           renderCombat();
         }
+        try {
+          const last = window.__lastCombatRoll || {};
+          if (last.canDamage || last.hit || last.isCrit) {
+            document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+              btn.disabled = false;
+              btn.removeAttribute('disabled');
+              btn.classList.add('is-ready');
+              btn.title = 'Roll damage and apply to selected target(s)';
+            });
+          }
+        } catch (e) {}
       } catch (e) { try { renderCombat(); } catch (e2) {} }
       // Hard-disable Roll Attack if no budget left
       try {
@@ -8985,11 +9057,18 @@ function rollDieExpr(expr) {
     });
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
       const last = window.__lastCombatRoll || {};
-      if (!last.canDamage && !last.hit && !last.isCrit) {
+      let allowed = !!(last.canDamage || last.hit || last.isCrit);
+      // Recover if panel rebuild cleared canDamage but totals still show a hit
+      if (!allowed && last.hitTotal != null && last.ac != null && !isNaN(last.ac) && !last.isFumble) {
+        allowed = Number(last.hitTotal) >= Number(last.ac) || !!last.isCrit;
+      }
+      if (!allowed) {
         toast('Score a hit with Roll Attack first');
         setDamageRollEnabled(panel, false, 'Hit AC first');
         return;
       }
+      last.canDamage = true;
+      last.hit = true;
       const expr = (dmgEl && dmgEl.value) || last.dmgExpr || '1d8';
       let dmg = rollDieExpr(expr);
       const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || last.dmgBonus || 0;
@@ -13706,6 +13785,18 @@ function escapeHtml(str) {
     }
     try { applyRollAttackButtonState(body, me); } catch (e) {}
     try { restorePlayerRollResult(me); } catch (e) {}
+    try {
+      const last = window.__lastCombatRoll || {};
+      if (last.canDamage || last.hit || last.isCrit) {
+        const btn = body.querySelector('#cr-roll-dmg');
+        if (btn) {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+          btn.title = 'Roll damage and apply to selected target(s)';
+        }
+      }
+    } catch (e) {}
   }
 
   function applyPlayerShell() {
