@@ -7461,7 +7461,27 @@ function parseAttackLines(ch) {
     return 0;
   }
 
-function rollDieExpr(expr) {
+
+  function rollFairDie(sides) {
+    sides = Math.max(1, parseInt(sides, 10) || 20);
+    try {
+      if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+        // Rejection sampling — uniform 1..sides
+        const max = 0x100000000;
+        const limit = max - (max % sides);
+        const buf = new Uint32Array(1);
+        let x;
+        do {
+          crypto.getRandomValues(buf);
+          x = buf[0];
+        } while (x >= limit);
+        return (x % sides) + 1;
+      }
+    } catch (e) {}
+    return 1 + Math.floor(Math.random() * sides);
+  }
+
+  function rollDieExpr(expr) {
     const s = String(expr || '').replace(/\s+/g, '');
     const m = s.match(/^(\d+)d(\d+)([+-]\d+)?$/i);
     if (!m) {
@@ -7481,7 +7501,7 @@ function rollDieExpr(expr) {
     const faces = [];
     let sum = 0;
     for (let i = 0; i < n; i++) {
-      const r = 1 + Math.floor(Math.random() * sides);
+      const r = typeof rollFairDie === "function" ? rollFairDie(sides) : (1 + Math.floor(Math.random() * sides));
       rolls.push(r);
       faces.push({ sides: sides, value: r });
       sum += r;
@@ -7497,31 +7517,357 @@ function rollDieExpr(expr) {
 
   
   
-  // Delegated combat roll clicks — survive panel rebuilds
+  
+
+
+  
+  /**
+   * Document-level combat roller — works on player popup even after partial rebuilds.
+   * Uses live DOM values for adv / to-hit / damage.
+   */
+  function getCombatRollPanel() {
+    const btn = document.getElementById('cr-roll-btn') || document.getElementById('cr-roll-dmg');
+    return btn ? (btn.closest('[data-player-detail]') || btn.closest('.player-combat-body') || btn.closest('#combat-detail') || btn.parentElement) : null;
+  }
+  function readAdvMode() {
+    const el = document.getElementById('cr-adv');
+    const v = el ? String(el.value || 'normal') : 'normal';
+    try { sessionStorage.setItem('cr_adv_mode', v); } catch (e) {}
+    return v;
+  }
+  function restoreAdvMode() {
+    try {
+      const saved = sessionStorage.getItem('cr_adv_mode');
+      const el = document.getElementById('cr-adv');
+      if (el && saved && (saved === 'normal' || saved === 'adv' || saved === 'dis')) el.value = saved;
+    } catch (e) {}
+  }
+  function activeCombatantForRoll() {
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof getClaimedCombatant === 'function') {
+        const me = getClaimedCombatant();
+        if (me) return me;
+      }
+    } catch (e) {}
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      if (combat && combat.combatants && combat.selectedIndex != null) {
+        return combat.combatants[combat.selectedIndex] || null;
+      }
+    } catch (e) {}
+    return null;
+  }
+  function runDelegatedAttackRoll() {
+    const cb = activeCombatantForRoll();
+    if (!cb) { try { toast('No combatant selected'); } catch (e) {} return; }
+    const panel = getCombatRollPanel() || document;
+    const mode = (document.getElementById('cr-mode') && document.getElementById('cr-mode').value) || 'attack';
+    const atkSel = document.getElementById('cr-attack');
+    const atkName = (atkSel && atkSel.selectedOptions && atkSel.selectedOptions[0])
+      ? atkSel.selectedOptions[0].textContent
+      : 'Attack';
+    const toHit = parseInt((document.getElementById('cr-tohit') || {}).value, 10) || 0;
+    const hitBonus = parseInt((document.getElementById('cr-hit-bonus') || {}).value, 10) || 0;
+    const adv = readAdvMode();
+    const forceCrit = !!(document.getElementById('cr-force-crit') && document.getElementById('cr-force-crit').checked);
+    // Budget
+    try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
+    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
+      try { toast('No actions / weapon attacks left this turn'); } catch (e) {}
+      return;
+    }
+    if (typeof spendMainCombatAction === 'function') {
+      if (!spendMainCombatAction(cb, 'attack', 'Attack')) {
+        try { toast('No actions left — cannot Attack'); } catch (e) {}
+        return;
+      }
+    }
+    const res = rollCombatAttack({
+      adv: adv,
+      toHit: toHit,
+      hitBonus: hitBonus,
+      damage: '0',
+      dmgBonus: 0,
+      forceCrit: forceCrit,
+      attackOnly: true
+    });
+    let acVal = parseInt((document.getElementById('cr-ac') || {}).value, 10);
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const sel = document.getElementById('cr-target');
+      if (sel && sel.selectedOptions && sel.selectedOptions.length && combat) {
+        const idx = parseInt(sel.selectedOptions[0].value, 10);
+        const tgt = combat.combatants[idx];
+        if (tgt && tgt.ac != null && (isNaN(acVal) || acVal === 0)) {
+          acVal = parseInt(tgt.ac, 10);
+          const acInput = document.getElementById('cr-ac');
+          if (acInput && !acInput.value) acInput.value = String(acVal);
+        }
+      }
+    } catch (e) {}
+    let hits = false;
+    let hitLine = '';
+    if (!isNaN(acVal)) {
+      hits = res.isFumble ? false : (res.isCrit || res.hitTotal >= acVal);
+      hitLine = hits ? (' · HIT vs AC ' + acVal) : (' · MISS vs AC ' + acVal);
+    } else {
+      hitLine = ' · set Target AC to resolve hit';
+      hits = false;
+    }
+    const dmgEl = document.getElementById('cr-dmg');
+    const dmgBonusEl = document.getElementById('cr-dmg-bonus');
+    const rollHtml = '<div><strong>' + (atkName || 'Attack') + '</strong> · ' + (res.note || '') + '</div>'
+      + '<div>To hit: <strong>' + res.formula + '</strong>'
+      + (res.isCrit ? ' · CRIT' : '') + (res.isFumble ? ' · FUMBLE' : '') + hitLine + '</div>'
+      + '<div class="muted">' + (hits ? 'Damage Roll is ready.' : 'Miss — Damage Roll locked.') + '</div>';
+    try { window.__pendingDiceFaces = (res.faces && res.faces.length) ? res.faces : [{ sides: 20, value: res.used }]; } catch (e) {}
+    try { if (typeof publishCombatRollResult === 'function') publishCombatRollResult(rollHtml, cb); } catch (e) {}
+    window.__lastCombatRoll = {
+      damage: 0,
+      heal: 0,
+      hit: hits,
+      isCrit: !!res.isCrit,
+      isFumble: !!res.isFumble,
+      hitTotal: res.hitTotal,
+      ac: acVal,
+      canDamage: hits,
+      name: atkName,
+      dmgExpr: (dmgEl && dmgEl.value) || '1d8',
+      dmgBonus: parseInt((dmgBonusEl || {}).value, 10) || 0,
+      toHit: toHit,
+      hitBonus: hitBonus,
+      adv: adv
+    };
+    try {
+      document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+        if (hits) {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+          btn.title = 'Roll damage and apply to selected target(s)';
+        } else {
+          btn.disabled = true;
+          btn.setAttribute('disabled', 'disabled');
+          btn.classList.remove('is-ready');
+        }
+      });
+    } catch (e) {}
+    try {
+      if (typeof setDamageRollEnabled === 'function') setDamageRollEnabled(document, hits, hits ? '' : 'Attack missed AC');
+    } catch (e) {}
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try { if (typeof save === 'function') save(); } catch (e) {}
+    // Sync roll gate + economy to other windows
+    try {
+      const payload = {
+        type: 'vtt-combat-roll',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
+        at: Date.now(),
+        clientId: window.__vttClientId || null,
+        from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
+        lastCombatRoll: window.__lastCombatRoll,
+        attackerId: cb.id || cb.name,
+        economy: { actionsUsed: cb.actionsUsed, attacksUsed: cb.attacksUsed, actionsMax: cb.actionsMax, attacksMax: cb.attacksMax }
+      };
+      localStorage.setItem('cybervlachos_vtt_combat_roll', JSON.stringify(payload));
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) ch.postMessage(payload);
+      if (window.__mapBc) window.__mapBc.postMessage(payload);
+    } catch (e) {}
+    try { toast((atkName || 'Attack') + ': ' + res.formula + hitLine); } catch (e) {}
+  }
+  function runDelegatedDamageRoll() {
+    const last = window.__lastCombatRoll || {};
+    let allowed = !!(last.canDamage || last.hit || last.isCrit);
+    if (!allowed && last.hitTotal != null && last.ac != null && !last.isFumble) {
+      allowed = Number(last.hitTotal) >= Number(last.ac) || !!last.isCrit;
+    }
+    if (!allowed) {
+      try { toast('Score a hit with Roll Attack first'); } catch (e) {}
+      return;
+    }
+    const cb = activeCombatantForRoll();
+    const expr = (document.getElementById('cr-dmg') && document.getElementById('cr-dmg').value) || last.dmgExpr || '1d8';
+    let dmg = rollDieExpr(expr);
+    const bonus = parseInt((document.getElementById('cr-dmg-bonus') || {}).value, 10) || last.dmgBonus || 0;
+    let faces = (dmg.faces || []).slice();
+    if (last.isCrit) {
+      const dmg2 = rollDieExpr(expr);
+      faces = faces.concat(dmg2.faces || []);
+      dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail, faces: faces, expr: dmg.expr };
+    }
+    const exprHasBonus = /[+-]\d+$/.test(String(expr).replace(/\s+/g, ''));
+    let total = exprHasBonus ? dmg.total : (dmg.total + bonus);
+    const halfBox = !!(document.getElementById('cr-half') && document.getElementById('cr-half').checked);
+    const rollHtml = '<div><strong>' + (last.name || 'Attack') + '</strong> · Damage Roll' + (last.isCrit ? ' (CRIT)' : '') + ' · ' + (dmg.expr || expr) + '</div>'
+      + '<div>Damage: <strong>' + total + '</strong> <span class="muted">(' + dmg.detail + ')</span></div>';
+    try { window.__pendingDiceFaces = faces.length ? faces : null; } catch (e) {}
+    try { if (typeof publishCombatRollResult === 'function') publishCombatRollResult(rollHtml, cb); } catch (e) {}
+    window.__lastCombatRoll = Object.assign({}, last, { damage: total, heal: 0, hit: true, canDamage: true, applied: false });
+    const applyAmt = document.getElementById('cr-apply-amt');
+    if (applyAmt) applyAmt.value = String(total);
+    // Targets
+    let packs = [];
+    try {
+      const c = getActive();
+      const combat = c ? getCombat(c) : null;
+      const list = (combat && combat.combatants) || [];
+      const sel = document.getElementById('cr-target');
+      if (sel) {
+        [...sel.selectedOptions].forEach(o => {
+          const idx = parseInt(o.value, 10);
+          if (!isNaN(idx) && list[idx]) packs.push({ combat: combat, idx: idx, target: list[idx] });
+        });
+      }
+      if (!packs.length && combat) {
+        let tIdx = -1;
+        if (combat.selectedIndex != null && list[combat.selectedIndex] && (!cb || String(list[combat.selectedIndex].id) !== String(cb.id))) {
+          tIdx = combat.selectedIndex;
+        }
+        if (tIdx < 0) {
+          tIdx = list.findIndex(x => {
+            const s = String(x.side || '').toLowerCase();
+            return s === 'enemy' || s === 'villain' || s === 'enemies';
+          });
+        }
+        if (tIdx < 0) tIdx = list.findIndex(x => !cb || String(x.id) !== String(cb.id));
+        if (tIdx >= 0) packs.push({ combat: combat, idx: tIdx, target: list[tIdx] });
+      }
+    } catch (e) {}
+    if (!packs.length) {
+      try { toast('Damage rolled (' + total + ') — select a target'); } catch (e) {}
+      return;
+    }
+    packs.forEach(({ target }) => {
+      let amt = typeof computeAppliedDamage === 'function' ? computeAppliedDamage(total, target, { half: halfBox }) : total;
+      if (halfBox && typeof computeAppliedDamage !== 'function') amt = Math.floor(total / 2);
+      let left = amt;
+      const temp = target.tempHp || 0;
+      if (temp > 0) {
+        const absorb = Math.min(temp, left);
+        target.tempHp = temp - absorb;
+        left -= absorb;
+      }
+      target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+      try {
+        if (typeof appendSharedCombatLog === 'function') {
+          appendSharedCombatLog(((cb && cb.name) || 'Attacker') + ' deals ' + amt + ' to ' + (target.name || 'target'), {});
+        }
+      } catch (e) {}
+    });
+    window.__lastCombatRoll.applied = true;
+    window.__lastCombatRoll.canDamage = false;
+    try {
+      document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+        btn.disabled = true;
+        btn.setAttribute('disabled', 'disabled');
+        btn.classList.remove('is-ready');
+      });
+    } catch (e) {}
+    try { if (typeof save === 'function') save(); } catch (e) {}
+    try {
+      const payload = {
+        type: 'vtt-combat-roll',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
+        at: Date.now(),
+        clientId: window.__vttClientId || null,
+        from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
+        lastCombatRoll: window.__lastCombatRoll,
+        hpUpdates: packs.map(p => ({ id: p.target.id, name: p.target.name, hp: p.target.hp, tempHp: p.target.tempHp }))
+      };
+      localStorage.setItem('cybervlachos_vtt_combat_roll', JSON.stringify(payload));
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) ch.postMessage(payload);
+      if (window.__mapBc) window.__mapBc.postMessage(payload);
+    } catch (e) {}
+    try { toast('Damage applied: ' + total); } catch (e) {}
+    try {
+      if (typeof renderMapRoster === 'function') renderMapRoster();
+      if (typeof paintMapFrame === 'function') paintMapFrame();
+    } catch (e) {}
+  }
+  function applyCombatRollMessage(msg) {
+    if (!msg || msg.type !== 'vtt-combat-roll') return;
+    if (msg.clientId && window.__vttClientId && msg.clientId === window.__vttClientId) return;
+    try {
+      if (msg.lastCombatRoll) window.__lastCombatRoll = msg.lastCombatRoll;
+      if (msg.lastCombatRoll && (msg.lastCombatRoll.canDamage || msg.lastCombatRoll.hit)) {
+        document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+        });
+      }
+      if (msg.hpUpdates && msg.hpUpdates.length) {
+        const c = getActive();
+        const combat = c ? getCombat(c) : null;
+        const list = (combat && combat.combatants) || [];
+        msg.hpUpdates.forEach(u => {
+          const t = list.find(x => String(x.id) === String(u.id) || String(x.name) === String(u.name));
+          if (t) {
+            if (u.hp != null) t.hp = u.hp;
+            if (u.tempHp != null) t.tempHp = u.tempHp;
+          }
+        });
+        try { if (typeof save === 'function') save(); } catch (e) {}
+        try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+        try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+      }
+      if (msg.economy && msg.attackerId) {
+        const c = getActive();
+        const combat = c ? getCombat(c) : null;
+        const list = (combat && combat.combatants) || [];
+        const atk = list.find(x => String(x.id) === String(msg.attackerId) || String(x.name) === String(msg.attackerId));
+        if (atk && msg.economy) {
+          if (msg.economy.actionsUsed != null) atk.actionsUsed = msg.economy.actionsUsed;
+          if (msg.economy.attacksUsed != null) atk.attacksUsed = msg.economy.attacksUsed;
+        }
+      }
+    } catch (e) { console.warn('applyCombatRollMessage', e); }
+  }
   if (!window.__combatRollDelegated) {
     window.__combatRollDelegated = true;
     document.addEventListener('click', function combatRollDelegate(ev) {
-      const dmgBtn = ev.target && ev.target.closest && ev.target.closest('#cr-roll-dmg');
-      const atkBtn = ev.target && ev.target.closest && ev.target.closest('#cr-roll-btn');
-      if (!dmgBtn && !atkBtn) return;
-      // Prefer native bound handlers on the live panel; only run fallback for damage enable
-      if (dmgBtn && dmgBtn.disabled) {
+      const t = ev.target;
+      if (!t || !t.closest) return;
+      const dmgBtn = t.closest('#cr-roll-dmg');
+      const atkBtn = t.closest('#cr-roll-btn');
+      if (atkBtn) {
+        // Prefer live delegated path for consistent adv / to-hit / player popup
+        ev.preventDefault();
+        ev.stopPropagation();
+        runDelegatedAttackRoll();
+        return;
+      }
+      if (dmgBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Enable if stuck disabled after a hit
         const last = window.__lastCombatRoll || {};
-        let allowed = !!(last.canDamage || last.hit || last.isCrit);
-        if (!allowed && last.hitTotal != null && last.ac != null && !last.isFumble) {
-          allowed = Number(last.hitTotal) >= Number(last.ac);
-        }
-        if (allowed) {
+        if (dmgBtn.disabled && (last.canDamage || last.hit || last.isCrit)) {
           dmgBtn.disabled = false;
           dmgBtn.removeAttribute('disabled');
-          // re-dispatch so bound handler runs
-          setTimeout(() => { try { dmgBtn.click(); } catch (e) {} }, 0);
-        } else {
-          try { toast('Score a hit with Roll Attack first'); } catch (e) {}
         }
+        runDelegatedDamageRoll();
         return;
       }
     }, true);
+    window.addEventListener('storage', function(ev) {
+      if (ev.key === 'cybervlachos_vtt_combat_roll' && ev.newValue) {
+        try { applyCombatRollMessage(JSON.parse(ev.newValue)); } catch (e) {}
+      }
+    });
+    try {
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch && !window.__combatRollChBound) {
+        window.__combatRollChBound = true;
+        ch.addEventListener('message', function(ev) {
+          if (ev && ev.data && ev.data.type === 'vtt-combat-roll') applyCombatRollMessage(ev.data);
+        });
+      }
+    } catch (e) {}
   }
 
 
@@ -7610,7 +7956,7 @@ function rollDieExpr(expr) {
     const dmgBonus = Number(opts.dmgBonus) || 0;
     const toHit = opts.toHit != null ? Number(opts.toHit) : 0;
     const dmgExpr = opts.damage || '1d8';
-    function d20() { return 1 + Math.floor(Math.random() * 20); }
+    function d20() { return typeof rollFairDie === "function" ? rollFairDie(20) : (1 + Math.floor(Math.random() * 20)); }
     const r1 = d20();
     const r2 = d20();
     let used = r1;
@@ -9004,10 +9350,12 @@ function rollDieExpr(expr) {
       const advNow = (document.getElementById('cr-adv') && document.getElementById('cr-adv').value)
         || (panel.querySelector('#cr-adv') && panel.querySelector('#cr-adv').value)
         || 'normal';
+      const toHitLive = parseInt((document.getElementById('cr-tohit') || toHitEl || {}).value, 10) || 0;
+      const hitBonusLive = parseInt((document.getElementById('cr-hit-bonus') || {}).value, 10) || 0;
       const res = rollCombatAttack({
         adv: advNow,
-        toHit: parseInt(toHitEl?.value, 10) || 0,
-        hitBonus: parseInt(panel.querySelector('#cr-hit-bonus')?.value, 10) || 0,
+        toHit: toHitLive,
+        hitBonus: hitBonusLive,
         damage: '0',
         dmgBonus: 0,
         forceCrit,
@@ -9105,6 +9453,11 @@ function rollDieExpr(expr) {
         try { applyRollAttackButtonState(panel, cb); } catch (e) {}
       } catch (e) {}
     });
+    try { restoreAdvMode(); } catch (e) {}
+    panel.querySelector('#cr-adv')?.addEventListener('change', function() {
+      try { sessionStorage.setItem('cr_adv_mode', this.value || 'normal'); } catch (e) {}
+    });
+    // cr-adv change persist
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
       const last = window.__lastCombatRoll || {};
       let allowed = !!(last.canDamage || last.hit || last.isCrit);
