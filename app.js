@@ -7466,19 +7466,33 @@ function rollDieExpr(expr) {
     const m = s.match(/^(\d+)d(\d+)([+-]\d+)?$/i);
     if (!m) {
       const flat = parseInt(s, 10);
-      return { total: isNaN(flat) ? 0 : flat, detail: String(expr || '0') };
+      return {
+        total: isNaN(flat) ? 0 : flat,
+        detail: String(expr || '0'),
+        faces: [],
+        sides: 0,
+        expr: String(expr || '0')
+      };
     }
     const n = Math.min(20, parseInt(m[1], 10) || 1);
     const sides = parseInt(m[2], 10) || 6;
     const bonus = m[3] ? parseInt(m[3], 10) : 0;
     const rolls = [];
+    const faces = [];
     let sum = 0;
     for (let i = 0; i < n; i++) {
       const r = 1 + Math.floor(Math.random() * sides);
       rolls.push(r);
+      faces.push({ sides: sides, value: r });
       sum += r;
     }
-    return { total: sum + bonus, detail: rolls.join('+') + (bonus ? (bonus >= 0 ? '+' : '') + bonus : '') + '=' + (sum + bonus) };
+    return {
+      total: sum + bonus,
+      detail: rolls.join('+') + (bonus ? (bonus >= 0 ? '+' : '') + bonus : '') + '=' + (sum + bonus),
+      faces: faces,
+      sides: sides,
+      expr: n + 'd' + sides + (bonus ? (bonus >= 0 ? '+' : '') + bonus : '')
+    };
   }
 
   
@@ -8302,9 +8316,18 @@ function rollDieExpr(expr) {
     const revealMs = Number(opts.revealMs) > 0 ? Number(opts.revealMs) : (typeof POPUP_DICE_REVEAL_MS !== 'undefined' ? POPUP_DICE_REVEAL_MS : 1200);
     const tickMs = typeof POPUP_DICE_TICK_MS !== 'undefined' ? POPUP_DICE_TICK_MS : 70;
     const startAt = Number(opts.startAt) > 0 ? Number(opts.startAt) : Date.now();
-    const facesIn = Array.isArray(opts.faces) && opts.faces.length
-      ? opts.faces
-      : (typeof extractDiceFromRollHtml === 'function' ? extractDiceFromRollHtml(rawHtml) : [{ sides: 20, value: null }]);
+    let facesIn = Array.isArray(opts.faces) && opts.faces.length ? opts.faces : null;
+    if (!facesIn || !facesIn.length) {
+      try {
+        if (window.__pendingDiceFaces && window.__pendingDiceFaces.length) {
+          facesIn = window.__pendingDiceFaces;
+        }
+      } catch (e) {}
+    }
+    if (!facesIn || !facesIn.length) {
+      facesIn = typeof extractDiceFromRollHtml === 'function' ? extractDiceFromRollHtml(rawHtml) : [{ sides: 20, value: null }];
+    }
+    try { window.__pendingDiceFaces = null; } catch (e) {}
 
     // Originating client broadcasts shared clock + faces so DM/player stay in sync
     if (!opts.noBroadcast) {
@@ -8344,7 +8367,8 @@ function rollDieExpr(expr) {
         const sides = parseInt(f.sides, 10) || 20;
         const d = document.createElement('div');
         d.className = 'popup-die die-d' + sides;
-        d.dataset.sides = String(sides);
+        d.dataset.sides = 'd' + sides;
+        d.dataset.dieSides = String(sides);
         d.dataset.final = f.value != null ? String(f.value) : '';
         d.setAttribute('title', 'd' + sides);
         d.innerHTML = '<span class="popup-die-face">?</span>';
@@ -8368,7 +8392,7 @@ function rollDieExpr(expr) {
       const diceEls = row.querySelectorAll('.popup-die');
       const spin = setInterval(() => {
         diceEls.forEach(d => {
-          const sides = parseInt(d.dataset.sides, 10) || 20;
+          const sides = parseInt(d.dataset.dieSides || d.dataset.sides, 10) || 20;
           const face = d.querySelector('.popup-die-face') || d;
           face.textContent = String(1 + Math.floor(Math.random() * sides));
         });
@@ -8384,7 +8408,7 @@ function rollDieExpr(expr) {
           try { clearInterval(spin); } catch (e) {}
           window.__popupDiceSpinTimer = null;
           diceEls.forEach(d => {
-            const sides = parseInt(d.dataset.sides, 10) || 20;
+            const sides = parseInt(d.dataset.dieSides || d.dataset.sides, 10) || 20;
             let final = parseInt(d.dataset.final, 10);
             if (!(final >= 1 && final <= sides)) final = 1 + Math.floor(Math.random() * sides);
             const face = d.querySelector('.popup-die-face') || d;
@@ -8966,20 +8990,30 @@ function rollDieExpr(expr) {
         setDamageRollEnabled(panel, false, 'Hit AC first');
         return;
       }
-      const expr = dmgEl?.value || last.dmgExpr || '1d8';
+      const expr = (dmgEl && dmgEl.value) || last.dmgExpr || '1d8';
       let dmg = rollDieExpr(expr);
       const bonus = parseInt(panel.querySelector('#cr-dmg-bonus')?.value, 10) || last.dmgBonus || 0;
+      let faces = (dmg.faces || []).slice();
       if (last.isCrit) {
         const dmg2 = rollDieExpr(expr);
-        dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail };
+        faces = faces.concat(dmg2.faces || []);
+        dmg = { total: dmg.total + dmg2.total, detail: dmg.detail + ' + crit ' + dmg2.detail, faces: faces, expr: dmg.expr };
       }
-      let total = dmg.total + bonus;
+      // bonus is outside dice; do not add to die faces
+      let total = dmg.total + (last.isCrit ? 0 : 0);
+      // rollDieExpr already includes +bonus in total if present in expr; add field bonus once
+      const exprHasBonus = /[+-]\d+$/.test(String(expr).replace(/\s+/g,''));
+      if (!exprHasBonus) total = dmg.total + bonus;
+      else total = dmg.total;
+      // if both, avoid double count: prefer field bonus when expr has no trailing bonus
       const halfBox = !!panel.querySelector('#cr-half')?.checked;
-      // Preview half if checked (save) — actual apply also checks Rage/resistance
       const previewHalf = halfBox ? Math.floor(total / 2) : total;
-      const rollHtml = `<div><strong>${escapeHtml(last.name || 'Attack')}</strong> · Damage Roll${last.isCrit ? ' (CRIT)' : ''}</div>
-          <div>Damage: <strong>${total}</strong> <span class="muted">(${escapeHtml(dmg.detail)}${bonus ? (bonus >= 0 ? '+' : '') + bonus : ''})</span>${halfBox ? ' · half preview ' + previewHalf : ''}</div>`;
-      showRollHtml(rollHtml);
+      const exprLabel = dmg.expr || expr;
+      const rollHtml = `<div><strong>${escapeHtml(last.name || 'Attack')}</strong> · Damage Roll${last.isCrit ? ' (CRIT)' : ''} · ${escapeHtml(String(exprLabel))}</div>
+          <div>Damage: <strong>${total}</strong> <span class="muted">(${escapeHtml(dmg.detail)}${(!exprHasBonus && bonus) ? ((bonus >= 0 ? '+' : '') + bonus) : ''})</span>${halfBox ? ' · half preview ' + previewHalf : ''}</div>`;
+      // Prefer real die faces for animation (d6/d8/etc.), not a default d20
+      try { window.__pendingDiceFaces = faces.length ? faces : null; } catch (e) {}
+      showRollHtml(rollHtml); // publishCombatRollResult → playPopupDiceAnimation uses __pendingDiceFaces
       window.__lastCombatRoll = Object.assign({}, last, {
         damage: total,
         heal: 0,
@@ -8992,7 +9026,42 @@ function rollDieExpr(expr) {
       appendLog(`Damage Roll: ${total}`);
       // Auto-apply to selected targets (player + DM)
       try {
-        const packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+        let packs = typeof getSelectedTargets === 'function' ? getSelectedTargets() : [];
+        // Fallback: if multi-select empty, use a sensible target so hit damage still applies
+        if (!packs.length) {
+          try {
+            const c2 = getActive();
+            const combat2 = c2 ? getCombat(c2) : null;
+            const list2 = (combat2 && combat2.combatants) || [];
+            let tIdx = -1;
+            // Prefer selected combatant if not the attacker
+            if (combat2 && combat2.selectedIndex != null && combat2.selectedIndex >= 0) {
+              const cand = list2[combat2.selectedIndex];
+              if (cand && String(cand.id) !== String(cb.id)) tIdx = combat2.selectedIndex;
+            }
+            // Else first enemy/villain
+            if (tIdx < 0) {
+              tIdx = list2.findIndex(x => {
+                const s = String(x.side || '').toLowerCase();
+                return s === 'enemy' || s === 'villain' || s === 'enemies';
+              });
+            }
+            // Else any other combatant
+            if (tIdx < 0) {
+              tIdx = list2.findIndex(x => String(x.id) !== String(cb.id));
+            }
+            if (tIdx >= 0 && list2[tIdx]) {
+              packs = [{ combat: combat2, idx: tIdx, target: list2[tIdx] }];
+              // Reflect in UI multi-select if present
+              try {
+                const sel = panel.querySelector('#cr-target');
+                if (sel) {
+                  [...sel.options].forEach(o => { o.selected = (String(o.value) === String(tIdx)); });
+                }
+              } catch (e3) {}
+            }
+          } catch (e2) {}
+        }
         if (!packs.length) {
           toast('Damage rolled — select a target to apply, or click Apply Damage (DM)');
         } else {
