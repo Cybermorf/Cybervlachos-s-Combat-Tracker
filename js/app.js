@@ -2375,17 +2375,24 @@
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
     const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
-    const atkUsed = Math.max(Number(cb.attacksUsed) || 0, getSessionAttacksUsed(cb));
+    const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
+    const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
     cb.attacksUsed = atkUsed;
     const actMax = Math.max(1, Number(cb.actionsMax) || 1);
     let actUsed = Number(cb.actionsUsed) || 0;
+    // Session is authoritative for this browser tab (player popup)
+    if (sess >= atkMax) {
+      cb.attacksUsed = Math.max(atkUsed, atkMax);
+      if (actUsed < 1) { cb.actionsUsed = 1; actUsed = 1; }
+      return 0;
+    }
     if (atkUsed > 0 && actUsed < 1) {
       actUsed = 1;
       cb.actionsUsed = Math.max(actUsed, Number(cb.actionsUsed) || 0);
     }
-    if (atkUsed > 0 && atkUsed < atkMax) return atkMax - atkUsed;
     if (actUsed >= actMax && atkUsed >= atkMax) return 0;
     if (actUsed >= actMax && atkUsed > 0) return Math.max(0, atkMax - atkUsed);
+    if (actUsed >= actMax && sess > 0) return 0;
     if (actUsed >= actMax) return 0;
     return Math.max(0, atkMax - atkUsed);
   }
@@ -2441,6 +2448,7 @@
       // Continue Extra Attack series (action already paid this Attack action)
       if (atkUsed > 0 && atkUsed < atkMax) {
         cb.attacksUsed = atkUsed + 1;
+        try { bumpSessionAttacksUsed(cb); } catch (e) {}
         try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
         return true;
       }
@@ -7602,8 +7610,16 @@ function parseAttackLines(ch) {
     const hitBonus = parseInt((document.getElementById('cr-hit-bonus') || {}).value, 10) || 0;
     const adv = readAdvMode();
     const forceCrit = !!(document.getElementById('cr-force-crit') && document.getElementById('cr-force-crit').checked);
-    // Budget
+    // Budget — session counter is hard gate on player popup
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
+    try { if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, null); } catch (e) {}
+    const atkMaxGate = Math.max(1, Number(cb.attacksMax) || 1);
+    const sessGate = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
+    if (sessGate >= atkMaxGate) {
+      try { toast('No weapon attacks left this turn (' + sessGate + '/' + atkMaxGate + ')'); } catch (e) {}
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
+      return;
+    }
     if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
       try { toast('No actions / weapon attacks left this turn'); } catch (e) {}
       return;
@@ -7613,7 +7629,22 @@ function parseAttackLines(ch) {
         try { toast('No actions left — cannot Attack'); } catch (e) {}
         return;
       }
+    } else {
+      // Fallback spend if helper missing
+      cb.attacksUsed = (Number(cb.attacksUsed) || 0) + 1;
+      cb.actionsUsed = Math.max(1, Number(cb.actionsUsed) || 0);
+      try { bumpSessionAttacksUsed(cb); } catch (e) {}
     }
+    // Refresh economy labels on player panel without full rebuild
+    try {
+      const left = typeof remainingWeaponAttacks === 'function' ? remainingWeaponAttacks(cb) : 0;
+      document.querySelectorAll('.combat-res-val, [data-economy-attacks]').forEach(() => {});
+      if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb);
+      // Update visible weapon attacks text if present
+      document.querySelectorAll('#cd-atk-left, .atk-left-label').forEach(el => {
+        el.textContent = String(left);
+      });
+    } catch (e) {}
     const res = rollCombatAttack({
       adv: adv,
       toHit: toHit,
@@ -8506,10 +8537,14 @@ function parseAttackLines(ch) {
         r.turnState = local.turnState;
         r.turnPhase = local.turnPhase;
         r.actionUsed = local.actionUsed;
+        r.actionsUsed = local.actionsUsed;
+        r.actionsMax = local.actionsMax;
         r.bonusUsed = local.bonusUsed;
         r.reactionUsed = local.reactionUsed;
         r.moveUsed = local.moveUsed;
         r.attacksUsed = local.attacksUsed;
+        r.attacksMax = local.attacksMax;
+        r.lastAction = local.lastAction;
         r.combatSpellSlots = local.combatSpellSlots;
         r.combatResources = local.combatResources;
         r.concentrating = local.concentrating;
@@ -8517,6 +8552,7 @@ function parseAttackLines(ch) {
         r.deathSaves = local.deathSaves;
       });
       camp.combat.combatants = remoteList;
+      if (combat.turnEconomy) camp.combat.turnEconomy = combat.turnEconomy;
       if (combat.round != null) camp.combat.round = combat.round;
       if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
       // Merge map tokens so player token moves persist for DM (same-browser localStorage)
