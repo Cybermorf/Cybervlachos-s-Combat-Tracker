@@ -2447,18 +2447,6 @@
         } catch (e) {}
       });
 
-      // Nuclear: rewrite any visible "N / M" under Weapon attacks label in whole document
-      try {
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
-        let node;
-        while ((node = walker.nextNode())) {
-          if (!node.classList || !node.classList.contains('turn-stage-sub-head')) continue;
-          if (!/Weapon attacks/i.test(node.textContent || '')) continue;
-          const row = node.parentElement && node.parentElement.querySelector('.combat-res-val');
-          if (row) row.innerHTML = atkHtml;
-        }
-      } catch (e) {}
-
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
       try { console.debug('[econ]', cb.name, 'atk', atkUsed + '/' + atkMax, 'act', actUsed + '/' + actMax, 'sess', sess); } catch (e) {}
     } catch (e) { console.warn('refreshTurnEconomyUI', e); }
@@ -2639,6 +2627,14 @@ function beginCombatantTurn(cb, ch) {
     cb.disengage = false;
     cb.dashSpeed = 0;
     cb.lastAction = null;
+    // Clear session/mirror attack counters so UI cannot show 0/max from a prior turn
+    try { if (typeof clearSessionAttacksUsed === 'function') clearSessionAttacksUsed(cb); } catch (e) {}
+    try {
+      sessionStorage.removeItem('cyber_econ_' + String(cb.id || cb.name || ''));
+      Object.keys(sessionStorage).forEach(function(k) {
+        if (k.indexOf('cyber_atk_') === 0) sessionStorage.removeItem(k);
+      });
+    } catch (e) {}
     try {
       if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch || null);
     } catch (e) {}
@@ -5909,7 +5905,10 @@ function beginCombatantTurn(cb, ch) {
 
 
   function slotStepperHtml(level, used, max) {
-    const player = (typeof isPlayerRole === 'function' && isPlayerRole()) || /[?&]role=player(?:&|$)/i.test(location.search || '') || !!(document.body && document.body.classList.contains('vtt-player'));
+    const player = (typeof isPlayerRole === 'function' && isPlayerRole())
+      || /[?&]role=player(?:&|$)/i.test(String(location.search || ''))
+      || !!(document.body && document.body.classList.contains('vtt-player'));
+    // Players never get DM-only slot steppers
     const dec = player ? '' : '<button type="button" class="slot-dec" aria-label="Decrease">−</button>';
     const inc = player ? '' : '<button type="button" class="slot-inc" aria-label="Increase">+</button>';
     return `<div class="slot-stepper" data-sl="${level}">
@@ -7876,10 +7875,7 @@ function parseAttackLines(ch) {
     try {
       setTimeout(function() {
         try { refreshTurnEconomyUI(cb); } catch (e) {}
-      }, 0);
-      setTimeout(function() {
-        try { refreshTurnEconomyUI(cb); } catch (e) {}
-      }, 50);
+      }, 30);
     } catch (e) {}
   }
   function runDelegatedDamageRoll() {
@@ -13366,8 +13362,8 @@ function escapeHtml(str) {
   }
   function isPlayerRole() {
     try {
-      if (getVttRole() === 'player') return true;
-      if (/[?&]role=player(?:&|$)/i.test(location.search || '')) return true;
+      if (typeof getVttRole === 'function' && getVttRole() === 'player') return true;
+      if (/[?&]role=player(?:&|$)/i.test(String(location.search || ''))) return true;
       if (document.body && document.body.classList.contains('vtt-player')) return true;
       if (document.documentElement && document.documentElement.classList.contains('vtt-player')) return true;
     } catch (e) {}
