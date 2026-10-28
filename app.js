@@ -7603,16 +7603,46 @@ function parseAttackLines(ch) {
   }
   function spellDamageDice(sp, slotLevel) {
     const name = (sp && sp.name) || '';
-    const lvl = Math.max(Number(sp && sp.level) || 1, Number(slotLevel) || 1);
-    if (isAutoHitSpellName(name)) {
-      const n = 2 + lvl;
+    const baseLevel = Math.max(0, Number(sp && sp.level) || 0);
+    const slot = Math.max(baseLevel || 1, Number(slotLevel) || baseLevel || 1);
+    const up = Math.max(0, slot - (baseLevel || slot));
+    if (typeof isAutoHitSpellName === 'function' && isAutoHitSpellName(name)) {
+      // Magic Missile: 3 darts at 1st +1/level
+      const n = 2 + slot; // 3 at 1st → 2+1
       return n + 'd4+' + n;
     }
-    if (/guiding bolt/i.test(name)) return (4 + Math.max(0, lvl - 1)) + 'd6';
-    if (/fireball/i.test(name)) return (8 + Math.max(0, lvl - 3)) + 'd6';
-    const desc = String((sp && (sp.description || sp.summary)) || '');
-    const m = desc.match(/(\d+d\d+(?:\s*[+-]\s*\d+)?)/i);
-    if (m) return m[1].replace(/\s+/g, '');
+    // Common PHB scaling
+    if (/guiding bolt/i.test(name)) return (4 + Math.max(0, slot - 1)) + 'd6';
+    if (/fireball/i.test(name)) return (8 + Math.max(0, slot - 3)) + 'd6';
+    if (/lightning bolt/i.test(name)) return (8 + Math.max(0, slot - 3)) + 'd6';
+    if (/scorching ray/i.test(name)) return Math.max(1, 3 + Math.max(0, slot - 2)) + 'd6';
+    if (/chromatic orb/i.test(name)) return (3 + Math.max(0, slot - 1)) + 'd8';
+    if (/inflict wounds/i.test(name)) return (3 + Math.max(0, slot - 1)) + 'd10';
+    if (/cure wounds/i.test(name)) return (1 + Math.max(0, slot - 1)) + 'd8';
+    if (/healing word/i.test(name)) return (1 + Math.max(0, slot - 1)) + 'd4';
+    if (/moonbeam/i.test(name)) return (2 + Math.max(0, slot - 2)) + 'd10';
+    if (/spirit guardians/i.test(name)) return (3 + Math.max(0, slot - 3)) + 'd8';
+    if (/burning hands/i.test(name)) return (3 + Math.max(0, slot - 1)) + 'd6';
+    if (/shatter/i.test(name)) return (3 + Math.max(0, slot - 2)) + 'd8';
+    // Parse description: "XdY ... when you cast this spell using a spell slot of Nth level or higher, the X increases by 1"
+    const desc = String((sp && (sp.description || sp.summary || sp.desc)) || '');
+    let baseDice = null;
+    const m = desc.match(/(\d+)d(\d+)/i);
+    if (m) {
+      let count = parseInt(m[1], 10) || 1;
+      const faces = parseInt(m[2], 10) || 6;
+      // Generic upcast: +1 die per slot above base when description mentions higher level
+      if (up > 0 && /slot of .+ higher|using a spell slot/i.test(desc)) {
+        count += up;
+      } else if (up > 0 && baseLevel > 0) {
+        // fallback: many damage cantrips/spells gain +1 die / level
+        count += up;
+      }
+      baseDice = count + 'd' + faces;
+      const mod = desc.match(new RegExp(m[1] + 'd' + m[2] + '\s*([+-]\s*\d+)', 'i'));
+      if (mod) baseDice += mod[1].replace(/\s+/g, '');
+      return baseDice;
+    }
     return '1d8';
   }
   function resolveRollAmount(panel, kind) {
@@ -8381,16 +8411,7 @@ function parseAttackLines(ch) {
     target.hp = Math.max(0, (Number(target.hp) || 0) - left);
     // Concentration
     if (target.concentrating && left > 0) {
-      const dc = Math.max(10, Math.floor(left / 2));
-      const r = rollD20WithAdv(false, false);
-      const conMod = Number(target.conMod) || 0;
-      const total = r.used + conMod;
-      const ok = total >= dc;
-      if (!ok) {
-        target.concentrating = false;
-        removeCondition(target, 'concentrating');
-      }
-      if (typeof appendLog === 'function') appendLog(`${target.name} concentration DC ${dc}: ${total} (${ok ? 'OK' : 'LOST'})`);
+      try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) {}
     }
     // Death / unconscious
     if (target.hp <= 0) {
@@ -8462,6 +8483,290 @@ function parseAttackLines(ch) {
     if (typeof toast === 'function') toast('Legendary Resistance — save succeeds');
     return true;
   }
+
+  /** Concentration system: PC click-to-roll popup; NPC auto + legendary resistance prompt */
+  function isConcentratingCombatant(cb) {
+    if (!cb) return false;
+    if (cb.concentrating) return true;
+    try {
+      const conds = cb.conditions || [];
+      if (Array.isArray(conds) && conds.some(c => /concentrat/i.test(String(c && (c.name || c) || '')))) return true;
+    } catch (e) {}
+    return false;
+  }
+  function concentrationDcFromDamage(dmg) {
+    return Math.max(10, Math.floor((Number(dmg) || 0) / 2));
+  }
+  function combatantConMod(cb) {
+    if (!cb) return 0;
+    if (cb.conMod != null) return Number(cb.conMod) || 0;
+    if (cb.abilities && cb.abilities.con != null) {
+      const score = Number(cb.abilities.con) || 10;
+      return Math.floor((score - 10) / 2);
+    }
+    if (cb.stats && cb.stats.con != null) {
+      const score = Number(cb.stats.con) || 10;
+      return Math.floor((score - 10) / 2);
+    }
+    return 0;
+  }
+  function isPlayerCombatant(cb) {
+    if (!cb) return false;
+    const side = String(cb.side || cb.team || '').toLowerCase();
+    if (side === 'pc' || side === 'ally' || side === 'player' || side === 'party') return true;
+    if (cb.isPC || cb.isPlayer) return true;
+    try {
+      const c = typeof getActive === 'function' ? getActive() : null;
+      if (c && Array.isArray(c.party) && c.party.some(p => p && (p.id === cb.sourceId || p.id === cb.charId || p.name === cb.name))) return true;
+    } catch (e) {}
+    return false;
+  }
+  function dropConcentration(cb, reason) {
+    if (!cb) return;
+    cb.concentrating = false;
+    try { if (typeof removeCondition === 'function') removeCondition(cb, 'concentrating'); } catch (e) {}
+    try {
+      if (Array.isArray(cb.conditions)) {
+        cb.conditions = cb.conditions.filter(c => !/concentrat/i.test(String(c && (c.name || c) || '')));
+      }
+    } catch (e) {}
+    try { if (typeof appendLog === 'function') appendLog((cb.name || 'Combatant') + ' loses concentration' + (reason ? ' (' + reason + ')' : '')); } catch (e) {}
+    try { if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog((cb.name || 'Combatant') + ' loses concentration', { names: [cb.name], ids: [cb.id] }); } catch (e) {}
+    try { if (typeof toast === 'function') toast((cb.name || 'Target') + ' loses concentration'); } catch (e) {}
+  }
+  function resolveConcentrationResult(cb, dc, total, opts) {
+    opts = opts || {};
+    const ok = total >= dc;
+    try {
+      if (typeof appendLog === 'function') appendLog((cb.name || 'Combatant') + ' concentration DC ' + dc + ': ' + total + ' (' + (ok ? 'OK' : 'LOST') + ')');
+    } catch (e) {}
+    try {
+      if (typeof appendSharedCombatLog === 'function') {
+        appendSharedCombatLog((cb.name || 'Combatant') + ' concentration ' + total + ' vs DC ' + dc + (ok ? ' — held' : ' — LOST'), { names: [cb.name], ids: [cb.id] });
+      }
+    } catch (e) {}
+    if (ok) {
+      try { if (typeof toast === 'function') toast((cb.name || 'Target') + ' maintains concentration'); } catch (e) {}
+      return true;
+    }
+    // Failed — legendary resistance for NPCs
+    const lr = typeof legendaryResistRemaining === 'function' ? legendaryResistRemaining(cb) : (Number(cb.legendaryResist) || 0);
+    if (!isPlayerCombatant(cb) && lr > 0 && !opts.skipLegendary) {
+      promptLegendaryResistanceForConcentration(cb, dc, total);
+      return false; // pending DM choice
+    }
+    dropConcentration(cb, 'failed DC ' + dc);
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat();
+      else if (typeof save === 'function') save();
+    } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) renderPlayerCombatPanel();
+      else if (typeof renderCombat === 'function') renderCombat();
+    } catch (e) {}
+    return false;
+  }
+  function promptLegendaryResistanceForConcentration(cb, dc, total) {
+    // DM-facing modal
+    const overlay = document.createElement('div');
+    overlay.className = 'con-check-overlay';
+    overlay.innerHTML = '<div class="con-check-card">' +
+      '<div class="con-check-title">Legendary Resistance?</div>' +
+      '<p class="con-check-sub"><strong>' + escapeHtml(cb.name || 'NPC') + '</strong> failed concentration (rolled <strong>' + total + '</strong> vs DC <strong>' + dc + '</strong>).</p>' +
+      '<p class="muted small">' + legendaryResistRemaining(cb) + ' Legendary Resistance(s) remaining.</p>' +
+      '<div class="con-check-actions">' +
+      '<button type="button" class="btn primary" data-lr="yes">Use Legendary Resistance</button>' +
+      '<button type="button" class="btn danger" data-lr="no">Lose Concentration</button>' +
+      '</div></div>';
+    document.body.appendChild(overlay);
+    function close() { try { overlay.remove(); } catch (e) {} }
+    overlay.addEventListener('click', function(ev) {
+      const btn = ev.target && ev.target.closest && ev.target.closest('[data-lr]');
+      if (!btn) return;
+      if (btn.getAttribute('data-lr') === 'yes') {
+        if (typeof useLegendaryResistance === 'function') useLegendaryResistance(cb);
+        try { if (typeof appendLog === 'function') appendLog((cb.name || 'NPC') + ' uses Legendary Resistance to keep concentration'); } catch (e) {}
+        try { if (typeof toast === 'function') toast((cb.name || 'NPC') + ' keeps concentration (Legendary Resistance)'); } catch (e) {}
+      } else {
+        dropConcentration(cb, 'failed DC ' + dc);
+      }
+      close();
+      try { if (typeof save === 'function') save(); } catch (e) {}
+      try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    });
+  }
+  function showPlayerConcentrationPopup(cb, dc) {
+    // Remove existing
+    try { document.querySelectorAll('.con-check-overlay').forEach(el => el.remove()); } catch (e) {}
+    const conMod = combatantConMod(cb);
+    const overlay = document.createElement('div');
+    overlay.className = 'con-check-overlay';
+    overlay.innerHTML = '<div class="con-check-card con-check-player">' +
+      '<div class="con-check-title">Concentration Check</div>' +
+      '<p class="con-check-sub"><strong>' + escapeHtml(cb.name || 'You') + '</strong> must make a Constitution save</p>' +
+      '<p class="con-check-dc">DC <strong>' + dc + '</strong> · CON ' + (conMod >= 0 ? '+' : '') + conMod + '</p>' +
+      '<button type="button" class="con-d20-btn" id="con-d20-roll" title="Roll d20">d20</button>' +
+      '<p class="muted small" id="con-d20-hint">Press the die to roll</p>' +
+      '<div class="con-check-result" id="con-check-result" hidden></div>' +
+      '</div>';
+    document.body.appendChild(overlay);
+    const dieBtn = overlay.querySelector('#con-d20-roll');
+    let rolling = false;
+    dieBtn.addEventListener('click', function() {
+      if (rolling) return;
+      rolling = true;
+      dieBtn.classList.add('spinning');
+      const hint = overlay.querySelector('#con-d20-hint');
+      if (hint) hint.textContent = 'Rolling…';
+      // Spin faces then reveal
+      let ticks = 0;
+      const spin = setInterval(function() {
+        dieBtn.textContent = String(1 + Math.floor(Math.random() * 20));
+        ticks++;
+        if (ticks > 12) {
+          clearInterval(spin);
+          const r1 = 1 + Math.floor(Math.random() * 20);
+          const total = r1 + conMod;
+          dieBtn.textContent = String(r1);
+          dieBtn.classList.remove('spinning');
+          dieBtn.classList.add('revealed');
+          const ok = total >= dc;
+          const res = overlay.querySelector('#con-check-result');
+          if (res) {
+            res.hidden = false;
+            res.innerHTML = '<strong>' + total + '</strong> vs DC ' + dc + ' — <span style="color:' + (ok ? '#8d8' : '#c66') + '">' + (ok ? 'SUCCESS' : 'FAILED') + '</span>';
+          }
+          if (hint) hint.textContent = ok ? 'Concentration maintained' : 'Concentration lost';
+          // Broadcast animation to DM
+          try {
+            if (typeof broadcastPopupDiceAnimation === 'function') {
+              broadcastPopupDiceAnimation('<div class="dice-anim-line">Concentration: d20 = ' + r1 + ' + ' + conMod + ' = <strong>' + total + '</strong> vs DC ' + dc + '</div>', { spinMs: 400, revealMs: 900 });
+            }
+          } catch (e) {}
+          setTimeout(function() {
+            resolveConcentrationResult(cb, dc, total, { skipLegendary: true });
+            try { overlay.remove(); } catch (e) {}
+            try {
+              if (typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat();
+              else if (typeof save === 'function') save();
+            } catch (e) {}
+            try { if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel(); } catch (e) {}
+          }, 900);
+        }
+      }, 60);
+    });
+  }
+  function broadcastConcentrationRequest(cb, dc, damage) {
+    try {
+      const payload = {
+        type: 'vtt-con-check',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '',
+        at: Date.now(),
+        targetId: cb.id || cb.name,
+        targetName: cb.name,
+        dc: dc,
+        damage: damage,
+        conMod: combatantConMod(cb)
+      };
+      localStorage.setItem('cybervlachos_vtt_con_check', JSON.stringify(payload));
+      try {
+        const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        if (ch) ch.postMessage(payload);
+      } catch (e) {}
+    } catch (e) {}
+  }
+  function concentrationCheck(target, damage) {
+    if (!target || !isConcentratingCombatant(target)) return;
+    const dmg = Number(damage) || 0;
+    if (dmg <= 0) return;
+    const dc = concentrationDcFromDamage(dmg);
+    const isPc = isPlayerCombatant(target);
+
+    // Player client: if this is their claimed character, show click-to-roll popup
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+      try {
+        const claimed = typeof getClaimedId === 'function' ? getClaimedId() : '';
+        const isMine = claimed && (String(target.id) === String(claimed) || String(target.sourceId) === String(claimed) ||
+          String(target.charId) === String(claimed) || (target.name && String(claimed).indexOf(target.name) !== -1));
+        // Always show for player panel target if claimed combatant matches
+        let claimedCb = null;
+        try { claimedCb = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null; } catch (e) {}
+        const mine = (claimedCb && (claimedCb.id === target.id || claimedCb.name === target.name)) || isMine;
+        if (mine || !claimedCb) {
+          showPlayerConcentrationPopup(target, dc);
+          return;
+        }
+      } catch (e) {
+        showPlayerConcentrationPopup(target, dc);
+        return;
+      }
+    }
+
+    // DM applying damage to a PC: request player roll + toast
+    if (isPc && typeof isPlayerRole === 'function' && !isPlayerRole()) {
+      broadcastConcentrationRequest(target, dc, dmg);
+      try { if (typeof toast === 'function') toast((target.name || 'PC') + ' — concentration check DC ' + dc + ' (player rolls)'); } catch (e) {}
+      try { if (typeof appendLog === 'function') appendLog((target.name || 'PC') + ' concentration check requested (DC ' + dc + ')'); } catch (e) {}
+      return;
+    }
+
+    // NPC / DM-controlled: auto-roll
+    const conMod = combatantConMod(target);
+    const r1 = 1 + Math.floor(Math.random() * 20);
+    const total = r1 + conMod;
+    try {
+      if (typeof playPopupDiceAnimation === 'function') {
+        playPopupDiceAnimation('<div class="dice-anim-line">Concentration: d20=' + r1 + ' + ' + conMod + ' = <strong>' + total + '</strong> vs DC ' + dc + '</div>', { force: true });
+      }
+    } catch (e) {}
+    resolveConcentrationResult(target, dc, total);
+  }
+
+  // Player listens for concentration requests from DM
+  if (!window.__conCheckListener) {
+    window.__conCheckListener = true;
+    window.addEventListener('storage', function(ev) {
+      if (ev.key !== 'cybervlachos_vtt_con_check' || !ev.newValue) return;
+      try {
+        if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
+        const msg = JSON.parse(ev.newValue);
+        if (!msg || msg.type !== 'vtt-con-check') return;
+        const room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+        if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+        let target = null;
+        try {
+          const c = getActive();
+          const combat = getCombat(c);
+          target = (combat.combatants || []).find(x => String(x.id) === String(msg.targetId) || x.name === msg.targetName);
+        } catch (e) {}
+        if (!target) {
+          target = { id: msg.targetId, name: msg.targetName, concentrating: true, conMod: msg.conMod };
+        }
+        showPlayerConcentrationPopup(target, msg.dc || 10);
+      } catch (e) {}
+    });
+    // Poll backup for same-browser timing
+    setInterval(function() {
+      try {
+        if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
+        const raw = localStorage.getItem('cybervlachos_vtt_con_check');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (!msg || !msg.at || msg.at === window.__lastConCheckAt) return;
+        window.__lastConCheckAt = msg.at;
+        if (msg.type !== 'vtt-con-check') return;
+        let target = null;
+        try {
+          const c = getActive();
+          const combat = getCombat(c);
+          target = (combat.combatants || []).find(x => String(x.id) === String(msg.targetId) || x.name === msg.targetName);
+        } catch (e) {}
+        if (!target) target = { id: msg.targetId, name: msg.targetName, concentrating: true, conMod: msg.conMod };
+        showPlayerConcentrationPopup(target, msg.dc || 10);
+      } catch (e) {}
+    }, 500);
+  }
+
 
   function shortRestCombat(combat) {
     if (!combat || !combat.combatants) return;
@@ -9960,11 +10265,7 @@ function parseAttackLines(ch) {
             target.hp = Math.max(0, (target.hp || 0) - left);
           }
           if (target.concentrating && left > 0) {
-            const dc = Math.max(10, Math.floor(left / 2));
-            const roll = 1 + Math.floor(Math.random() * 20);
-            const ok = roll >= dc;
-            if (!ok) target.concentrating = false;
-            appendLog(`${target.name} concentration DC ${dc}: ${roll} (${ok ? 'OK' : 'LOST'})`);
+            try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) {}
           }
           if (target.hp === 0) target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
           if (!target.combatLog) target.combatLog = [];
