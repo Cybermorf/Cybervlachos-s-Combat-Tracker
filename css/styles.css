@@ -4182,3 +4182,10 @@ body.vtt-player .map-roster [data-side="enemy"] .hp-text,
 html.vtt-player .map-roster .enemy-hp {
   display: none !important;
 }
+
+body.vtt-player .slot-stepper .slot-dec,
+body.vtt-player .slot-stepper .slot-inc,
+html.vtt-player .slot-stepper .slot-dec,
+html.vtt-player .slot-stepper .slot-inc {
+  display: none !important;
+}

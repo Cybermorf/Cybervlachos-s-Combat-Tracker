@@ -2380,7 +2380,7 @@
       const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
       cb.attacksUsed = atkUsed;
       const atkLeft = Math.max(0, atkMax - atkUsed);
-      const actMax = Math.max(1, Number(cb.actionsMax) || 1);
+      let actMax = Math.max(1, Number(cb.actionsMax) || 1);
       let actUsed = Number(cb.actionsUsed) || 0;
       if (atkUsed > 0 && actUsed < 1) {
         actUsed = 1;
@@ -2389,58 +2389,68 @@
       }
       const actLeft = Math.max(0, actMax - actUsed);
 
-      function setHtml(id, html) {
-        const el = document.getElementById(id);
-        if (el) el.innerHTML = html;
+      function patchVal(root, predicate, html) {
+        if (!root) return;
+        root.querySelectorAll('.turn-stage-sub').forEach(function(sub) {
+          const head = sub.querySelector('.turn-stage-sub-head');
+          if (!head || !predicate(head.textContent || '')) return;
+          const val = sub.querySelector('.combat-res-val');
+          if (val) val.innerHTML = html;
+        });
       }
-      function setText(id, text) {
-        const el = document.getElementById(id);
-        if (el) el.textContent = text;
-      }
-      setText('cd-weapon-atk-left', String(atkLeft));
-      setText('cd-weapon-atk-max', String(atkMax));
-      setHtml('cd-weapon-atk-val', '<strong id="cd-weapon-atk-left">' + atkLeft + '</strong> / <span id="cd-weapon-atk-max">' + atkMax + '</span>');
-      setHtml('cd-actions-val', '<strong id="cd-actions-left">' + actLeft + '</strong> left of <span id="cd-actions-max">' + actMax + '</span>'
-        + (actUsed ? ' · used <span id="cd-actions-used">' + actUsed + '</span>' : ''));
 
-      document.querySelectorAll('[data-econ-val="weapon-attacks"]').forEach(function(val) {
-        val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
-      });
-      document.querySelectorAll('[data-econ-val="actions"]').forEach(function(val) {
-        val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax + (actUsed ? ' · used ' + actUsed : '');
+      const roots = [document];
+      try {
+        document.querySelectorAll('[data-player-detail], .player-combat-body, #combat-detail, .combat-turn-board').forEach(function(el) {
+          roots.push(el);
+        });
+      } catch (e) {}
+
+      const atkHtml = '<strong>' + atkLeft + '</strong> / ' + atkMax;
+      const actHtml = '<strong>' + actLeft + '</strong> left of ' + actMax + (actUsed ? ' · used ' + actUsed : '');
+
+      roots.forEach(function(root) {
+        try {
+          patchVal(root, function(tx) { return /Weapon attacks/i.test(tx); }, atkHtml);
+          patchVal(root, function(tx) { return /Actions budget/i.test(tx); }, actHtml);
+          root.querySelectorAll('#cd-weapon-atk-val, [data-econ-val="weapon-attacks"]').forEach(function(el) {
+            el.innerHTML = atkHtml;
+          });
+          root.querySelectorAll('#cd-actions-val, [data-econ-val="actions"]').forEach(function(el) {
+            el.innerHTML = actHtml;
+          });
+          root.querySelectorAll('.turn-stage[data-stage="action"] .stage-badge').forEach(function(badge) {
+            if (actLeft <= 0) {
+              badge.textContent = 'Used';
+              badge.classList.remove('open');
+              badge.classList.add('used');
+            } else if (actUsed > 0) {
+              badge.textContent = actLeft + ' left';
+              badge.classList.add('open');
+              badge.classList.remove('used');
+            } else {
+              badge.textContent = 'Available';
+              badge.classList.add('open');
+              badge.classList.remove('used');
+            }
+          });
+        } catch (e) {}
       });
 
-      // Fallback: find Weapon attacks sub-row even without data attrs (cached HTML)
-      document.querySelectorAll('.turn-stage-sub').forEach(function(sub) {
-        const head = sub.querySelector('.turn-stage-sub-head');
-        if (!head) return;
-        const ht = head.textContent || '';
-        const val = sub.querySelector('.combat-res-val');
-        if (!val) return;
-        if (/Weapon attacks/i.test(ht)) {
-          val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
+      // Nuclear: rewrite any visible "N / M" under Weapon attacks label in whole document
+      try {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+          if (!node.classList || !node.classList.contains('turn-stage-sub-head')) continue;
+          if (!/Weapon attacks/i.test(node.textContent || '')) continue;
+          const row = node.parentElement && node.parentElement.querySelector('.combat-res-val');
+          if (row) row.innerHTML = atkHtml;
         }
-        if (/Actions budget/i.test(ht)) {
-          val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax + (actUsed ? ' · used ' + actUsed : '');
-        }
-      });
+      } catch (e) {}
 
-      document.querySelectorAll('.turn-stage[data-stage="action"] .stage-badge').forEach(function(badge) {
-        if (actLeft <= 0) {
-          badge.textContent = 'Used';
-          badge.classList.remove('open');
-          badge.classList.add('used');
-        } else if (actUsed > 0) {
-          badge.textContent = actLeft + ' left';
-          badge.classList.add('open');
-          badge.classList.remove('used');
-        } else {
-          badge.textContent = 'Available';
-          badge.classList.add('open');
-          badge.classList.remove('used');
-        }
-      });
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
+      try { console.debug('[econ]', cb.name, 'atk', atkUsed + '/' + atkMax, 'act', actUsed + '/' + actMax, 'sess', sess); } catch (e) {}
     } catch (e) { console.warn('refreshTurnEconomyUI', e); }
   }
 
@@ -5889,12 +5899,15 @@ function beginCombatantTurn(cb, ch) {
 
 
   function slotStepperHtml(level, used, max) {
+    const player = (typeof isPlayerRole === 'function' && isPlayerRole());
+    const dec = player ? '' : '<button type="button" class="slot-dec" aria-label="Decrease">−</button>';
+    const inc = player ? '' : '<button type="button" class="slot-inc" aria-label="Increase">+</button>';
     return `<div class="slot-stepper" data-sl="${level}">
       <span class="slot-label">L${level}</span>
-      <button type="button" class="slot-dec" aria-label="Decrease">−</button>
+      ${dec}
       <span class="slot-val" data-sl="${level}">${used}</span>
       <span class="slot-max">/ ${max}</span>
-      <button type="button" class="slot-inc" aria-label="Increase">+</button>
+      ${inc}
       <input type="hidden" class="m-slot" data-sl="${level}" value="${used}" />
     </div>`;
   }
@@ -7841,15 +7854,22 @@ function parseAttackLines(ch) {
       if (window.__mapBc) window.__mapBc.postMessage(payload);
     } catch (e) {}
     try { toast((atkName || 'Attack') + ': ' + res.formula + hitLine); } catch (e) {}
-    try {
-      if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
-    } catch (e) {}
+    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+    // Double-pass after save (DOM may lag)
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
         playerPersistAndSyncCombat();
       } else if (typeof save === 'function') {
         save();
       }
+    } catch (e) {}
+    try {
+      setTimeout(function() {
+        try { refreshTurnEconomyUI(cb); } catch (e) {}
+      }, 0);
+      setTimeout(function() {
+        try { refreshTurnEconomyUI(cb); } catch (e) {}
+      }, 50);
     } catch (e) {}
   }
   function runDelegatedDamageRoll() {
