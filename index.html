@@ -1,1 +1,474 @@
-PLACEHOLDER_WILL_FAIL
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+  <script>
+  (function(){
+    var q = new URLSearchParams(location.search);
+    var isPlayer = q.get('role') === 'player' || q.get('join') === '1';
+    var isPop = q.get('mapPopout') === '1' || q.get('mapPopout') === 'true';
+    var room = (q.get('room') || '').trim();
+    if (isPlayer && !room) {
+      document.documentElement.classList.add('vtt-landing');
+    }
+    if ((isPlayer && room) || isPop) {
+      document.documentElement.classList.add('map-popout');
+      if (isPlayer) document.documentElement.classList.add('vtt-player');
+      document.documentElement.style.background = '#0e0c0a';
+      function killChrome(){
+        // Always strip nav chrome on shared/player maps — keep only map + combatants (+ player panel)
+        var sels = [
+          '#menu-toggle', '.menu-toggle', 'button[aria-label="Menu"]', 'button[title="Menu"]',
+          '#sidebar-collapse-btn', '.sidebar-collapse-btn',
+          '#sidebar', '.sidebar', 'aside.sidebar',
+          '#view-combat', '#view-tools', '#view-campaigns',
+          '.app-header', 'header.app-header', 'header',
+          '.header-left', '.header-right', '#dice-toggle', '#dice-panel', '.dice-panel',
+          '#view-map .view-header', '.view-desc', 'nav', '.app-nav',
+          '#player-landing', '.app-footer', 'footer'
+        ];
+        // Player: no map edit toolbar / fog tools. DM mapPopout keeps fog controls only (handled in app.js).
+        if (isPlayer) {
+          sels.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush');
+        }
+        // DM share (mapPopout only): do not strip entire map-toolbar here
+        sels.forEach(function(sel){
+          document.querySelectorAll(sel).forEach(function(el){
+            // Never remove map combatants list or player combat panel
+            if (!el) return;
+            if (el.id === 'map-roster' || el.id === 'map-roster-list' || (el.classList && el.classList.contains('map-roster'))) return;
+            if (el.id === 'player-combat-panel' || (el.classList && el.classList.contains('player-combat-panel'))) return;
+            if (el.id === 'map-canvas' || el.id === 'view-map' || el.id === 'map-layout') return;
+            if (el.closest && (el.closest('#map-roster') || el.closest('#player-combat-panel') || el.closest('.map-canvas-wrap'))) return;
+            try { el.remove(); } catch(e) {
+              try { el.style.setProperty('display','none','important'); el.style.pointerEvents='none'; } catch(e2) {}
+            }
+          });
+        });
+        try { document.body && document.body.classList.add('map-popout'); } catch(e) {}
+        if (isPlayer) try { document.body && document.body.classList.add('vtt-player'); } catch(e) {}
+      }
+      document.addEventListener('DOMContentLoaded', killChrome);
+      // Observe DOM mutations so later app init cannot restore the menu button
+      var obs = new MutationObserver(function(){ killChrome(); });
+      if (document.documentElement) {
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+      }
+      setInterval(killChrome, 500);
+      // Run ASAP if body already exists
+      if (document.body) killChrome();
+    }
+  })();
+  </script>
+
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Companion app for The Dark Sun Chronicles Dungeon Master's Guide — Autonomous 5e combat tracker for DSC and official material." />
+  <meta name="theme-color" content="#0c0a09" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>Cybervlachos's Combat Tracker <span class="app-version" id="app-version">v1.4.0</span></title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☀</text></svg>" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-app="combat-tracker">
+
+  <div id="player-landing" class="player-landing hidden" aria-live="polite">
+    <div class="player-landing-card">
+      <div class="pl-brand">☀ Cybervlachos</div>
+      <h1>Join Battle Map</h1>
+      <p class="muted">Enter the room code from your DM to open the shared map.</p>
+      <label for="player-room-input">Room code</label>
+      <input id="player-room-input" type="text" maxlength="12" placeholder="e.g. JGLE3E" autocomplete="off"
+        style="text-transform:uppercase;letter-spacing:0.12em;font-size:1.25rem;text-align:center"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();window.__joinBattleMap&&window.__joinBattleMap();}">
+      <button type="button" class="btn primary" id="player-room-join-btn"
+        onclick="window.__joinBattleMap&&window.__joinBattleMap(); return false;">Enter map</button>
+      <p class="muted small" id="player-landing-err"></p>
+    </div>
+  </div>
+  <script>
+  (function(){
+    window.__joinBattleMap = function(){
+      try {
+        var inp = document.getElementById('player-room-input');
+        var err = document.getElementById('player-landing-err');
+        var code = String(inp && inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim();
+        if (!code || code.length < 3) {
+          if (err) err.textContent = 'Enter the room code from your DM (at least 3 characters).';
+          if (inp) inp.focus();
+          return;
+        }
+        if (err) err.textContent = 'Opening map…';
+        var url = new URL(window.location.href);
+        url.searchParams.set('role', 'player');
+        url.searchParams.set('room', code);
+        url.searchParams.set('mapPopout', '1');
+        url.searchParams.delete('join');
+        window.location.replace(url.toString());
+      } catch (e) {
+        var err2 = document.getElementById('player-landing-err');
+        if (err2) err2.textContent = 'Could not open map: ' + (e && e.message ? e.message : e);
+        console.error(e);
+      }
+    };
+    // Show landing immediately when appropriate
+    try {
+      var q = new URLSearchParams(location.search);
+      var room = (q.get('room') || '').trim();
+      if ((q.get('join') === '1' || q.get('role') === 'player') && !room) {
+        document.documentElement.classList.add('vtt-landing');
+        var pl = document.getElementById('player-landing');
+        if (pl) pl.classList.remove('hidden');
+      }
+    } catch (e) {}
+  })();
+  </script>
+
+  <div id="app">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="menu-toggle" class="icon-btn" aria-label="Menu" title="Menu">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div class="brand">
+          <span class="brand-icon">☀</span>
+          <div class="brand-text">
+            <span class="brand-title">Cybervlachos</span>
+            <span class="brand-sub">Combat Tracker</span>
+          </div>
+        </div>
+      </div>
+      <div class="header-right">
+        <div id="active-campaign-badge" class="campaign-badge hidden"></div>
+        <button id="dice-toggle" class="icon-btn dice-btn" aria-label="Dice Roller" title="Dice Roller">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><circle cx="15.5" cy="8.5" r="1.5" fill="currentColor"/><circle cx="8.5" cy="15.5" r="1.5" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Sidebar Navigation -->
+    <button type="button" id="sidebar-collapse-btn" class="sidebar-collapse-btn" title="Hide/show menu" aria-label="Toggle menu">☰</button>
+    <aside id="sidebar" class="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="combat">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 17.5L3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2"/><path d="M14.5 6.5L18 3h3v3l-3.5 3.5"/></svg>
+          Combat
+        </button>
+        <button class="nav-item" data-view="map">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+          Map
+        </button>
+        <button class="nav-item" data-view="tools">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+          Tools
+        </button>
+      </nav>
+      <div class="sidebar-footer">
+        <button id="export-btn" class="text-btn" title="Export all data">Export Data</button>
+        <button id="import-btn" class="text-btn" title="Import data">Import</button>
+        <input type="file" id="import-file" accept=".json" hidden />
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main" class="main-content">
+      <!-- Campaigns View -->
+
+
+      <!-- Overview View -->
+
+
+      <!-- Sessions View -->
+
+
+      <!-- Party & Roster View -->
+
+
+      <!-- Combat Tracker View -->
+      <section id="view-combat" class="view active">
+        <div class="view-header">
+          <h1>Combat Tracker</h1>
+          <div class="header-actions">
+            <button id="combat-clear-btn" class="btn danger ghost">Clear</button>
+            <button type="button" class="btn secondary" id="combat-map-popout-btn" title="Open map window for players / Discord">Pop out map</button>
+            <button type="button" class="btn secondary" id="combat-short-rest" title="Recover short-rest resources">Short Rest</button>
+            <button type="button" class="btn secondary" id="combat-long-rest" title="Full HP, slots, resources">Long Rest</button>
+            <button type="button" class="btn secondary" id="combat-reset-resources" title="Restore slots/Ki/Lunar/Rage without healing">Reset Resources</button>
+            <button id="combat-next-btn" class="btn primary">Next Turn</button>
+          </div>
+        </div>
+        <p class="view-desc">Track initiative, HP, conditions, concentration, and actions. Select a combatant for the <strong>info + attack roller</strong> panel (actions, bonus/legendary, spells). Generate bosses with the Villain Generator.</p>
+        <div class="card combat-log-panel" style="margin-bottom:0.75rem;padding:0.6rem 0.75rem">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
+            <strong style="color:var(--gold,#c4a35a)">Combat Log</strong>
+            <button type="button" class="btn ghost small" id="combat-log-clear" title="Clear shared log">Clear log</button>
+          </div>
+          <div id="combat-shared-log" class="combat-shared-log"></div>
+        </div>
+        <div class="combat-toolbar">
+          <div class="combat-meta">
+            <span class="stat-pill">Round <strong id="combat-round">1</strong></span>
+            <span class="stat-pill" id="combat-turn-label">—</span>
+          </div>
+          <div id="combat-turn-banner" class="combat-turn-banner" hidden></div>
+          <div class="stat-pills" style="display:none">
+          </div>
+          <div class="tool-btns">
+            <button id="combat-add-party-btn" class="btn secondary">+ From Party</button>
+            <button type="button" class="btn secondary" id="combat-add-all-roster-btn" title="Add entire party and villains to combat">+ All Roster</button>
+            <button id="combat-add-villain-btn" class="btn secondary">+ From Villains</button>
+            <button id="combat-add-bestiary-btn" class="btn secondary">+ From Bestiary</button>
+            <button id="combat-quick-add-btn" class="btn secondary">Quick Add</button>
+            <button id="combat-random-enc-btn" class="btn primary">🎲 Random Encounter</button>
+            <button id="combat-roll-init-btn" class="btn secondary">Roll Init</button>
+            <button id="combat-sort-btn" class="btn secondary">Sort by Init</button>
+            <button id="combat-end-round-btn" class="btn secondary" title="Advance to next initiative">End Turn / Next</button>
+            <button id="combat-delay-btn" class="btn secondary" title="Delay this turn">Delay</button>
+            <button id="combat-save-enc-btn" class="btn secondary" title="Save encounter preset">Save Encounter</button>
+            <button id="combat-load-enc-btn" class="btn secondary" title="Load encounter preset">Load Encounter</button>
+            <button id="combat-export-log-btn" class="btn secondary" title="Export combat log">Export Log</button>
+            <button id="combat-add-villain-gen-btn" class="btn danger">+ Generate Villain</button>
+          </div>
+        </div>
+        <div class="combat-layout">
+          <div class="combat-main">
+            <div id="combat-list" class="combat-list"></div>
+            <div id="empty-combat" class="empty-state">
+              <p>No combatants. Add from Party, Villains, Bestiary, or roll a Random Encounter.</p>
+            </div>
+          </div>
+          <aside id="combat-detail" class="combat-detail">
+            <div class="combat-detail-empty muted">Select a combatant to view details, traits, and description.</div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- Bestiary View -->
+
+
+      <!-- DSC Classes Reference -->
+
+
+      <!-- Umbrarians Reference (PHB + DMG) -->
+
+
+      <!-- Factions View -->
+
+
+      <!-- Forces View -->
+
+
+      <!-- Notes View -->
+
+
+      <!-- Tools View -->
+        <!-- class tables injected -->
+      
+      <section id="view-map" class="view">
+        <div class="view-header">
+          <h1>Battle Map</h1>
+          <div class="header-actions" style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+            <label class="btn secondary" for="map-file-image" id="map-import-image-btn" style="cursor:pointer;margin:0">Import Image</label>
+            <label class="btn secondary" for="map-file-uvtt" id="map-import-uvtt-btn" style="cursor:pointer;margin:0">Import UVTT / DD2VTT</label>
+            <label class="btn secondary" for="map-file-video" id="map-import-video-btn" style="cursor:pointer;margin:0">Import Video (MP4/WebM)</label>
+            <label class="btn secondary" for="map-file-token" id="map-token-image-btn" style="cursor:pointer;margin:0" title="Set custom image on selected combatant">Token image</label>
+            <input type="file" id="map-file-token" accept="image/*" style="display:none" />
+            <button type="button" class="btn secondary" id="map-token-clear-btn" title="Remove custom token image">Clear token</button>
+            <button type="button" class="btn secondary" id="map-clear-btn">Clear Map</button>
+            <button type="button" class="btn primary" id="map-popout-btn" title="Open map in a separate window for screen share">Pop out map</button>
+          </div>
+        </div>
+        <p class="view-desc">Import a map (image or Dungeon Alchemist / Dungeondraft <strong>UVTT</strong>). Place combatants, set grid, and paint AoE to select targets for the combat roller.</p>
+        <div class="map-toolbar card" style="margin-bottom:0.75rem;padding:0.75rem;display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end">
+          <div class="field" style="margin:0"><label>Grid px / square</label>
+            <input type="number" id="map-grid-size" min="10" max="256" value="70" style="width:5rem" />
+          </div>
+          <div class="field" style="margin:0"><label>Grid offset X</label>
+            <input type="number" id="map-grid-ox" value="0" style="width:4rem" title="Shift grid to match map lines" />
+          </div>
+          <div class="field" style="margin:0"><label>Grid offset Y</label>
+            <input type="number" id="map-grid-oy" value="0" style="width:4rem" />
+          </div>
+          <div class="field" style="margin:0"><label>Tool</label>
+            <select id="map-tool">
+              <option value="token" selected>Place / move token</option>
+              <option value="pan">Select token (click)</option>
+              <option value="aoe-sphere">AoE: Sphere / circle</option>
+              <option value="aoe-cone">AoE: Cone</option>
+              <option value="aoe-line">AoE: Line</option>
+              <option value="aoe-cube">AoE: Cube / square</option>
+              <option value="ruler">Ruler / range</option>
+              <option value="grid-offset">Adjust grid (drag)</option>
+              <option value="fog-reveal">Fog: Reveal</option>
+              <option value="fog-hide">Fog: Hide</option>
+            </select></div>
+          <div class="field" style="margin:0;align-self:flex-end">
+            <button type="button" class="btn secondary" id="map-grid-adjust-toggle" title="Drag on map to shift grid">Grid adjust</button>
+          </div>
+          <div class="field" style="margin:0"><label>AoE size (ft)</label>
+            <input type="number" id="map-aoe-ft" min="5" max="300" step="5" value="20" style="width:5rem" />
+          </div>
+          <div class="field" style="margin:0"><label>Token for</label>
+            <select id="map-token-combatant" style="min-width:10rem"></select>
+          </div>
+          <button type="button" class="btn primary" id="map-apply-aoe-targets">Select targets in AoE</button>
+          <button type="button" class="btn secondary" id="map-clear-aoe" title="Clear AoE shapes and the range ruler">Clear AoE / Ruler</button>
+          <button type="button" class="btn primary" id="vtt-create-room" title="Create VTT room">VTT Room</button>
+          <input type="text" id="vtt-room-code" placeholder="Room" maxlength="8" style="width:5rem;text-transform:uppercase">
+          <button type="button" class="btn secondary" id="vtt-join-player" title="Open player view">Player view</button>
+          <button type="button" class="btn secondary" id="map-fog-toggle" title="Toggle fog of war">FoW</button>
+          <button type="button" class="btn secondary" id="map-fog-reveal" title="Reveal fog brush">Reveal</button>
+          <button type="button" class="btn secondary" id="map-fog-hide" title="Hide fog brush">Hide</button>
+          <button type="button" class="btn ghost" id="map-fog-reset" title="Cover all">Fog all</button>
+          <label class="muted small">Brush <input type="number" id="map-fog-brush" min="1" max="8" value="1" style="width:3rem"></label>
+          <span class="muted small" id="map-status">No map loaded</span>
+        </div>
+        <div class="map-layout">
+          <div class="map-canvas-wrap">
+            <video id="map-video" muted loop autoplay playsinline webkit-playsinline preload="auto" style="display:none"></video>
+            <canvas id="map-canvas" width="900" height="600"></canvas>
+          </div>
+          <aside class="map-roster card" id="map-roster">
+            <div class="map-roster-head">
+              <strong>Combatants</strong>
+              <button type="button" class="btn secondary btn-tiny" id="map-snap-all" title="Snap all tokens to grid centers">Snap all</button>
+            </div>
+            <div class="map-roster-list" id="map-roster-list">
+              <p class="muted small">Add combatants in Combat, then place them here.</p>
+            </div>
+          </aside>
+          <aside class="player-combat-panel card" id="player-combat-panel" style="display:none">
+            <div class="map-roster-head"><strong>Your character</strong></div>
+            <div id="player-roll-result" class="player-roll-result combat-roll-result" hidden></div>
+            <div id="player-combat-body" class="player-combat-body">
+              <p class="muted small">Claim a character to open your combat panel.</p>
+            </div>
+            <div class="player-shared-log-wrap">
+              <strong class="small" style="color:var(--gold,#c4a35a)">Combat Log</strong>
+              <div id="player-shared-log" class="combat-shared-log"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-tools" class="view">
+        <div class="view-header">
+          <h1>Tools</h1>
+        </div>
+        <p class="view-desc">Import rosters, sync Open5e / CritterDB for combat bestiaries, and manage class tables. Sheet editing stays in Toolkit / Player Companion.</p>
+
+        <div class="card tool-card" style="margin-bottom:1rem">
+          <h3>Party &amp; Roster</h3>
+          <p class="muted small" id="roster-io-status">Workspace roster: —</p>
+          <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem">
+            <button type="button" class="btn primary" id="roster-export-btn">Export Roster JSON</button>
+            <button type="button" class="btn secondary" id="roster-import-btn">Import Roster JSON</button>
+            <input type="file" id="roster-import-file" accept=".json,application/json" hidden />
+            <label class="muted small" style="display:flex;align-items:center;gap:0.35rem">
+              Mode
+              <select id="roster-import-mode">
+                <option value="merge">Merge / update by ID</option>
+                <option value="replace">Replace roster</option>
+              </select>
+            </label>
+            <label class="muted small" style="display:flex;align-items:center;gap:0.35rem" title="After import, push party & villains into the combat tracker">
+              <input type="checkbox" id="roster-import-add-combat" checked />
+              Add to combat
+            </label>
+          </div>
+          <p class="muted small" style="margin-top:0.5rem">Compatible with DSC Toolkit exports (<code>DSC-roster-v1</code>) and single character JSON files.</p>
+        </div>
+
+        <div id="class-tables-tools" class="tools-block"></div>
+        <div id="compendium-tools" class="tools-block"></div>
+        <div id="extensions-tools" class="tools-block"></div>
+        <div id="feature-compendium-tools" class="tools-block"></div>
+        <div id="tool-custom-content" class="tools-block"></div>
+      </section>
+    </main>
+
+    <!-- Dice Roller Panel -->
+    <div id="dice-panel" class="dice-panel hidden">
+      <div class="dice-header">
+        <h2>Dice Roller</h2>
+        <button id="dice-close" class="icon-btn" aria-label="Close">×</button>
+      </div>
+      <div class="dice-body">
+        <div class="dice-controls">
+          <div class="dice-row">
+            <label>Dice</label>
+            <div class="dice-buttons">
+              <button class="die-btn" data-sides="4">d4</button>
+              <button class="die-btn" data-sides="6">d6</button>
+              <button class="die-btn" data-sides="8">d8</button>
+              <button class="die-btn" data-sides="10">d10</button>
+              <button class="die-btn" data-sides="12">d12</button>
+              <button class="die-btn primary" data-sides="20">d20</button>
+              <button class="die-btn" data-sides="100">d100</button>
+            </div>
+          </div>
+          <div class="dice-row">
+            <label for="dice-count">Count</label>
+            <input type="number" id="dice-count" min="1" max="99" value="1" />
+            <label for="dice-mod">Mod</label>
+            <input type="number" id="dice-mod" value="0" />
+          </div>
+          <div class="dice-row advantage-row">
+            <label class="checkbox-label"><input type="checkbox" id="adv-check" /> Advantage</label>
+            <label class="checkbox-label"><input type="checkbox" id="dis-check" /> Disadvantage</label>
+          </div>
+          <div class="dice-row">
+            <input type="text" id="custom-formula" placeholder="Custom: 2d6+3, 1d20+5, etc." />
+            <button id="roll-custom" class="btn secondary">Roll</button>
+          </div>
+          <button id="roll-btn" class="btn primary full-width">Roll Selected</button>
+        </div>
+        <div id="dice-result" class="dice-result">
+          <div class="result-total">—</div>
+          <div class="result-detail"></div>
+        </div>
+        <div class="dice-history">
+          <h4>History</h4>
+          <ul id="roll-history"></ul>
+          <button id="clear-history" class="text-btn">Clear</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title">Title</h2>
+          <button id="modal-close" class="icon-btn">×</button>
+        </div>
+        <div id="modal-body" class="modal-body"></div>
+        <div class="modal-footer">
+          <button id="modal-cancel" class="btn secondary">Cancel</button>
+          <button id="modal-confirm" class="btn primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="js/bestiary-data.js"></script>
+  <script src="js/phb-data.js"></script>
+  <script src="js/equipment-data.js"></script>
+  <script src="js/spells-data.js"></script>
+  <script src="js/custom-content-data.js"></script>
+  <script src="js/class-tables-data.js"></script>
+  <script>window.DSC_APP_MODE="dm";</script>
+  <script src="js/app.js"></script>
+  <script src="js/extensions.js"></script>
+  <!-- Map file inputs at document root so they work even when views are display:none -->
+  <input type="file" id="map-file-image" accept="image/*" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
+  <input type="file" id="map-file-uvtt" accept=".dd2vtt,.uvtt,.json,application/json,text/plain" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
+  <input type="file" id="map-file-video" accept="video/mp4,video/webm,video/*" style="position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0" />
+</body>
+</html>

@@ -2375,18 +2375,28 @@
   function refreshTurnEconomyUI(cb) {
     if (!cb) return;
     try {
-      const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
+      let atkMax = Math.max(1, Number(cb.attacksMax) || 1);
       const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
-      const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
+      let mirrorUsed = 0, mirrorAct = 0;
+      try {
+        const mir = JSON.parse(sessionStorage.getItem('cyber_econ_' + String(cb.id || cb.name || '')) || 'null');
+        if (mir) {
+          mirrorUsed = Number(mir.attacksUsed) || 0;
+          mirrorAct = Number(mir.actionsUsed) || 0;
+          if (mir.attacksMax) atkMax = Math.max(atkMax, Number(mir.attacksMax) || 1);
+        }
+      } catch (e) {}
+      const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess, mirrorUsed);
       cb.attacksUsed = atkUsed;
       const atkLeft = Math.max(0, atkMax - atkUsed);
       let actMax = Math.max(1, Number(cb.actionsMax) || 1);
-      let actUsed = Number(cb.actionsUsed) || 0;
+      let actUsed = Math.max(Number(cb.actionsUsed) || 0, mirrorAct || 0);
       if (atkUsed > 0 && actUsed < 1) {
         actUsed = 1;
         cb.actionsUsed = 1;
         cb.actionUsed = true;
       }
+      cb.actionsUsed = actUsed;
       const actLeft = Math.max(0, actMax - actUsed);
 
       function patchVal(root, predicate, html) {
@@ -8029,10 +8039,10 @@ function parseAttackLines(ch) {
         const list = (combat && combat.combatants) || [];
         const atk = list.find(x => String(x.id) === String(msg.attackerId) || String(x.name) === String(msg.attackerId));
         if (atk && msg.economy) {
-          if (msg.economy.actionsUsed != null) atk.actionsUsed = msg.economy.actionsUsed;
-          if (msg.economy.attacksUsed != null) atk.attacksUsed = msg.economy.attacksUsed;
-          if (msg.economy.actionsMax != null) atk.actionsMax = msg.economy.actionsMax;
-          if (msg.economy.attacksMax != null) atk.attacksMax = msg.economy.attacksMax;
+          if (msg.economy.actionsUsed != null) atk.actionsUsed = Math.max(Number(atk.actionsUsed) || 0, Number(msg.economy.actionsUsed) || 0);
+          if (msg.economy.attacksUsed != null) atk.attacksUsed = Math.max(Number(atk.attacksUsed) || 0, Number(msg.economy.attacksUsed) || 0);
+          if (msg.economy.actionsMax != null) atk.actionsMax = Math.max(Number(atk.actionsMax) || 1, Number(msg.economy.actionsMax) || 1);
+          if (msg.economy.attacksMax != null) atk.attacksMax = Math.max(Number(atk.attacksMax) || 1, Number(msg.economy.attacksMax) || 1);
           try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(atk); } catch (e) {}
           try {
             // DM detail panel may show selected combatant
@@ -8701,15 +8711,15 @@ function parseAttackLines(ch) {
         r.conditions = local.conditions;
         r.turnState = local.turnState;
         r.turnPhase = local.turnPhase;
-        r.actionUsed = local.actionUsed;
-        r.actionsUsed = local.actionsUsed;
-        r.actionsMax = local.actionsMax;
-        r.bonusUsed = local.bonusUsed;
-        r.reactionUsed = local.reactionUsed;
-        r.moveUsed = local.moveUsed;
-        r.attacksUsed = local.attacksUsed;
-        r.attacksMax = local.attacksMax;
-        r.lastAction = local.lastAction;
+        r.actionUsed = local.actionUsed || r.actionUsed;
+        r.actionsUsed = Math.max(Number(r.actionsUsed) || 0, Number(local.actionsUsed) || 0);
+        if (local.actionsMax != null) r.actionsMax = Math.max(Number(r.actionsMax) || 0, Number(local.actionsMax) || 0);
+        r.bonusUsed = local.bonusUsed || r.bonusUsed;
+        r.reactionUsed = local.reactionUsed || r.reactionUsed;
+        r.moveUsed = Math.max(Number(r.moveUsed) || 0, Number(local.moveUsed) || 0);
+        r.attacksUsed = Math.max(Number(r.attacksUsed) || 0, Number(local.attacksUsed) || 0);
+        if (local.attacksMax != null) r.attacksMax = Math.max(Number(r.attacksMax) || 1, Number(local.attacksMax) || 1);
+        if (local.lastAction) r.lastAction = local.lastAction;
         r.combatSpellSlots = local.combatSpellSlots;
         r.combatResources = local.combatResources;
         r.concentrating = local.concentrating;
