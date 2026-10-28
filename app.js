@@ -7900,7 +7900,10 @@ function parseAttackLines(ch) {
     } catch (e) {}
     try { toast((atkName || 'Attack') + ': ' + res.formula + hitLine); } catch (e) {}
     try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
-    // Double-pass after save (DOM may lag)
+    // Persist + sync economy both directions
+    try {
+      if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb);
+    } catch (e) {}
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
         playerPersistAndSyncCombat();
@@ -7908,10 +7911,34 @@ function parseAttackLines(ch) {
         save();
       }
     } catch (e) {}
+    // Dedicated economy ping for DM/player windows
+    try {
+      const payload = {
+        type: 'vtt-economy',
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '',
+        at: Date.now(),
+        id: cb.id,
+        name: cb.name,
+        attacksUsed: cb.attacksUsed,
+        attacksMax: cb.attacksMax,
+        actionsUsed: cb.actionsUsed,
+        actionsMax: cb.actionsMax,
+        actionUsed: cb.actionUsed,
+        turnPhase: cb.turnPhase
+      };
+      localStorage.setItem('cybervlachos_vtt_economy', JSON.stringify(payload));
+      try {
+        const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        if (ch) ch.postMessage(payload);
+      } catch (e2) {}
+    } catch (e) {}
     try {
       setTimeout(function() {
         try { refreshTurnEconomyUI(cb); } catch (e) {}
       }, 30);
+      setTimeout(function() {
+        try { refreshTurnEconomyUI(cb); } catch (e) {}
+      }, 120);
     } catch (e) {}
   }
   function runDelegatedDamageRoll() {
@@ -8410,7 +8437,7 @@ function parseAttackLines(ch) {
     }
     target.hp = Math.max(0, (Number(target.hp) || 0) - left);
     // Concentration
-    if (target.concentrating && left > 0) {
+    if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
       try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) {}
     }
     // Death / unconscious
@@ -8513,11 +8540,18 @@ function parseAttackLines(ch) {
   function isPlayerCombatant(cb) {
     if (!cb) return false;
     const side = String(cb.side || cb.team || '').toLowerCase();
+    // Explicit enemy/villain never treated as PC
+    if (side === 'enemy' || side === 'foe' || side === 'hostile' || side === 'villain' || side === 'npc') {
+      if (side === 'npc' && (cb.isPC || cb.isPlayer)) return true;
+      if (side !== 'npc') return false;
+    }
     if (side === 'pc' || side === 'ally' || side === 'player' || side === 'party') return true;
     if (cb.isPC || cb.isPlayer) return true;
     try {
       const c = typeof getActive === 'function' ? getActive() : null;
-      if (c && Array.isArray(c.party) && c.party.some(p => p && (p.id === cb.sourceId || p.id === cb.charId || p.name === cb.name))) return true;
+      if (c && Array.isArray(c.party) && c.party.some(p => p && (String(p.id) === String(cb.sourceId) || String(p.id) === String(cb.charId) || p.name === cb.name))) return true;
+      // Villains list → not a PC
+      if (c && Array.isArray(c.villains) && c.villains.some(v => v && (String(v.id) === String(cb.sourceId) || v.name === cb.name))) return false;
     } catch (e) {}
     return false;
   }
@@ -8537,16 +8571,16 @@ function parseAttackLines(ch) {
   function resolveConcentrationResult(cb, dc, total, opts) {
     opts = opts || {};
     const ok = total >= dc;
-    try {
-      if (typeof appendLog === 'function') appendLog((cb.name || 'Combatant') + ' concentration DC ' + dc + ': ' + total + ' (' + (ok ? 'OK' : 'LOST') + ')');
-    } catch (e) {}
+    const line = (cb.name || 'Combatant') + ' concentration save: ' + total + ' vs DC ' + dc + (ok ? ' — SUCCESS (held)' : ' — FAILED');
+    try { if (typeof appendLog === 'function') appendLog(line); } catch (e) {}
     try {
       if (typeof appendSharedCombatLog === 'function') {
-        appendSharedCombatLog((cb.name || 'Combatant') + ' concentration ' + total + ' vs DC ' + dc + (ok ? ' — held' : ' — LOST'), { names: [cb.name], ids: [cb.id] });
+        appendSharedCombatLog(line + (ok ? '' : ' — concentration drops unless Legendary Resistance'), { names: [cb.name], ids: [cb.id] });
       }
     } catch (e) {}
     if (ok) {
-      try { if (typeof toast === 'function') toast((cb.name || 'Target') + ' maintains concentration'); } catch (e) {}
+      try { if (typeof toast === 'function') toast((cb.name || 'Target') + ' maintains concentration (' + total + ' vs DC ' + dc + ')'); } catch (e) {}
+      try { if (typeof save === 'function') save(); } catch (e) {}
       return true;
     }
     // Failed — legendary resistance for NPCs
@@ -8679,41 +8713,49 @@ function parseAttackLines(ch) {
     if (!target || !isConcentratingCombatant(target)) return;
     const dmg = Number(damage) || 0;
     if (dmg <= 0) return;
+    // Normalize flag (may be spell name string)
+    if (target.concentrating && target.concentrating !== true) {
+      target._concentrationSpell = String(target.concentrating);
+      target.concentrating = true;
+    } else {
+      target.concentrating = true;
+    }
     const dc = concentrationDcFromDamage(dmg);
     const isPc = isPlayerCombatant(target);
+    const startLine = (target.name || 'Combatant') + ' was hit for ' + dmg + ' while concentrating — Constitution save DC ' + dc;
+    try { if (typeof appendLog === 'function') appendLog(startLine); } catch (e) {}
+    try { if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(startLine, { names: [target.name], ids: [target.id] }); } catch (e) {}
 
-    // Player client: if this is their claimed character, show click-to-roll popup
+    // Player client: claimed character → click-to-roll popup
     if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+      let show = true;
       try {
-        const claimed = typeof getClaimedId === 'function' ? getClaimedId() : '';
-        const isMine = claimed && (String(target.id) === String(claimed) || String(target.sourceId) === String(claimed) ||
-          String(target.charId) === String(claimed) || (target.name && String(claimed).indexOf(target.name) !== -1));
-        // Always show for player panel target if claimed combatant matches
-        let claimedCb = null;
-        try { claimedCb = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null; } catch (e) {}
-        const mine = (claimedCb && (claimedCb.id === target.id || claimedCb.name === target.name)) || isMine;
-        if (mine || !claimedCb) {
-          showPlayerConcentrationPopup(target, dc);
-          return;
-        }
-      } catch (e) {
+        const claimedCb = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        if (claimedCb && claimedCb.id !== target.id && claimedCb.name !== target.name) show = false;
+      } catch (e) {}
+      if (show) {
         showPlayerConcentrationPopup(target, dc);
         return;
       }
     }
 
-    // DM applying damage to a PC: request player roll + toast
+    // DM → PC: ask player to roll (and log clearly)
     if (isPc && typeof isPlayerRole === 'function' && !isPlayerRole()) {
       broadcastConcentrationRequest(target, dc, dmg);
-      try { if (typeof toast === 'function') toast((target.name || 'PC') + ' — concentration check DC ' + dc + ' (player rolls)'); } catch (e) {}
-      try { if (typeof appendLog === 'function') appendLog((target.name || 'PC') + ' concentration check requested (DC ' + dc + ')'); } catch (e) {}
+      const wait = (target.name || 'PC') + ' concentration check DC ' + dc + ' — waiting for player to roll';
+      try { if (typeof toast === 'function') toast(wait); } catch (e) {}
+      try { if (typeof appendLog === 'function') appendLog(wait); } catch (e) {}
+      try { if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(wait, { names: [target.name], ids: [target.id] }); } catch (e) {}
       return;
     }
 
-    // NPC / DM-controlled: auto-roll
+    // NPC / DM-controlled: auto-roll immediately
     const conMod = combatantConMod(target);
     const r1 = 1 + Math.floor(Math.random() * 20);
     const total = r1 + conMod;
+    const detail = (target.name || 'NPC') + ' rolls concentration: d20 (' + r1 + ') + CON ' + (conMod >= 0 ? '+' : '') + conMod + ' = ' + total + ' vs DC ' + dc;
+    try { if (typeof appendLog === 'function') appendLog(detail); } catch (e) {}
+    try { if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(detail, { names: [target.name], ids: [target.id] }); } catch (e) {}
     try {
       if (typeof playPopupDiceAnimation === 'function') {
         playPopupDiceAnimation('<div class="dice-anim-line">Concentration: d20=' + r1 + ' + ' + conMod + ' = <strong>' + total + '</strong> vs DC ' + dc + '</div>', { force: true });
@@ -8723,6 +8765,53 @@ function parseAttackLines(ch) {
   }
 
   // Player listens for concentration requests from DM
+  
+  if (!window.__economyListener) {
+    window.__economyListener = true;
+    function applyEconomyMessage(msg) {
+      if (!msg || msg.type !== 'vtt-economy') return;
+      try {
+        const room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+        if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+        const c = typeof getActive === 'function' ? getActive() : null;
+        if (!c) return;
+        const combat = typeof getCombat === 'function' ? getCombat(c) : null;
+        if (!combat) return;
+        const cb = (combat.combatants || []).find(x => String(x.id) === String(msg.id) || x.name === msg.name);
+        if (!cb) return;
+        if (msg.attacksUsed != null) cb.attacksUsed = Math.max(Number(cb.attacksUsed) || 0, Number(msg.attacksUsed) || 0);
+        if (msg.attacksMax != null) cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, Number(msg.attacksMax) || 1);
+        if (msg.actionsUsed != null) cb.actionsUsed = Math.max(Number(cb.actionsUsed) || 0, Number(msg.actionsUsed) || 0);
+        if (msg.actionsMax != null) cb.actionsMax = Math.max(Number(cb.actionsMax) || 1, Number(msg.actionsMax) || 1);
+        if (msg.actionUsed != null) cb.actionUsed = cb.actionUsed || !!msg.actionUsed;
+        if (msg.turnPhase) cb.turnPhase = msg.turnPhase;
+        try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+        try {
+          if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+            if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel();
+          } else if (typeof renderCombat === 'function') {
+            renderCombat();
+          }
+        } catch (e) {}
+      } catch (e) {}
+    }
+    window.addEventListener('storage', function(ev) {
+      if (ev.key === 'cybervlachos_vtt_economy' && ev.newValue) {
+        try { applyEconomyMessage(JSON.parse(ev.newValue)); } catch (e) {}
+      }
+    });
+    setInterval(function() {
+      try {
+        const raw = localStorage.getItem('cybervlachos_vtt_economy');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (!msg || !msg.at || msg.at === window.__lastEconAt) return;
+        window.__lastEconAt = msg.at;
+        applyEconomyMessage(msg);
+      } catch (e) {}
+    }, 400);
+  }
+
   if (!window.__conCheckListener) {
     window.__conCheckListener = true;
     window.addEventListener('storage', function(ev) {
@@ -10115,8 +10204,8 @@ function parseAttackLines(ch) {
               left -= absorb;
             }
             target.hp = Math.max(0, (target.hp || 0) - left);
-            if (target.concentrating && left > 0 && typeof concentrationCheck === 'function') {
-              try { concentrationCheck(target, left); } catch (e) {}
+            if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
+              try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) {}
             }
             appendLog(`${target.name || 'Target'} takes ${amt} damage (${target.hp} HP)`);
             try {
@@ -10264,7 +10353,7 @@ function parseAttackLines(ch) {
           } else {
             target.hp = Math.max(0, (target.hp || 0) - left);
           }
-          if (target.concentrating && left > 0) {
+          if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
             try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) {}
           }
           if (target.hp === 0) target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
