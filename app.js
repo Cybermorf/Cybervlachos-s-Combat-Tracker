@@ -3321,15 +3321,20 @@ function beginCombatantTurn(cb, ch) {
     const slots = cb.combatSpellSlots || {};
     const levels = Object.keys(slots).map(Number).sort((a,b)=>a-b);
     if (!levels.length && !cb.pactSlotsMax) return '';
+    const isPlayer = (typeof isPlayerRole === 'function' && isPlayerRole())
+      || /[?&]role=player(?:&|$)/i.test(String(location.search || ''));
     const slotOpts = levels.filter(L => (slots[L].max - (slots[L].used||0)) > 0).map(L =>
       `<option value="${L}">${L}${L===1?'st':L===2?'nd':L===3?'rd':'th'} (${slots[L].max-(slots[L].used||0)} left)</option>`
     ).join('');
     const pact = cb.pactSlotsMax
-      ? `<div class="combat-res-row"><span class="combat-res-name">Pact (${cb.pactSlotLevel})</span>
+      ? (isPlayer
+          ? `<div class="combat-res-row"><span class="combat-res-name">Pact (${cb.pactSlotLevel})</span>
+          <span class="combat-res-val"><strong>${Math.max(0,(cb.pactSlotsMax||0)-(cb.pactSlotsUsed||0))}</strong>/${cb.pactSlotsMax}</span></div>`
+          : `<div class="combat-res-row"><span class="combat-res-name">Pact (${cb.pactSlotLevel})</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-pact-dec">−</button>
           <span class="combat-res-val"><strong>${Math.max(0,(cb.pactSlotsMax||0)-(cb.pactSlotsUsed||0))}</strong>/${cb.pactSlotsMax}</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-pact-inc">+</button>
-          <button type="button" class="btn secondary btn-tiny" id="cd-pact-spend">Use</button></div>`
+          <button type="button" class="btn secondary btn-tiny" id="cd-pact-spend">Use</button></div>`)
       : '';
     return `<div class="detail-block">
       <div class="detail-label">Spell Slots</div>
@@ -3337,11 +3342,12 @@ function beginCombatantTurn(cb, ch) {
         ${levels.map(L => {
           const s = slots[L];
           const left = Math.max(0, s.max - (s.used||0));
+          const steppers = isPlayer ? '' : `<button type="button" class="btn secondary btn-tiny cd-slot-spend" data-slot="${L}">−</button>
+            <button type="button" class="btn secondary btn-tiny cd-slot-restore" data-slot="${L}">+</button>`;
           return `<div class="combat-slot-chip ${left===0?'empty':''}" data-slot="${L}" title="Level ${L}">
             <span class="slot-lvl">L${L}</span>
             <span class="slot-val">${left}/${s.max}</span>
-            <button type="button" class="btn secondary btn-tiny cd-slot-spend" data-slot="${L}">−</button>
-            <button type="button" class="btn secondary btn-tiny cd-slot-restore" data-slot="${L}">+</button>
+            ${steppers}
           </div>`;
         }).join('')}
       </div>
@@ -8068,15 +8074,17 @@ function parseAttackLines(ch) {
       const dmgBtn = t.closest('#cr-roll-dmg');
       const atkBtn = t.closest('#cr-roll-btn');
       if (atkBtn) {
-        // Prefer live delegated path for consistent adv / to-hit / player popup
+        // Capture phase single handler — prevents panel double-fire / freeze
         ev.preventDefault();
         ev.stopPropagation();
+        try { ev.stopImmediatePropagation(); } catch (e) {}
         runDelegatedAttackRoll();
         return;
       }
       if (dmgBtn) {
         ev.preventDefault();
         ev.stopPropagation();
+        try { ev.stopImmediatePropagation(); } catch (e) {}
         // Enable if stuck disabled after a hit
         const last = window.__lastCombatRoll || {};
         if (dmgBtn.disabled && (last.canDamage || last.hit || last.isCrit)) {
@@ -8091,7 +8099,7 @@ function parseAttackLines(ch) {
       if (ev.key === 'cybervlachos_vtt_combat_roll' && ev.newValue) {
         try { applyCombatRollMessage(JSON.parse(ev.newValue)); } catch (e) {}
       }
-    });
+    }, true);
     try {
       const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
       if (ch && !window.__combatRollChBound) {
@@ -9487,7 +9495,13 @@ function parseAttackLines(ch) {
       if (opt.dataset.hit !== '' && toHitEl) toHitEl.value = opt.dataset.hit;
       if (opt.dataset.dmg && dmgEl) dmgEl.value = opt.dataset.dmg;
     });
-    panel.querySelector('#cr-roll-btn')?.addEventListener('click', () => {
+    panel.querySelector('#cr-roll-btn')?.addEventListener('click', (ev) => {
+      // Document-level combatRollDelegate is the single source of truth (economy + player sync).
+      // Running both handlers double-spends attacks and can freeze the player popup.
+      if (window.__combatRollDelegated) {
+        try { ev && ev.preventDefault && ev.preventDefault(); } catch (e) {}
+        return;
+      }
       const mode = panel.querySelector('#cr-mode')?.value || 'attack';
       const box = panel.querySelector('#cr-result') || panel.querySelector('#combat-roll-result');
       const atkName = (list[parseInt(atkSel?.value, 10) || 0] || {}).name || 'Attack';
@@ -14157,9 +14171,35 @@ function escapeHtml(str) {
       try { renderCombat(); } catch (e) {}
       try { renderBattleMap(); } catch (e) {}
       try { renderMapRoster(); } catch (e) {}
+      // Refresh detail panel economy for selected combatant
+      try {
+        const sel = (combat.combatants || [])[combat.selectedIndex];
+        if (sel && typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(sel);
+        if (sel && typeof renderCombatDetail === 'function') renderCombatDetail(sel);
+        else if (typeof refreshCombatDetail === 'function') refreshCombatDetail();
+      } catch (e) {}
     } catch (e) { console.warn('applyPlayerCombatPatch', e); }
   }
 
+
+  
+  /* __player_combat_poll__ */
+  (function playerCombatPoll() {
+    if (window.__playerCombatPollStarted) return;
+    window.__playerCombatPollStarted = true;
+    let lastAt = 0;
+    setInterval(function () {
+      try {
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+        const raw = localStorage.getItem('cybervlachos_vtt_player_combat');
+        if (!raw) return;
+        const msg = JSON.parse(raw);
+        if (!msg || !msg.at || msg.at <= lastAt) return;
+        lastAt = msg.at;
+        if (typeof applyPlayerCombatPatch === 'function') applyPlayerCombatPatch(msg);
+      } catch (e) {}
+    }, 400);
+  })();
 
   function isJoinLanding() {
     try {

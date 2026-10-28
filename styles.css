@@ -4208,3 +4208,19 @@ body.map-popout.vtt-player .slot-stepper .slot-inc {
   margin: 0 !important;
   border: none !important;
 }
+
+/* player-slot-dm-controls-hide */
+
+/* player-slot-dm-controls-hide */
+body.vtt-player .cd-slot-spend,
+body.vtt-player .cd-slot-restore,
+html.vtt-player .cd-slot-spend,
+html.vtt-player .cd-slot-restore,
+body.vtt-player #cd-pact-dec,
+body.vtt-player #cd-pact-inc,
+body.vtt-player .slot-stepper .slot-dec,
+body.vtt-player .slot-stepper .slot-inc {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
