@@ -4224,3 +4224,15 @@ body.vtt-player .slot-stepper .slot-inc {
   visibility: hidden !important;
   pointer-events: none !important;
 }
+
+.con-check-overlay{position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:1rem}
+.con-check-card{background:#1a1612;border:1px solid #c4a35a55;border-radius:12px;padding:1.25rem 1.5rem;max-width:22rem;width:100%;text-align:center;color:#e8dcc8;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.con-check-title{font-size:1.15rem;color:#c4a35a;font-weight:700;margin-bottom:.5rem}
+.con-check-dc{font-size:1.05rem;margin:.5rem 0 1rem}
+.con-d20-btn{width:5.5rem;height:5.5rem;border-radius:12px;border:2px solid #c4a35a;background:linear-gradient(145deg,#2a2218,#1a1410);color:#f0e6d0;font-size:1.6rem;font-weight:800;cursor:pointer}
+.con-d20-btn:hover{border-color:#e0c070}
+.con-d20-btn.spinning{animation:con-spin .12s linear infinite}
+.con-d20-btn.revealed{border-color:#8d8}
+@keyframes con-spin{from{transform:rotate(0)}to{transform:rotate(12deg)}}
+.con-check-actions{display:flex;flex-direction:column;gap:.5rem;margin-top:1rem}
+.con-check-result{margin-top:.75rem;font-size:1.05rem}
