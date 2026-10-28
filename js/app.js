@@ -10697,7 +10697,16 @@ function parseAttackLines(ch) {
           try { appendLog(sp.name + ' damage ' + total + ' (' + rolled.detail + ')'); } catch (e) {}
         } else {
           const expr = spellDamageDice(sp, slotNeed || sp.level || 1);
-          if (dmgIn && (!dmgIn.value || dmgIn.value === '1d8+3' || dmgIn.value === '1d4+1')) dmgIn.value = expr;
+          // Always apply upcast-scaled dice into the roller
+          if (dmgIn && expr) dmgIn.value = expr;
+          try {
+            // Prefill animation faces from a sample roll only when auto-applying later; store expr for Damage Roll
+            window.__lastCombatRoll = Object.assign({}, window.__lastCombatRoll || {}, {
+              dmgExpr: expr,
+              name: sp.name || (window.__lastCombatRoll && window.__lastCombatRoll.name) || 'Spell',
+              // Save DC / attack spells still need a hit or save before damage unless auto
+            });
+          } catch (e) {}
         }
         try { save(); } catch (e) {}
         try { renderCombat(); } catch (e) {}
@@ -12870,6 +12879,16 @@ function escapeHtml(str) {
       // While this tab is dragging a token, skip reload (DM windows rely on __tokenDragActive in apply only;
       // player also skips STORAGE reload mid-drag because player save() path differs).
       if (window.__tokenDragActive) return;
+      // Soft throttle: full campaign load is heavy; token moves use cybervlachos_vtt_tokens.
+      try {
+        const combatOn = document.getElementById('view-combat')?.classList.contains('active');
+        const mapOn = document.getElementById('view-map')?.classList.contains('active') || (typeof isMapPopoutMode === 'function' && isMapPopoutMode());
+        if (combatOn && !mapOn) {
+          const now = Date.now();
+          if (window.__lastStorageLoadAt && (now - window.__lastStorageLoadAt) < 350) return;
+          window.__lastStorageLoadAt = now;
+        }
+      } catch (e) {}
       // Snapshot tokens if we have a newer local version than storage
       let guardTokens = null;
       let guardVer = Number(window.__tokenVerApplied) || 0;
