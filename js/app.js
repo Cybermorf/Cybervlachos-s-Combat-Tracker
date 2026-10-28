@@ -2381,18 +2381,50 @@
       cb.attacksUsed = atkUsed;
       const atkLeft = Math.max(0, atkMax - atkUsed);
       const actMax = Math.max(1, Number(cb.actionsMax) || 1);
-      const actUsed = Number(cb.actionsUsed) || 0;
+      let actUsed = Number(cb.actionsUsed) || 0;
+      if (atkUsed > 0 && actUsed < 1) {
+        actUsed = 1;
+        cb.actionsUsed = 1;
+        cb.actionUsed = true;
+      }
       const actLeft = Math.max(0, actMax - actUsed);
+
+      function setHtml(id, html) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+      }
+      function setText(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+      }
+      setText('cd-weapon-atk-left', String(atkLeft));
+      setText('cd-weapon-atk-max', String(atkMax));
+      setHtml('cd-weapon-atk-val', '<strong id="cd-weapon-atk-left">' + atkLeft + '</strong> / <span id="cd-weapon-atk-max">' + atkMax + '</span>');
+      setHtml('cd-actions-val', '<strong id="cd-actions-left">' + actLeft + '</strong> left of <span id="cd-actions-max">' + actMax + '</span>'
+        + (actUsed ? ' · used <span id="cd-actions-used">' + actUsed + '</span>' : ''));
 
       document.querySelectorAll('[data-econ-val="weapon-attacks"]').forEach(function(val) {
         val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
       });
       document.querySelectorAll('[data-econ-val="actions"]').forEach(function(val) {
-        val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax
-          + (actUsed ? ' · used ' + actUsed : '');
+        val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax + (actUsed ? ' · used ' + actUsed : '');
       });
 
-      // Action stage badge
+      // Fallback: find Weapon attacks sub-row even without data attrs (cached HTML)
+      document.querySelectorAll('.turn-stage-sub').forEach(function(sub) {
+        const head = sub.querySelector('.turn-stage-sub-head');
+        if (!head) return;
+        const ht = head.textContent || '';
+        const val = sub.querySelector('.combat-res-val');
+        if (!val) return;
+        if (/Weapon attacks/i.test(ht)) {
+          val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
+        }
+        if (/Actions budget/i.test(ht)) {
+          val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax + (actUsed ? ' · used ' + actUsed : '');
+        }
+      });
+
       document.querySelectorAll('.turn-stage[data-stage="action"] .stage-badge').forEach(function(badge) {
         if (actLeft <= 0) {
           badge.textContent = 'Used';
@@ -2408,7 +2440,6 @@
           badge.classList.remove('used');
         }
       });
-
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
     } catch (e) { console.warn('refreshTurnEconomyUI', e); }
   }
@@ -3410,7 +3441,7 @@ function beginCombatantTurn(cb, ch) {
         <div class="turn-stage-sub" style="margin-top:0.35rem">
           <div class="turn-stage-sub-head">Actions budget <span class="muted small">(1 + Haste / Action Surge)</span></div>
           <div class="combat-res-row" data-econ="actions">
-            <span class="combat-res-val" data-econ-val="actions"><strong>${actLeft}</strong> left of ${actMax}${actUsed ? ' · used ' + actUsed : ''}</span>
+            <span class="combat-res-val" id="cd-actions-val" data-econ-val="actions"><strong id="cd-actions-left">${actLeft}</strong> left of <span id="cd-actions-max">${actMax}</span>${actUsed ? ' · used <span id="cd-actions-used">' + actUsed + '</span>' : ''}</span>
             ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-inc" title="Spend 1 action">+</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>`}
@@ -3421,7 +3452,7 @@ function beginCombatantTurn(cb, ch) {
         <div class="turn-stage-sub">
           <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(also locked after Cast)</span></div>
           <div class="combat-res-row" data-econ="weapon-attacks">
-            <span class="combat-res-val" data-econ-val="weapon-attacks"><strong>${left}</strong> / ${max}</span>
+            <span class="combat-res-val" id="cd-weapon-atk-val" data-econ-val="weapon-attacks"><strong id="cd-weapon-atk-left">${left}</strong> / <span id="cd-weapon-atk-max">${max}</span></span>
             ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-inc">+</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>`}
@@ -7823,10 +7854,19 @@ function parseAttackLines(ch) {
   }
   function runDelegatedDamageRoll() {
     const last = window.__lastCombatRoll || {};
-    let allowed = !!(last.canDamage || last.hit || last.isCrit);
-    if (!allowed && last.hitTotal != null && last.ac != null && !last.isFumble) {
-      allowed = Number(last.hitTotal) >= Number(last.ac) || !!last.isCrit;
+    if (last.applied) {
+      try { toast('Damage already applied — Roll Attack again to hit'); } catch (e) {}
+      try {
+        document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+          btn.disabled = true;
+          btn.setAttribute('disabled', 'disabled');
+          btn.classList.remove('is-ready');
+        });
+      } catch (e) {}
+      return;
     }
+    // Only allow when this hit still has an open damage gate (not merely historical hit)
+    let allowed = last.canDamage === true;
     if (!allowed) {
       try { toast('Score a hit with Roll Attack first'); } catch (e) {}
       return;
@@ -7900,15 +7940,20 @@ function parseAttackLines(ch) {
         }
       } catch (e) {}
     });
-    window.__lastCombatRoll.applied = true;
-    window.__lastCombatRoll.canDamage = false;
+    window.__lastCombatRoll = Object.assign({}, window.__lastCombatRoll || {}, {
+      applied: true,
+      canDamage: false,
+      hit: false
+    });
     try {
       document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
         btn.disabled = true;
         btn.setAttribute('disabled', 'disabled');
         btn.classList.remove('is-ready');
+        btn.title = 'Roll Attack again to hit';
       });
     } catch (e) {}
+    try { if (typeof setDamageRollEnabled === 'function') setDamageRollEnabled(document, false, 'Roll Attack again to hit'); } catch (e) {}
     try { if (typeof save === 'function') save(); } catch (e) {}
     try {
       const payload = {
