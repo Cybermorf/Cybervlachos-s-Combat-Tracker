@@ -2371,6 +2371,47 @@
   function clearSessionAttacksUsed(cb) {
     try { sessionStorage.removeItem(sessionAttackKey(cb)); } catch (e) {}
   }
+  
+  function refreshTurnEconomyUI(cb) {
+    if (!cb) return;
+    try {
+      const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
+      const atkUsed = Math.max(Number(cb.attacksUsed) || 0, typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0);
+      const atkLeft = Math.max(0, atkMax - atkUsed);
+      const actMax = Math.max(1, Number(cb.actionsMax) || 1);
+      const actUsed = Number(cb.actionsUsed) || 0;
+      const actLeft = Math.max(0, actMax - actUsed);
+      // Weapon attacks display patterns in turn board
+      document.querySelectorAll('.combat-turn-board .combat-res-val, .turn-stage[data-stage="action"] .combat-res-val').forEach(function(el) {
+        // skip class resources
+      });
+      // Update by scanning labels
+      document.querySelectorAll('.turn-stage').forEach(function(sec) {
+        const head = (sec.textContent || '');
+        if (/Weapon attacks/i.test(head)) {
+          const strong = sec.querySelector('.combat-res-val strong');
+          if (strong) strong.textContent = String(atkLeft);
+          const val = sec.querySelector('.combat-res-val');
+          if (val && !strong) val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
+          else if (val && strong) {
+            val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
+          }
+        }
+        if (/Actions budget/i.test(head)) {
+          const val = sec.querySelector('.combat-res-val');
+          if (val) {
+            val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax
+              + (actUsed ? ' · used ' + actUsed : '');
+          }
+        }
+      });
+      // Numeric spans used in some layouts
+      document.querySelectorAll('[data-atk-left]').forEach(el => { el.textContent = String(atkLeft); });
+      document.querySelectorAll('[data-act-left]').forEach(el => { el.textContent = String(actLeft); });
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
+    } catch (e) {}
+  }
+
   function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
@@ -2609,13 +2650,43 @@ function beginCombatantTurn(cb, ch) {
     return true;
   }
 
-function ensureCombatantTurnState(cb, ch) {
+
+  function resolveCharacterForCombatant(cb) {
+    if (!cb) return null;
+    try {
+      const c = typeof getActive === 'function' ? getActive() : null;
+      if (!c) return null;
+      const id = cb.sourceId || cb.charId || cb.characterId || cb.id;
+      const lists = [].concat(c.party || [], c.villains || [], c.npcs || [], c.allies || []);
+      let hit = lists.find(function(x) {
+        if (!x) return false;
+        return String(x.id) === String(id) || String(x.characterId) === String(id) || String(x.name) === String(cb.name);
+      });
+      if (hit) return hit;
+    } catch (e) {}
+    // Combatant may itself carry class/level (roster import)
+    if (cb.class || cb.className || cb.classes || cb.classLevels || cb.level) return cb;
+    return null;
+  }
+
+  function ensureCombatantTurnState(cb, ch) {
     if (!cb) return;
+    if (!ch) {
+      try { ch = resolveCharacterForCombatant(cb); } catch (e) { ch = null; }
+    }
     // Recalc from class levels unless DM locked the budget
     if (!cb.attacksMaxLocked) {
-      cb.attacksMax = attacksPerAction(ch);
+      const calc = attacksPerAction(ch || cb);
+      // Never shrink a higher already-set max mid-turn unless calc is higher (Extra Attack etc.)
+      if (calc > 1 || cb.attacksMax == null || !(Number(cb.attacksMax) > 0)) {
+        cb.attacksMax = Math.max(Number(cb.attacksMax) || 0, calc) || calc;
+      }
+      // Prefer class-derived value when we have character data
+      if (ch || cb.class || cb.classes || cb.classLevels) {
+        cb.attacksMax = Math.max(calc, Number(cb.attacksMax) || 1);
+      }
     } else if (cb.attacksMax == null) {
-      cb.attacksMax = attacksPerAction(ch);
+      cb.attacksMax = attacksPerAction(ch || cb);
     }
     if (cb.attacksUsed == null) cb.attacksUsed = 0;
     if (cb.attacksUsed > cb.attacksMax) cb.attacksUsed = cb.attacksMax;
@@ -7635,15 +7706,14 @@ function parseAttackLines(ch) {
       cb.actionsUsed = Math.max(1, Number(cb.actionsUsed) || 0);
       try { bumpSessionAttacksUsed(cb); } catch (e) {}
     }
-    // Refresh economy labels on player panel without full rebuild
     try {
-      const left = typeof remainingWeaponAttacks === 'function' ? remainingWeaponAttacks(cb) : 0;
-      document.querySelectorAll('.combat-res-val, [data-economy-attacks]').forEach(() => {});
+      if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb);
+    } catch (e) {}
+    try {
+      if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
+    } catch (e) {}
+    try {
       if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb);
-      // Update visible weapon attacks text if present
-      document.querySelectorAll('#cd-atk-left, .atk-left-label').forEach(el => {
-        el.textContent = String(left);
-      });
     } catch (e) {}
     const res = rollCombatAttack({
       adv: adv,
@@ -7885,6 +7955,25 @@ function parseAttackLines(ch) {
         if (atk && msg.economy) {
           if (msg.economy.actionsUsed != null) atk.actionsUsed = msg.economy.actionsUsed;
           if (msg.economy.attacksUsed != null) atk.attacksUsed = msg.economy.attacksUsed;
+          if (msg.economy.actionsMax != null) atk.actionsMax = msg.economy.actionsMax;
+          if (msg.economy.attacksMax != null) atk.attacksMax = msg.economy.attacksMax;
+          try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(atk); } catch (e) {}
+          try {
+            // DM detail panel may show selected combatant
+            if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+              if (typeof showCombatDetail === 'function' && combat && list[combat.selectedIndex] === atk) {
+                /* avoid full rebuild mid-player-roll; numbers updated above */
+              } else if (typeof renderCombat === 'function') {
+                /* light: only refresh if this combatant is selected */
+                try {
+                  const sel = combat && combat.selectedIndex != null ? list[combat.selectedIndex] : null;
+                  if (sel && (String(sel.id) === String(atk.id) || sel.name === atk.name)) {
+                    showCombatDetail(sel);
+                  }
+                } catch (e2) {}
+              }
+            }
+          } catch (e) {}
         }
       }
     } catch (e) { console.warn('applyCombatRollMessage', e); }
