@@ -1,6 +1,6 @@
 /**
- * Economy UI fix v3 — player attack budget + hide slot steppers.
- * Loaded after js/app.js. Does not change DM map chrome.
+ * Economy UI fix v3 — player attack budget steps + hide spell slot ±
+ * Loaded after js/app.js. Does not alter DM map chrome.
  */
 (function () {
   'use strict';
@@ -10,7 +10,8 @@
       if (typeof isPlayerRole === 'function' && isPlayerRole()) return true;
     } catch (e) {}
     return !!(document.body && document.body.classList.contains('vtt-player'))
-      || /(?:^|[?&])role=player(?:&|$)/.test(location.search || '');
+      || !!(document.documentElement && document.documentElement.classList.contains('vtt-player'))
+      || /(?:^|[?&])role=player(?:&|$)/i.test(location.search || '');
   }
 
   function hidePlayerSlotSteppers() {
@@ -18,6 +19,8 @@
     document.querySelectorAll('.slot-stepper .slot-dec, .slot-stepper .slot-inc').forEach(function (el) {
       el.style.setProperty('display', 'none', 'important');
       el.setAttribute('hidden', 'hidden');
+      el.setAttribute('aria-hidden', 'true');
+      try { el.remove(); } catch (e) {}
     });
   }
 
@@ -25,7 +28,21 @@
     if (!document.getElementById('economy-fix-style')) {
       var st = document.createElement('style');
       st.id = 'economy-fix-style';
-      st.textContent = 'body.vtt-player .slot-stepper .slot-dec,body.vtt-player .slot-stepper .slot-inc,html.vtt-player .slot-stepper .slot-dec,html.vtt-player .slot-stepper .slot-inc,.vtt-player .slot-stepper .slot-dec,.vtt-player .slot-stepper .slot-inc{display:none!important;visibility:hidden!important;width:0!important;min-width:0!important;padding:0!important;margin:0!important;border:0!important;pointer-events:none!important}';
+      st.textContent = [
+        'body.vtt-player .slot-stepper .slot-dec,',
+        'body.vtt-player .slot-stepper .slot-inc,',
+        'html.vtt-player .slot-stepper .slot-dec,',
+        'html.vtt-player .slot-stepper .slot-inc,',
+        '.vtt-player .slot-stepper .slot-dec,',
+        '.vtt-player .slot-stepper .slot-inc,',
+        'body.map-popout.vtt-player .slot-stepper .slot-dec,',
+        'body.map-popout.vtt-player .slot-stepper .slot-inc {',
+        '  display: none !important; visibility: hidden !important;',
+        '  width: 0 !important; min-width: 0 !important; padding: 0 !important;',
+        '  margin: 0 !important; border: 0 !important; pointer-events: none !important;',
+        '  overflow: hidden !important;',
+        '}'
+      ].join('\n');
       (document.head || document.documentElement).appendChild(st);
     }
   } catch (e) {}
@@ -90,6 +107,7 @@
   }
 
   function paintLocal() {
+    if (!isPlayer()) return;
     var atkMax = readWeaponMaxFromDom();
     if (atkMax < 1) atkMax = 1;
     if (localAtkUsed > atkMax) localAtkUsed = atkMax;
@@ -105,26 +123,24 @@
 
     if (t.closest('#cd-start-turn') || t.closest('#combat-next-btn') || t.closest('#combat-end-round-btn')) {
       clearLocalEconomy();
-      setTimeout(paintLocal, 30);
+      setTimeout(function () { if (isPlayer()) paintLocal(); }, 30);
       return;
     }
 
     if (!t.closest('#cr-roll-btn')) return;
+    if (!isPlayer()) return;
 
-    if (isPlayer()) {
-      armed = true;
-      var atkMax = readWeaponMaxFromDom() || 1;
-      if (localAtkUsed < atkMax) {
-        localAtkUsed += 1;
-        localActUsed = 1;
-      }
-      paintLocal();
-      setTimeout(paintLocal, 0);
-      setTimeout(paintLocal, 50);
-      setTimeout(paintLocal, 150);
-      setTimeout(hidePlayerSlotSteppers, 20);
-      return;
+    armed = true;
+    var atkMax = readWeaponMaxFromDom() || 1;
+    if (localAtkUsed < atkMax) {
+      localAtkUsed += 1;
+      localActUsed = 1;
     }
+    paintLocal();
+    setTimeout(paintLocal, 0);
+    setTimeout(paintLocal, 50);
+    setTimeout(paintLocal, 150);
+    setTimeout(hidePlayerSlotSteppers, 20);
   }, true);
 
   try {

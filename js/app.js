@@ -5909,7 +5909,7 @@ function beginCombatantTurn(cb, ch) {
 
 
   function slotStepperHtml(level, used, max) {
-    const player = (typeof isPlayerRole === 'function' && isPlayerRole());
+    const player = (typeof isPlayerRole === 'function' && isPlayerRole()) || /[?&]role=player(?:&|$)/i.test(location.search || '') || !!(document.body && document.body.classList.contains('vtt-player'));
     const dec = player ? '' : '<button type="button" class="slot-dec" aria-label="Decrease">−</button>';
     const inc = player ? '' : '<button type="button" class="slot-inc" aria-label="Increase">+</button>';
     return `<div class="slot-stepper" data-sl="${level}">
@@ -13364,7 +13364,15 @@ function escapeHtml(str) {
       return 'dm';
     } catch (e) { return 'dm'; }
   }
-  function isPlayerRole() { return getVttRole() === 'player'; }
+  function isPlayerRole() {
+    try {
+      if (getVttRole() === 'player') return true;
+      if (/[?&]role=player(?:&|$)/i.test(location.search || '')) return true;
+      if (document.body && document.body.classList.contains('vtt-player')) return true;
+      if (document.documentElement && document.documentElement.classList.contains('vtt-player')) return true;
+    } catch (e) {}
+    return false;
+  }
   /** Shared map or player client: fog / hide enemy HP rules */
   function isPlayerFacingView() {
     return isPlayerRole() || (typeof isMapPopoutMode === 'function' && isMapPopoutMode());

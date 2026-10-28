@@ -4189,3 +4189,23 @@ html.vtt-player .slot-stepper .slot-dec,
 html.vtt-player .slot-stepper .slot-inc {
   display: none !important;
 }
+
+/* player-slot-steppers-hide */
+
+/* player-slot-steppers-hide */
+body.vtt-player .slot-stepper .slot-dec,
+body.vtt-player .slot-stepper .slot-inc,
+html.vtt-player .slot-stepper .slot-dec,
+html.vtt-player .slot-stepper .slot-inc,
+body.map-popout.vtt-player .slot-stepper .slot-dec,
+body.map-popout.vtt-player .slot-stepper .slot-inc {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+}
