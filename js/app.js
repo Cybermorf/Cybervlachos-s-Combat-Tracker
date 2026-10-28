@@ -2376,40 +2376,41 @@
     if (!cb) return;
     try {
       const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
-      const atkUsed = Math.max(Number(cb.attacksUsed) || 0, typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0);
+      const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
+      const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
+      cb.attacksUsed = atkUsed;
       const atkLeft = Math.max(0, atkMax - atkUsed);
       const actMax = Math.max(1, Number(cb.actionsMax) || 1);
       const actUsed = Number(cb.actionsUsed) || 0;
       const actLeft = Math.max(0, actMax - actUsed);
-      // Weapon attacks display patterns in turn board
-      document.querySelectorAll('.combat-turn-board .combat-res-val, .turn-stage[data-stage="action"] .combat-res-val').forEach(function(el) {
-        // skip class resources
+
+      document.querySelectorAll('[data-econ-val="weapon-attacks"]').forEach(function(val) {
+        val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
       });
-      // Update by scanning labels
-      document.querySelectorAll('.turn-stage').forEach(function(sec) {
-        const head = (sec.textContent || '');
-        if (/Weapon attacks/i.test(head)) {
-          const strong = sec.querySelector('.combat-res-val strong');
-          if (strong) strong.textContent = String(atkLeft);
-          const val = sec.querySelector('.combat-res-val');
-          if (val && !strong) val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
-          else if (val && strong) {
-            val.innerHTML = '<strong>' + atkLeft + '</strong> / ' + atkMax;
-          }
-        }
-        if (/Actions budget/i.test(head)) {
-          const val = sec.querySelector('.combat-res-val');
-          if (val) {
-            val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax
-              + (actUsed ? ' · used ' + actUsed : '');
-          }
+      document.querySelectorAll('[data-econ-val="actions"]').forEach(function(val) {
+        val.innerHTML = '<strong>' + actLeft + '</strong> left of ' + actMax
+          + (actUsed ? ' · used ' + actUsed : '');
+      });
+
+      // Action stage badge
+      document.querySelectorAll('.turn-stage[data-stage="action"] .stage-badge').forEach(function(badge) {
+        if (actLeft <= 0) {
+          badge.textContent = 'Used';
+          badge.classList.remove('open');
+          badge.classList.add('used');
+        } else if (actUsed > 0) {
+          badge.textContent = actLeft + ' left';
+          badge.classList.add('open');
+          badge.classList.remove('used');
+        } else {
+          badge.textContent = 'Available';
+          badge.classList.add('open');
+          badge.classList.remove('used');
         }
       });
-      // Numeric spans used in some layouts
-      document.querySelectorAll('[data-atk-left]').forEach(el => { el.textContent = String(atkLeft); });
-      document.querySelectorAll('[data-act-left]').forEach(el => { el.textContent = String(actLeft); });
+
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
-    } catch (e) {}
+    } catch (e) { console.warn('refreshTurnEconomyUI', e); }
   }
 
   function remainingWeaponAttacks(cb) {
@@ -3408,8 +3409,8 @@ function beginCombatantTurn(cb, ch) {
         </div>
         <div class="turn-stage-sub" style="margin-top:0.35rem">
           <div class="turn-stage-sub-head">Actions budget <span class="muted small">(1 + Haste / Action Surge)</span></div>
-          <div class="combat-res-row">
-            <span class="combat-res-val"><strong>${actLeft}</strong> left of ${actMax}${actUsed ? ' · used ' + actUsed : ''}</span>
+          <div class="combat-res-row" data-econ="actions">
+            <span class="combat-res-val" data-econ-val="actions"><strong>${actLeft}</strong> left of ${actMax}${actUsed ? ' · used ' + actUsed : ''}</span>
             ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-act-dec" title="Refund 1 action">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-inc" title="Spend 1 action">+</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-act-reset">Reset</button>`}
@@ -3419,8 +3420,8 @@ function beginCombatantTurn(cb, ch) {
         </div>
         <div class="turn-stage-sub">
           <div class="turn-stage-sub-head">Weapon attacks <span class="muted small">(also locked after Cast)</span></div>
-          <div class="combat-res-row">
-            <span class="combat-res-val"><strong>${left}</strong> / ${max}</span>
+          <div class="combat-res-row" data-econ="weapon-attacks">
+            <span class="combat-res-val" data-econ-val="weapon-attacks"><strong>${left}</strong> / ${max}</span>
             ${ _playerBudgetSimple ? '' : `<button type="button" class="btn secondary btn-tiny" id="cd-atk-dec">−</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-inc">+</button>
             <button type="button" class="btn secondary btn-tiny" id="cd-atk-reset">Reset</button>`}
@@ -7809,6 +7810,16 @@ function parseAttackLines(ch) {
       if (window.__mapBc) window.__mapBc.postMessage(payload);
     } catch (e) {}
     try { toast((atkName || 'Attack') + ': ' + res.formula + hitLine); } catch (e) {}
+    try {
+      if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
+    } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
+        playerPersistAndSyncCombat();
+      } else if (typeof save === 'function') {
+        save();
+      }
+    } catch (e) {}
   }
   function runDelegatedDamageRoll() {
     const last = window.__lastCombatRoll || {};
