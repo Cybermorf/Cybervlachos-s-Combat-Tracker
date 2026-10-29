@@ -2310,6 +2310,17 @@
     if ((sub.indexOf('valor') !== -1 || sub.indexOf('swords') !== -1 || sub.indexOf('bladesinger') !== -1) && totalLvl >= 6) {
       n = Math.max(n, 2);
     }
+    // Explicit sheet / roster value wins when higher (e.g. Garrick attacksMax: 3)
+    const sheetMax = Number(ch.attacksMax != null ? ch.attacksMax : ch.extraAttacks != null ? (Number(ch.extraAttacks) + 1) : 0) || 0;
+    if (sheetMax > 0) n = Math.max(n, sheetMax);
+    // Eldritch Knight / Spellblade named as subclass of fighter-style
+    if (sub.indexOf('eldritch knight') !== -1 || sub.indexOf('spellblade') !== -1 || sub.indexOf('echo knight') !== -1) {
+      const ftr = list.find(function(c) { return /fighter/i.test(String(c.name || '')); });
+      const fl = ftr ? (Number(ftr.level) || 0) : totalLvl;
+      if (fl >= 20) n = Math.max(n, 4);
+      else if (fl >= 11) n = Math.max(n, 3);
+      else if (fl >= 5) n = Math.max(n, 2);
+    }
     return Math.max(1, n);
   }
 
@@ -2632,6 +2643,19 @@ function beginCombatantTurn(cb, ch) {
       const id = String(cb.id != null ? cb.id : cb.name || '');
       if (combat && combat.turnEconomy && id) delete combat.turnEconomy[id];
     } catch (e) {}
+    // New turn: must Roll Attack again before Damage Roll
+    try {
+      window.__lastCombatRoll = { canDamage: false, hit: false, applied: true, damage: 0 };
+      if (typeof setDamageRollEnabled === 'function') {
+        setDamageRollEnabled(document, false, 'Roll Attack and hit first');
+      }
+      document.querySelectorAll('#cr-roll-dmg').forEach(function(btn) {
+        btn.disabled = true;
+        btn.setAttribute('disabled', 'disabled');
+        btn.classList.remove('is-ready');
+        btn.title = 'Roll Attack and hit first';
+      });
+    } catch (e) {}
     cb.extraActionsGranted = 0;
     cb.actionUsed = false;
     cb.bonusUsed = false;
@@ -2747,8 +2771,15 @@ function beginCombatantTurn(cb, ch) {
       if (ch || cb.class || cb.classes || cb.classLevels) {
         cb.attacksMax = Math.max(calc, Number(cb.attacksMax) || 1);
       }
+      // Linked sheet / roster explicit attacksMax (Garrick = 3)
+      if (ch && Number(ch.attacksMax) > 0) {
+        cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, Number(ch.attacksMax) || 1);
+      }
     } else if (cb.attacksMax == null) {
       cb.attacksMax = attacksPerAction(ch || cb);
+    }
+    if (ch && Number(ch.attacksMax) > 0) {
+      cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, Number(ch.attacksMax) || 1);
     }
     if (cb.attacksUsed == null) cb.attacksUsed = 0;
     if (cb.attacksUsed > cb.attacksMax) cb.attacksUsed = cb.attacksMax;
@@ -8000,7 +8031,18 @@ function parseAttackLines(ch) {
       }
     } catch (e) {}
     if (!packs.length) {
-      try { toast('Damage rolled (' + total + ') — select a target'); } catch (e) {}
+      try { toast('Damage rolled (' + total + ') — select target(s) in the list, then Damage Roll again'); } catch (e) {}
+      // Keep canDamage open so DM/player can pick a target and retry
+      window.__lastCombatRoll = Object.assign({}, window.__lastCombatRoll || {}, {
+        damage: total, heal: 0, hit: true, canDamage: true, applied: false
+      });
+      try {
+        document.querySelectorAll('#cr-roll-dmg').forEach(function(btn) {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+        });
+      } catch (e) {}
       return;
     }
     const attackerName = (cb && cb.name) || 'Attacker';
@@ -8189,9 +8231,18 @@ function parseAttackLines(ch) {
         ev.preventDefault();
         ev.stopPropagation();
         try { ev.stopImmediatePropagation(); } catch (e) {}
-        // Enable if stuck disabled after a hit
         const last = window.__lastCombatRoll || {};
-        if (dmgBtn.disabled && (last.canDamage || last.hit || last.isCrit)) {
+        // Strict: only an open, unapplied hit gate allows Damage Roll
+        if (last.canDamage !== true || last.applied === true) {
+          try { if (typeof toast === 'function') toast('Score a hit with Roll Attack first'); } catch (e) {}
+          try {
+            dmgBtn.disabled = true;
+            dmgBtn.setAttribute('disabled', 'disabled');
+            dmgBtn.classList.remove('is-ready');
+          } catch (e) {}
+          return;
+        }
+        if (dmgBtn.disabled) {
           dmgBtn.disabled = false;
           dmgBtn.removeAttribute('disabled');
         }
