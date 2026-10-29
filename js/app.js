@@ -2730,8 +2730,33 @@ function beginCombatantTurn(cb, ch) {
     r.max = max;
     return true;
   }
+  function ensureCombatantLR(cb) {
+    if (!cb) return;
+    try {
+      // Pull from campaign villains/party roster if combatant is missing LR
+      if ((cb.legendaryResist == null || cb.legendaryResistMax == null) && typeof getActive === 'function') {
+        var camp = getActive();
+        var lists = [].concat((camp && camp.villains) || [], (camp && camp.party) || []);
+        var src = lists.find(function(x) {
+          return x && (String(x.id) === String(cb.sourceId || cb.charId) || x.name === cb.name);
+        });
+        if (src) {
+          if (cb.legendaryResist == null && src.legendaryResist != null) cb.legendaryResist = Number(src.legendaryResist);
+          if (cb.legendaryResistMax == null && src.legendaryResistMax != null) cb.legendaryResistMax = Number(src.legendaryResistMax);
+          if (src.legendary) cb.legendary = true;
+        }
+      }
+      if (cb.legendaryResistMax != null && (cb.legendaryResist == null || cb.legendaryResist === '')) {
+        cb.legendaryResist = Number(cb.legendaryResistMax) || 0;
+      }
+      if (cb.legendaryResistMax == null && cb.legendaryResist != null) {
+        cb.legendaryResistMax = Number(cb.legendaryResist) || 0;
+      }
+    } catch (e) {}
+  }
   function legendaryResistRemaining(cb) {
     if (!cb) return 0;
+    try { ensureCombatantLR(cb); } catch (e) {}
     if (cb.legendaryResist != null) return Math.max(0, Number(cb.legendaryResist) || 0);
     if (cb.legendaryResistLeft != null) return Math.max(0, Number(cb.legendaryResistLeft) || 0);
     return Math.max(0, Number(cb.legendaryResistMax) || 0);
@@ -3744,6 +3769,12 @@ function beginCombatantTurn(cb, ch) {
       isUmbrarian: !!ch.isUmbrarian,
       umbrarianStage: ch.umbrarianStage || '',
       shard: ch.shard || '',
+      legendary: !!ch.legendary,
+      legendaryResist: ch.legendaryResist != null ? Number(ch.legendaryResist) : null,
+      legendaryResistMax: ch.legendaryResistMax != null ? Number(ch.legendaryResistMax) : null,
+      legendaryActions: ch.legendaryActions || [],
+      legendaryActionsMax: ch.legendaryActionsMax != null ? Number(ch.legendaryActionsMax) : null,
+      legendaryActionsUsed: Number(ch.legendaryActionsUsed) || 0,
       shardAbility: ch.shardAbility || '',
       notes: ch.notes || '',
       avatar: ch.avatar || '',
@@ -7436,7 +7467,7 @@ function parseAttackLines(ch) {
   function combatantFromChar(ch, side) {
     const n = normalizeCharacter(ch);
     const dexMod = abilityMod(n.dex);
-    return {
+    const row = {
       id: uid(),
       sourceId: n.id || null,
       charId: n.id || null,
@@ -7468,10 +7499,13 @@ function parseAttackLines(ch) {
       actions: n.actions || [],
       bonusActions: n.bonusActions || [],
       reactions: n.reactions || [],
-      legendaryActions: n.legendaryActions || [],
-      legendary: !!(n.legendary && (side === 'enemy' || side === 'villain' || n.type === 'enemy' || n.type === 'villain')),
-      legendaryResist: n.legendaryResist,
-      legendaryResistMax: n.legendaryResistMax,
+      legendaryActions: n.legendaryActions || ch.legendaryActions || [],
+      legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')),
+      // normalizeCharacter historically dropped these — always prefer raw roster values
+      legendaryResist: (n.legendaryResist != null ? n.legendaryResist : ch.legendaryResist),
+      legendaryResistMax: (n.legendaryResistMax != null ? n.legendaryResistMax : ch.legendaryResistMax),
+      legendaryActionsMax: (n.legendaryActionsMax != null ? n.legendaryActionsMax : ch.legendaryActionsMax),
+      legendaryActionsUsed: (n.legendaryActionsUsed != null ? n.legendaryActionsUsed : ch.legendaryActionsUsed) || 0,
       resistances: n.resistances || '',
       immunities: n.immunities || '',
       speed: n.speed || '30 ft.',
@@ -7479,6 +7513,18 @@ function parseAttackLines(ch) {
       concentrating: false,
       combatLog: []
     };
+    try {
+      if (row.legendaryResistMax != null && (row.legendaryResist == null || row.legendaryResist === '')) {
+        row.legendaryResist = Number(row.legendaryResistMax) || 0;
+      }
+      if (row.legendaryResistMax == null && row.legendaryResist != null) {
+        row.legendaryResistMax = Number(row.legendaryResist) || 0;
+      }
+      // Coerce numbers
+      if (row.legendaryResist != null) row.legendaryResist = Number(row.legendaryResist) || 0;
+      if (row.legendaryResistMax != null) row.legendaryResistMax = Number(row.legendaryResistMax) || 0;
+    } catch (e) {}
+    return row;
   }
 
   function lookupBestiary(name) {
@@ -8982,6 +9028,7 @@ function parseAttackLines(ch) {
   }
   function concentrationCheck(target, damage) {
     if (!target || !isConcentratingCombatant(target)) return;
+    try { ensureCombatantLR(target); } catch (e) {}
     var dmg = Number(damage) || 0;
     if (dmg <= 0) return;
     if (target.concentrating && target.concentrating !== true) {
@@ -9979,6 +10026,7 @@ function parseAttackLines(ch) {
 
   function showCombatDetail(cb, panelOverride) {
     if (!cb) return;
+    try { ensureCombatantLR(cb); } catch (e) {}
     // Resolve linked character for Extra Attack / speed
     let _ch = null;
     try {
@@ -10051,6 +10099,7 @@ function parseAttackLines(ch) {
             <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
+            ${(cb.legendaryResistMax != null || cb.legendaryResist != null || cb.legendary) ? `<div class="muted small" style="margin-top:0.25rem">Legendary Resistance: <strong>${Number(cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) || 0}</strong> / ${Number(cb.legendaryResistMax != null ? cb.legendaryResistMax : cb.legendaryResist) || 0}</div>` : ''}
             ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>`}
         <div class="form-row" style="margin-top:0.35rem;gap:0.35rem;flex-wrap:wrap">
           <button type="button" class="btn secondary btn-tiny" id="cd-death-save">Death Save</button>
