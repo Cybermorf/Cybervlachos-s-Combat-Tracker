@@ -8021,6 +8021,10 @@ function parseAttackLines(ch) {
     } catch (e) {}
   }
   function runDelegatedDamageRoll() {
+    // Prevent double-fire (capture + panel / double click) applying damage twice
+    if (window.__dmgRollLock) return;
+    window.__dmgRollLock = true;
+    setTimeout(function() { window.__dmgRollLock = false; }, 600);
     const last = window.__lastCombatRoll || {};
     if (last.applied) {
       try { toast('Damage already applied — Roll Attack again to hit'); } catch (e) {}
@@ -8286,11 +8290,10 @@ function parseAttackLines(ch) {
         try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
       }
-      // Sync combat log lines from the other window (once; strip any leaked HP text)
-      if (msg.logLines && msg.logLines.length) {
+      // Log lines: skip if sharedLog merge will carry them (player→DM). Avoid double entries.
+      if (msg.logLines && msg.logLines.length && msg.from !== 'player') {
         msg.logLines.forEach(function(line) {
           var text = String(line || '');
-          // Strip patterns like (88 → 82/135) or (94→88/135)
           text = text.replace(/\s*\(\s*\d+\s*[→\-]\s*\d+\s*\/\s*\d+\s*\)/g, '');
           text = text.replace(/\s*\(\s*\d+\s*→\s*\d+\s*\)/g, '');
           try {
@@ -9070,17 +9073,35 @@ function parseAttackLines(ch) {
   }
   if (!window.__conCheckListener) {
     window.__conCheckListener = true;
+    // Purge stale concentration prompts left in localStorage
+    try {
+      var rawPurge = localStorage.getItem('cybervlachos_vtt_con_check');
+      if (rawPurge) {
+        var msgPurge = JSON.parse(rawPurge);
+        if (!msgPurge.at || (Date.now() - Number(msgPurge.at)) > 20000
+            || localStorage.getItem('handled_con_check_' + msgPurge.at)) {
+          localStorage.removeItem('cybervlachos_vtt_con_check');
+        }
+      }
+    } catch (e) {}
     function handleConMsg(msg) {
       if (!msg || msg.type !== 'vtt-con-check') return;
       if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
       if (msg.at && msg.at === window.__lastConCheckAt) return;
-      // Survive refresh: do not reopen an already-handled check
+      // Survive refresh AND new player popup windows (sessionStorage is per-tab)
       try {
-        if (msg.at && sessionStorage.getItem('handled_con_check_' + msg.at)) return;
+        if (msg.at && localStorage.getItem('handled_con_check_' + msg.at)) return;
+      } catch (e) {}
+      // Ignore stale checks (>20s)
+      try {
+        if (msg.at && (Date.now() - Number(msg.at)) > 20000) {
+          try { localStorage.removeItem('cybervlachos_vtt_con_check'); } catch (e2) {}
+          return;
+        }
       } catch (e) {}
       window.__lastConCheckAt = msg.at;
-      try { if (msg.at) sessionStorage.setItem('handled_con_check_' + msg.at, '1'); } catch (e) {}
-      // Consume so refresh does not reopen the dialog
+      try { if (msg.at) localStorage.setItem('handled_con_check_' + msg.at, '1'); } catch (e) {}
+      // Consume so refresh / new popup does not reopen the dialog
       try { localStorage.removeItem('cybervlachos_vtt_con_check'); } catch (e) {}
       var target = null;
       try {
@@ -9272,6 +9293,15 @@ function parseAttackLines(ch) {
           });
         } catch (e) {}
       }
+      // Dedupe identical line in the last 2s (stops double Damage Roll / double con logs)
+      try {
+        var now = Date.now();
+        var dup = combat.sharedLog.slice(-8).some(function(e) {
+          return e && e.text === entry.text && e._at && (now - e._at) < 2000;
+        });
+        if (dup) return;
+        entry._at = now;
+      } catch (e) {}
       combat.sharedLog.push(entry);
       if (combat.sharedLog.length > 80) combat.sharedLog = combat.sharedLog.slice(-80);
       try { save(); } catch (e) {}
