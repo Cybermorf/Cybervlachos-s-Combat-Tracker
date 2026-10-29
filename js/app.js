@@ -8787,6 +8787,7 @@ function parseAttackLines(ch) {
         appendSharedCombatLog(msg, cb ? { names: [cb.name], ids: [cb.id] } : {});
       }
     } catch (e) {}
+    try { if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog(); } catch (e) {}
   }
   function dropConcentration(cb, reason) {
     if (!cb) return;
@@ -8905,10 +8906,53 @@ function parseAttackLines(ch) {
         }
         setTimeout(function() {
           resolveConcentrationResult(cb, dc, total, { skipLegendary: true });
+          // Force the live combatant in the combat list (popup cb can be stale)
+          try {
+            var cLive = typeof getActive === 'function' ? getActive() : null;
+            var combatLive = cLive && typeof getCombat === 'function' ? getCombat(cLive) : null;
+            var live = null;
+            if (combatLive && combatLive.combatants) {
+              live = combatLive.combatants.find(function(x) {
+                return x && (String(x.id) === String(cb.id) || x.name === cb.name);
+              });
+            }
+            if (live) {
+              if (total < dc) {
+                if (typeof dropConcentration === 'function') dropConcentration(live, 'failed DC ' + dc);
+                else { live.concentrating = false; live.isConcentrating = false; }
+              }
+              cb.concentrating = live.concentrating;
+            } else if (total < dc) {
+              if (typeof dropConcentration === 'function') dropConcentration(cb, 'failed DC ' + dc);
+              else cb.concentrating = false;
+            }
+          } catch (eForce) {}
+          try {
+            var payload = {
+              type: 'vtt-con-result',
+              room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
+              at: Date.now(),
+              targetId: cb.id || cb.name,
+              targetName: cb.name,
+              dc: dc,
+              total: total,
+              success: total >= dc && !!cb.concentrating,
+              concentrating: !!cb.concentrating
+            };
+            if (total < dc) { payload.success = false; payload.concentrating = false; }
+            localStorage.setItem('cybervlachos_vtt_con_result', JSON.stringify(payload));
+            try {
+              var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+              if (ch) ch.postMessage(payload);
+            } catch (e2) {}
+          } catch (e) {}
           try { overlay.remove(); } catch (e) {}
           try {
             if (typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat();
             else if (typeof save === 'function') save();
+          } catch (e) {}
+          try {
+            if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel();
           } catch (e) {}
         }, 800);
       }, 55);
@@ -9406,6 +9450,27 @@ function parseAttackLines(ch) {
       if (combat.turnEconomy) camp.combat.turnEconomy = combat.turnEconomy;
       if (combat.round != null) camp.combat.round = combat.round;
       if (combat.turnIndex != null) camp.combat.turnIndex = combat.turnIndex;
+      // Merge concentration / combat log lines so DM sees player-side rolls (NPC + PC)
+      try {
+        if (Array.isArray(combat.sharedLog) && combat.sharedLog.length) {
+          if (!Array.isArray(camp.combat.sharedLog)) camp.combat.sharedLog = [];
+          var existing = {};
+          camp.combat.sharedLog.forEach(function(e) {
+            if (e && e.t && e.text) existing[e.t + '|' + e.text] = true;
+          });
+          combat.sharedLog.forEach(function(e) {
+            if (!e || !e.text) return;
+            var k = (e.t || '') + '|' + e.text;
+            if (!existing[k]) {
+              camp.combat.sharedLog.push(e);
+              existing[k] = true;
+            }
+          });
+          if (camp.combat.sharedLog.length > 80) {
+            camp.combat.sharedLog = camp.combat.sharedLog.slice(-80);
+          }
+        }
+      } catch (eLog) {}
       // Merge map tokens so player token moves persist for DM (same-browser localStorage)
       if (c.combatMap && c.combatMap.tokens) {
         if (!camp.combatMap) camp.combatMap = Object.assign({}, c.combatMap);
@@ -9431,6 +9496,7 @@ function parseAttackLines(ch) {
           round: combat.round,
           current: combat.current,
           turnIndex: combat.turnIndex,
+          sharedLog: Array.isArray(combat.sharedLog) ? combat.sharedLog.slice(-40) : [],
           combatants: (combat.combatants || []).map(cb => ({
             id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
             init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
@@ -14916,6 +14982,27 @@ function escapeHtml(str) {
           'attacksUsed','attacksMax','lastAction','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
         fields.forEach(f => {
+          // concentrating:false must apply (do not skip null/false)
+          if (f === 'concentrating') {
+            if (remote[f] !== undefined) {
+              const before = local[f];
+              local[f] = remote[f];
+              if (!remote[f]) {
+                local.concentrating = false;
+                local.isConcentrating = false;
+                try {
+                  if (typeof dropConcentration === 'function' && before) {
+                    // clear condition strings without double-logging
+                    if (typeof local.conditions === 'string') {
+                      local.conditions = local.conditions.split(/[,;]/).map(function(s){return s.trim();}).filter(function(s){return s && !/concentrat/i.test(s);}).join(', ');
+                    }
+                  }
+                } catch (e) {}
+              }
+              if (before !== local[f]) changed = true;
+            }
+            return;
+          }
           if (remote[f] !== undefined && remote[f] !== null) {
             const before = JSON.stringify(local[f]);
             // Monotonic for spend counters so player attacks never go backwards on DM
@@ -14954,6 +15041,23 @@ function escapeHtml(str) {
           const camp = (data.campaigns || []).find(x => x.id === data.activeCampaignId) || (data.campaigns || [])[0];
           if (camp && camp.combat) camp.combat.combatants = combat.combatants;
           localStorage.setItem(key, JSON.stringify(data));
+        }
+      } catch (e) {}
+      // Merge player combat log (concentration rolls, etc.)
+      try {
+        if (msg.combat && Array.isArray(msg.combat.sharedLog) && msg.combat.sharedLog.length) {
+          if (!Array.isArray(combat.sharedLog)) combat.sharedLog = [];
+          var seen = {};
+          combat.sharedLog.forEach(function(e) {
+            if (e && e.t && e.text) seen[e.t + '|' + e.text] = true;
+          });
+          msg.combat.sharedLog.forEach(function(e) {
+            if (!e || !e.text) return;
+            var k = (e.t || '') + '|' + e.text;
+            if (!seen[k]) { combat.sharedLog.push(e); seen[k] = true; }
+          });
+          if (combat.sharedLog.length > 80) combat.sharedLog = combat.sharedLog.slice(-80);
+          try { if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog(); } catch (e2) {}
         }
       } catch (e) {}
       try { if (typeof broadcastVttState === 'function') broadcastVttState('from-player-patch'); } catch (e) {}
