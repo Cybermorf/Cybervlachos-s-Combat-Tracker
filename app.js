@@ -10161,8 +10161,14 @@ function parseAttackLines(ch) {
       const last = window.__lastCombatRoll || {};
       let allowed = !!(last.canDamage || last.hit || last.isCrit);
       // Recover if panel rebuild cleared canDamage but totals still show a hit
-      if (!allowed && last.hitTotal != null && last.ac != null && !isNaN(last.ac) && !last.isFumble) {
-        allowed = Number(last.hitTotal) >= Number(last.ac) || !!last.isCrit;
+      // Do not revive a spent hit from historical hitTotal
+      if (last.applied === true) {
+        toast('Damage already applied — Roll Attack again');
+        setDamageRollEnabled(panel, false, 'Roll Attack again');
+        return;
+      }
+      if (!allowed && last.canDamage === true) {
+        allowed = true;
       }
       if (!allowed) {
         toast('Score a hit with Roll Attack first');
@@ -15014,7 +15020,8 @@ function escapeHtml(str) {
     try { restorePlayerRollResult(me); } catch (e) {}
     try {
       const last = window.__lastCombatRoll || {};
-      if (last.canDamage || last.hit || last.isCrit) {
+      // Only an open, unapplied hit gate — never last.hit alone (that re-enabled Damage Roll after apply / across turns)
+      if (last.canDamage === true && last.applied !== true) {
         const btn = body.querySelector('#cr-roll-dmg');
         if (btn) {
           btn.disabled = false;
