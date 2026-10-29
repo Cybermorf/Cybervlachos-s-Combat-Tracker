@@ -2636,6 +2636,15 @@ function beginCombatantTurn(cb, ch) {
     cb.attacksUsed = 0;
     cb.moveUsed = 0;
     cb.actionsUsed = 0;
+    // Recalculate Extra Attack budget every turn start (fixes DM 2/2 vs player 3/3)
+    try {
+      if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch);
+      if (ch && Number(ch.attacksMax) > 0) cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, Number(ch.attacksMax) || 1);
+      if (typeof attacksPerAction === 'function') {
+        const calc = attacksPerAction(ch || cb);
+        if (calc > 0) cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, calc);
+      }
+    } catch (e) {}
     // Clear stored economy for this combatant so restore cannot resurrect old spends
     try {
       const c = typeof getActive === 'function' ? getActive() : null;
@@ -7878,18 +7887,16 @@ function parseAttackLines(ch) {
       adv: adv
     };
     try {
-      document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
-        if (hits) {
-          btn.disabled = false;
-          btn.removeAttribute('disabled');
-          btn.classList.add('is-ready');
-          btn.title = 'Roll damage and apply to selected target(s)';
-        } else {
-          btn.disabled = true;
-          btn.setAttribute('disabled', 'disabled');
-          btn.classList.remove('is-ready');
-        }
-      });
+      const rollPanel = typeof getCombatRollPanel === 'function' ? getCombatRollPanel() : null;
+      if (typeof setDamageRollEnabled === 'function') {
+        setDamageRollEnabled(rollPanel, !!hits, hits ? 'Roll damage and apply' : 'Hit the target AC first');
+      } else {
+        (rollPanel || document).querySelectorAll('#cr-roll-dmg').forEach(btn => {
+          btn.disabled = !hits;
+          if (hits) { btn.removeAttribute('disabled'); btn.classList.add('is-ready'); }
+          else { btn.setAttribute('disabled', 'disabled'); btn.classList.remove('is-ready'); }
+        });
+      }
     } catch (e) {}
     try {
       if (typeof setDamageRollEnabled === 'function') setDamageRollEnabled(document, hits, hits ? '' : 'Attack missed AC');
@@ -8147,12 +8154,20 @@ function parseAttackLines(ch) {
     if (!msg || msg.type !== 'vtt-combat-roll') return;
     if (msg.clientId && window.__vttClientId && msg.clientId === window.__vttClientId) return;
     try {
-      if (msg.lastCombatRoll) window.__lastCombatRoll = msg.lastCombatRoll;
-      if (msg.lastCombatRoll && (msg.lastCombatRoll.canDamage || msg.lastCombatRoll.hit)) {
-        document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
-          btn.disabled = false;
-          btn.removeAttribute('disabled');
-          btn.classList.add('is-ready');
+      // Do NOT copy canDamage / enable Damage Roll from another window —
+      // that was enabling the player's Damage Roll when the DM scored a hit (and vice versa).
+      if (msg.lastCombatRoll) {
+        var remote = msg.lastCombatRoll;
+        // Keep shared display fields only; never open this client's damage gate from remote
+        window.__lastCombatRoll = Object.assign({}, window.__lastCombatRoll || {}, {
+          // preserve LOCAL gate
+          canDamage: (window.__lastCombatRoll && window.__lastCombatRoll.canDamage) || false,
+          applied: (window.__lastCombatRoll && window.__lastCombatRoll.applied) || false,
+          hit: (window.__lastCombatRoll && window.__lastCombatRoll.hit) || false,
+          // optional display of remote roll text handled elsewhere
+          remoteName: remote.name,
+          remoteHitTotal: remote.hitTotal,
+          remoteAc: remote.ac
         });
       }
       if (msg.hpUpdates && msg.hpUpdates.length) {
@@ -8294,11 +8309,19 @@ function parseAttackLines(ch) {
 
   function setDamageRollEnabled(panel, enabled, reason) {
     try {
+      // Scope to the roller panel when provided so DM/player UIs never cross-toggle
       const roots = [];
       if (panel && panel.querySelector) roots.push(panel);
-      roots.push(document);
+      else {
+        const p = typeof getCombatRollPanel === 'function' ? getCombatRollPanel() : null;
+        if (p) roots.push(p);
+        roots.push(document);
+      }
+      const seen = new Set();
       roots.forEach(root => {
-        root.querySelectorAll('#cr-roll-dmg').forEach(btn => {
+        root.querySelectorAll('#cr-roll-dmg, [data-roll-dmg]').forEach(btn => {
+          if (seen.has(btn)) return;
+          seen.add(btn);
           if (enabled) {
             btn.disabled = false;
             btn.removeAttribute('disabled');
@@ -10310,7 +10333,17 @@ function parseAttackLines(ch) {
         left -= absorb;
       }
       cb.hp = Math.max(0, (cb.hp || 0) - left);
-      appendLog(`Took ${amt} damage (HP now ${cb.hp})`);
+      // Public log: no HP totals
+      try {
+        if (typeof appendSharedCombatLog === 'function') {
+          appendSharedCombatLog((cb.name || 'Combatant') + ' takes ' + amt + ' damage', { names: [cb.name], ids: [cb.id] });
+        } else {
+          appendLog((cb.name || 'Combatant') + ' takes ' + amt + ' damage');
+        }
+      } catch (e) {}
+      if (left > 0 && (typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(cb) : cb.concentrating)) {
+        try { if (typeof concentrationCheck === 'function') concentrationCheck(cb, left); } catch (e) { console.warn(e); }
+      }
       try { save(); } catch (e) {}
       try { if (isPlayerRole()) renderPlayerCombatPanel(); else renderCombat(); } catch (e) { try { renderCombat(); } catch (e2) {} }
     });
