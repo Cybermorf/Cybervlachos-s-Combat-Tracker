@@ -2599,16 +2599,23 @@ function spendAction(cb, label) {
       const id = String(cb.id != null ? cb.id : cb.name || '');
       const row = combat && combat.turnEconomy && combat.turnEconomy[id];
       if (!row) return;
-      if (row.actionsUsed != null) cb.actionsUsed = row.actionsUsed;
-      if (row.actionsMax != null) cb.actionsMax = row.actionsMax;
-      if (row.actionUsed != null) cb.actionUsed = row.actionUsed;
-      if (row.attacksUsed != null) cb.attacksUsed = row.attacksUsed;
-      if (row.attacksMax != null) cb.attacksMax = row.attacksMax;
-      if (row.lastAction != null) cb.lastAction = row.lastAction;
-      if (row.bonusUsed != null) cb.bonusUsed = row.bonusUsed;
-      if (row.reactionUsed != null) cb.reactionUsed = row.reactionUsed;
-      if (row.turnPhase != null) cb.turnPhase = row.turnPhase;
-      if (row.extraActionsGranted != null) cb.extraActionsGranted = row.extraActionsGranted;
+      // Monotonic for spend counters: never clobber a higher in-memory value
+      // (fixes player popup: showCombatDetail was resetting attacksUsed after Roll Attack)
+      if (row.actionsUsed != null) cb.actionsUsed = Math.max(Number(cb.actionsUsed) || 0, Number(row.actionsUsed) || 0);
+      if (row.actionsMax != null) cb.actionsMax = Math.max(Number(cb.actionsMax) || 1, Number(row.actionsMax) || 1);
+      if (row.actionUsed != null) cb.actionUsed = !!(cb.actionUsed || row.actionUsed);
+      if (row.attacksUsed != null) cb.attacksUsed = Math.max(Number(cb.attacksUsed) || 0, Number(row.attacksUsed) || 0);
+      if (row.attacksMax != null) cb.attacksMax = Math.max(Number(cb.attacksMax) || 1, Number(row.attacksMax) || 1);
+      if (row.lastAction != null && !cb.lastAction) cb.lastAction = row.lastAction;
+      else if (row.lastAction != null && (Number(cb.attacksUsed) || 0) > 0) cb.lastAction = cb.lastAction || row.lastAction;
+      if (row.bonusUsed != null) cb.bonusUsed = !!(cb.bonusUsed || row.bonusUsed);
+      if (row.reactionUsed != null) cb.reactionUsed = !!(cb.reactionUsed || row.reactionUsed);
+      if (row.turnPhase != null) {
+        // Prefer active over ready if we already started
+        if (cb.turnPhase === 'active' || row.turnPhase === 'active') cb.turnPhase = 'active';
+        else cb.turnPhase = row.turnPhase;
+      }
+      if (row.extraActionsGranted != null) cb.extraActionsGranted = Math.max(Number(cb.extraActionsGranted) || 0, Number(row.extraActionsGranted) || 0);
     } catch (e) {}
   }
 
@@ -2618,6 +2625,13 @@ function beginCombatantTurn(cb, ch) {
     cb.attacksUsed = 0;
     cb.moveUsed = 0;
     cb.actionsUsed = 0;
+    // Clear stored economy for this combatant so restore cannot resurrect old spends
+    try {
+      const c = typeof getActive === 'function' ? getActive() : null;
+      const combat = c && typeof getCombat === 'function' ? getCombat(c) : null;
+      const id = String(cb.id != null ? cb.id : cb.name || '');
+      if (combat && combat.turnEconomy && id) delete combat.turnEconomy[id];
+    } catch (e) {}
     cb.extraActionsGranted = 0;
     cb.actionUsed = false;
     cb.bonusUsed = false;
@@ -9486,6 +9500,8 @@ function parseAttackLines(ch) {
       }
     } catch (e) {}
     if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, _ch);
+    // Save in-memory spends first, then merge stored economy without wiping them
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
     if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb);
 
     const panel = panelOverride || $('#combat-detail');
