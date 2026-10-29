@@ -8003,27 +8003,48 @@ function parseAttackLines(ch) {
       try { toast('Damage rolled (' + total + ') — select a target'); } catch (e) {}
       return;
     }
+    const attackerName = (cb && cb.name) || 'Attacker';
+    const logLines = [];
     packs.forEach(({ target }) => {
       let amt = typeof computeAppliedDamage === 'function' ? computeAppliedDamage(total, target, { half: halfBox }) : total;
       if (halfBox && typeof computeAppliedDamage !== 'function') amt = Math.floor(total / 2);
       let left = amt;
-      const temp = target.tempHp || 0;
+      const temp = Number(target.tempHp) || 0;
       if (temp > 0) {
         const absorb = Math.min(temp, left);
         target.tempHp = temp - absorb;
         left -= absorb;
       }
-      target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+      const beforeHp = Number(target.hp) || 0;
+      target.hp = Math.max(0, beforeHp - left);
+      const line = attackerName + ' deals ' + amt + ' damage to ' + (target.name || 'target')
+        + ' (' + beforeHp + ' → ' + target.hp + '/' + (target.hpMax || '?') + ')'
+        + (halfBox ? ' [half]' : '');
+      logLines.push(line);
+      try { if (typeof appendLog === 'function') appendLog(line); } catch (e) {}
       try {
         if (typeof appendSharedCombatLog === 'function') {
-          appendSharedCombatLog(((cb && cb.name) || 'Attacker') + ' deals ' + amt + ' to ' + (target.name || 'target'), {});
+          appendSharedCombatLog(line, {
+            names: [attackerName, target.name],
+            ids: [cb && cb.id, target.id]
+          });
         }
       } catch (e) {}
+      // Concentration on real HP loss
+      if (left > 0 && (typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating)) {
+        try {
+          if (typeof concentrationCheck === 'function') concentrationCheck(target, left);
+        } catch (e) { console.warn(e); }
+      }
+      if (target.hp === 0) {
+        target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
+      }
     });
     window.__lastCombatRoll = Object.assign({}, window.__lastCombatRoll || {}, {
       applied: true,
       canDamage: false,
-      hit: false
+      hit: false,
+      damage: total
     });
     try {
       document.querySelectorAll('#cr-roll-dmg').forEach(btn => {
@@ -8034,7 +8055,17 @@ function parseAttackLines(ch) {
       });
     } catch (e) {}
     try { if (typeof setDamageRollEnabled === 'function') setDamageRollEnabled(document, false, 'Roll Attack again to hit'); } catch (e) {}
-    try { if (typeof save === 'function') save(); } catch (e) {}
+    // Persist HP + economy without wiping attack budget
+    try {
+      if (cb && typeof persistTurnEconomy === 'function') persistTurnEconomy(cb);
+    } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
+        playerPersistAndSyncCombat();
+      } else if (typeof save === 'function') {
+        save();
+      }
+    } catch (e) {}
     try {
       const payload = {
         type: 'vtt-combat-roll',
@@ -8043,7 +8074,15 @@ function parseAttackLines(ch) {
         clientId: window.__vttClientId || null,
         from: (typeof isPlayerRole === 'function' && isPlayerRole()) ? 'player' : 'dm',
         lastCombatRoll: window.__lastCombatRoll,
-        hpUpdates: packs.map(p => ({ id: p.target.id, name: p.target.name, hp: p.target.hp, tempHp: p.target.tempHp }))
+        logLines: logLines,
+        hpUpdates: packs.map(p => ({
+          id: p.target.id,
+          name: p.target.name,
+          hp: p.target.hp,
+          hpMax: p.target.hpMax,
+          tempHp: p.target.tempHp,
+          concentrating: p.target.concentrating
+        }))
       };
       localStorage.setItem('cybervlachos_vtt_combat_roll', JSON.stringify(payload));
       const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
@@ -8051,9 +8090,13 @@ function parseAttackLines(ch) {
       if (window.__mapBc) window.__mapBc.postMessage(payload);
     } catch (e) {}
     try { toast('Damage applied: ' + total); } catch (e) {}
+    // Refresh rosters / map / combat list — do NOT rebuild player roller (keeps budget + hit gate)
     try {
+      if (typeof renderCombat === 'function') renderCombat();
       if (typeof renderMapRoster === 'function') renderMapRoster();
       if (typeof paintMapFrame === 'function') paintMapFrame();
+      if (typeof refreshTurnEconomyUI === 'function' && cb) refreshTurnEconomyUI(cb);
+      if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog();
     } catch (e) {}
   }
   function applyCombatRollMessage(msg) {
@@ -8076,12 +8119,25 @@ function parseAttackLines(ch) {
           const t = list.find(x => String(x.id) === String(u.id) || String(x.name) === String(u.name));
           if (t) {
             if (u.hp != null) t.hp = u.hp;
+            if (u.hpMax != null) t.hpMax = u.hpMax;
             if (u.tempHp != null) t.tempHp = u.tempHp;
+            if (u.concentrating !== undefined) t.concentrating = u.concentrating;
           }
         });
         try { if (typeof save === 'function') save(); } catch (e) {}
+        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
         try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+      }
+      // Sync combat log lines from the other window
+      if (msg.logLines && msg.logLines.length) {
+        msg.logLines.forEach(function(line) {
+          try { if (typeof appendLog === 'function') appendLog(line); } catch (e) {}
+          try {
+            if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(String(line), {});
+          } catch (e) {}
+        });
+        try { if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog(); } catch (e) {}
       }
       if (msg.economy && msg.attackerId) {
         const c = getActive();
@@ -9996,6 +10052,7 @@ function parseAttackLines(ch) {
     });
     // cr-adv change persist
     panel.querySelector('#cr-roll-dmg')?.addEventListener('click', () => {
+      if (window.__combatRollDelegated) return; // capture handler owns Damage Roll
       const last = window.__lastCombatRoll || {};
       let allowed = !!(last.canDamage || last.hit || last.isCrit);
       // Recover if panel rebuild cleared canDamage but totals still show a hit
