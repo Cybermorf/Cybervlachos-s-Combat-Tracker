@@ -8109,11 +8109,41 @@ function parseAttackLines(ch) {
           appendLog(line);
         }
       } catch (e) {}
-      // Concentration on real HP loss
-      if (left > 0 && (typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating)) {
+      // Concentration on real HP loss (force-detect from flag, conditions string/array, UI label)
+      if (left > 0) {
         try {
-          if (typeof concentrationCheck === 'function') concentrationCheck(target, left);
-        } catch (e) { console.warn(e); }
+          // Pull freshest concentrating flag from combat list by id/name (player window may lag DM checkbox)
+          var cFresh = typeof getActive === 'function' ? getActive() : null;
+          var combatFresh = cFresh && typeof getCombat === 'function' ? getCombat(cFresh) : null;
+          if (combatFresh && combatFresh.combatants) {
+            var src = combatFresh.combatants.find(function(x) {
+              return x && (String(x.id) === String(target.id) || x.name === target.name);
+            });
+            if (src) {
+              if (src.concentrating) target.concentrating = src.concentrating;
+              if (src.conditions != null) target.conditions = src.conditions;
+              if (src.legendaryResist != null) target.legendaryResist = src.legendaryResist;
+              if (src.legendaryResistMax != null) target.legendaryResistMax = src.legendaryResistMax;
+            }
+          }
+        } catch (e) {}
+        var isCon = false;
+        try {
+          isCon = typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : !!target.concentrating;
+        } catch (e) { isCon = !!target.concentrating; }
+        // Also treat explicit UI condition text
+        if (!isCon) {
+          try {
+            var blob = JSON.stringify(target.conditions || '') + ' ' + String(target.concentrating || '');
+            if (/concentrat/i.test(blob)) isCon = true;
+          } catch (e) {}
+        }
+        if (isCon) {
+          try {
+            if (typeof concentrationCheck === 'function') concentrationCheck(target, left);
+            else console.warn('concentrationCheck missing');
+          } catch (e) { console.warn('concentrationCheck', e); }
+        }
       }
       if (target.hp === 0) {
         target.deathSaves = target.deathSaves || { successes: 0, failures: 0 };
@@ -8863,20 +8893,45 @@ function parseAttackLines(ch) {
     var isPc = isPlayerCombatant(target);
     conLog((target.name || 'Combatant') + ' was hit for ' + dmg + ' while concentrating — Constitution save DC ' + dc, target);
 
-    // Player window: only YOUR claimed PC gets the click-to-roll popup.
-    // Enemies / other PCs never open a concentration UI on the player client.
+    var mine = false;
+    try {
+      var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+      if (claimed && (String(claimed.id) === String(target.id) || claimed.name === target.name)) mine = true;
+    } catch (e) {}
+
+    // Player window
     if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-      var mine = false;
-      try {
-        var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
-        if (claimed && (String(claimed.id) === String(target.id) || claimed.name === target.name)) mine = true;
-      } catch (e) {}
+      // Your PC → click-to-roll popup
       if (mine && isPc) {
         showPlayerConcentrationPopup(target, dc);
         return;
       }
-      // Player client seeing enemy/NPC (or other PC) concentration: do not auto-resolve
-      // (DM window owns NPC rolls). Just show log line already written.
+      // Another PC → ask that player (via DM broadcast path)
+      if (isPc && !mine) {
+        broadcastConcentrationRequest(target, dc, dmg);
+        conLog((target.name || 'PC') + ' concentration check DC ' + dc + ' — waiting for player', target);
+        return;
+      }
+      // Enemy/NPC damaged by player: MUST resolve here (DM never sees the damage event)
+      // Auto-roll; on fail with LR, auto-spend LR and log (DM sees via sync)
+      var conModP = combatantConMod(target);
+      var rP = 1 + Math.floor(Math.random() * 20);
+      var totalP = rP + conModP;
+      conLog((target.name || 'NPC') + ' rolls concentration: d20 (' + rP + ') + CON ' + (conModP >= 0 ? '+' : '') + conModP + ' = ' + totalP + ' vs DC ' + dc, target);
+      var okP = totalP >= dc;
+      if (okP) {
+        conLog((target.name || 'NPC') + ' concentration save: ' + totalP + ' vs DC ' + dc + ' — SUCCESS (held)', target);
+      } else {
+        var lrP = typeof legendaryResistRemaining === 'function' ? legendaryResistRemaining(target) : (Number(target.legendaryResist) || 0);
+        if (lrP > 0 && typeof useLegendaryResistance === 'function') {
+          useLegendaryResistance(target);
+          conLog((target.name || 'NPC') + ' fails concentration (' + totalP + ' vs DC ' + dc + ') — Legendary Resistance used — HELD', target);
+        } else {
+          conLog((target.name || 'NPC') + ' concentration save: ' + totalP + ' vs DC ' + dc + ' — FAILED', target);
+          dropConcentration(target, 'failed DC ' + dc);
+        }
+      }
+      try { if (typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat(); } catch (e) {}
       return;
     }
 
@@ -10356,7 +10411,23 @@ function parseAttackLines(ch) {
     });
     panel.querySelector('#cd-conc')?.addEventListener('change', (e) => {
       cb.concentrating = !!e.target.checked;
+      if (cb.concentrating) {
+        // Ensure conditions also mark concentrating for string/array detectors
+        try {
+          if (typeof cb.conditions === 'string') {
+            if (!/concentrat/i.test(cb.conditions)) cb.conditions = (cb.conditions ? cb.conditions + ', ' : '') + 'Concentrating';
+          } else if (Array.isArray(cb.conditions)) {
+            if (!cb.conditions.some(function(c) { return /concentrat/i.test(String(c && (c.name || c) || '')); })) {
+              cb.conditions.push('Concentrating');
+            }
+          } else {
+            cb.conditions = ['Concentrating'];
+          }
+        } catch (e2) {}
+      }
       try { save(); } catch (err) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('concentrating-toggle'); } catch (err) {}
+      try { if (typeof playerPersistAndSyncCombat === 'function' && isPlayerRole()) playerPersistAndSyncCombat(); } catch (err) {}
     });
     panel.querySelector('#cd-dmg')?.addEventListener('click', async () => {
       const amt = parseInt(prompt('Damage amount?', '5'), 10);
