@@ -9369,12 +9369,16 @@ function parseAttackLines(ch) {
     // Always see claimed/self character (player combat panel)
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     const map = getCombatMap();
-    if (!map) return false;
+    // Theater of the mind / no map image: all roster combatants are valid targets
+    // (previous `return false` left only the claimed PC in the target list — broke player Damage Roll + concentration)
+    if (!map || !(map.image || map.video || map.mapImage || map.src || map.videoSrc)) {
+      return true;
+    }
     const pos = (typeof getCombatantTokenPos === 'function')
       ? getCombatantTokenPos(target, map)
       : (map.tokens && map.tokens[String(target.id)]);
-    // Popups / player: only list combatants that are on the map
-    if (!pos) return false;
+    // On the roster but no token placed yet — still targetable
+    if (!pos) return true;
     // Anyone under unrevealed FoW is hidden from player-facing lists (PC and enemy)
     if (!map.fogEnabled) return true;
     try {
