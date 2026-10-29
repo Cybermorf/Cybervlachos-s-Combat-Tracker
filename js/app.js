@@ -8791,11 +8791,25 @@ function parseAttackLines(ch) {
   function dropConcentration(cb, reason) {
     if (!cb) return;
     cb.concentrating = false;
+    cb.isConcentrating = false;
+    cb.concentration = false;
+    cb._concentrationSpell = null;
     try { if (typeof removeCondition === 'function') removeCondition(cb, 'concentrating'); } catch (e) {}
+    try { if (typeof removeCondition === 'function') removeCondition(cb, 'Concentrating'); } catch (e) {}
     try {
-      if (Array.isArray(cb.conditions)) {
+      if (typeof cb.conditions === 'string') {
+        cb.conditions = cb.conditions.split(/[,;]/).map(function(s) { return s.trim(); })
+          .filter(function(s) { return s && !/concentrat/i.test(s); }).join(', ');
+      } else if (Array.isArray(cb.conditions)) {
         cb.conditions = cb.conditions.filter(function(c) {
           return !/concentrat/i.test(String(c && (c.name || c) || ''));
+        });
+      }
+    } catch (e) {}
+    try {
+      if (Array.isArray(cb.conditionList)) {
+        cb.conditionList = cb.conditionList.filter(function(c) {
+          return !/concentrat/i.test(String(c && (c.name || c.id || '') || ''));
         });
       }
     } catch (e) {}
@@ -8971,6 +8985,26 @@ function parseAttackLines(ch) {
           dropConcentration(target, 'failed DC ' + dc);
         }
       }
+      // Push outcome + log to DM (so NPC concentration appears on DM log)
+      try {
+        var payloadNpc = {
+          type: 'vtt-con-result',
+          room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || sessionStorage.getItem('vtt_room') || '',
+          at: Date.now(),
+          targetId: target.id || target.name,
+          targetName: target.name,
+          dc: dc,
+          total: totalP,
+          success: !!target.concentrating,
+          concentrating: !!target.concentrating,
+          fromPlayerNpc: true
+        };
+        localStorage.setItem('cybervlachos_vtt_con_result', JSON.stringify(payloadNpc));
+        try {
+          var chN = typeof getVttChannel === 'function' ? getVttChannel() : null;
+          if (chN) chN.postMessage(payloadNpc);
+        } catch (eN) {}
+      } catch (e) {}
       try { if (typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat(); } catch (e) {}
       return;
     }
@@ -8996,7 +9030,14 @@ function parseAttackLines(ch) {
       if (!msg || msg.type !== 'vtt-con-check') return;
       if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
       if (msg.at && msg.at === window.__lastConCheckAt) return;
+      // Survive refresh: do not reopen an already-handled check
+      try {
+        if (msg.at && sessionStorage.getItem('handled_con_check_' + msg.at)) return;
+      } catch (e) {}
       window.__lastConCheckAt = msg.at;
+      try { if (msg.at) sessionStorage.setItem('handled_con_check_' + msg.at, '1'); } catch (e) {}
+      // Consume so refresh does not reopen the dialog
+      try { localStorage.removeItem('cybervlachos_vtt_con_check'); } catch (e) {}
       var target = null;
       try {
         var c = getActive();
@@ -9036,12 +9077,22 @@ function parseAttackLines(ch) {
       if (total == null) return;
       // Apply the same outcome the player already resolved
       if (msg.success) {
-        conLog((target.name || 'PC') + ' concentration save: ' + total + ' vs DC ' + dc + ' — SUCCESS (held) [player]', target);
-        target.concentrating = target.concentrating || true;
+        conLog((target.name || 'Combatant') + ' concentration save: ' + total + ' vs DC ' + dc + ' — SUCCESS (held)' + (msg.fromPlayerNpc ? '' : ' [player]'), target);
+        if (msg.concentrating !== false) target.concentrating = true;
       } else {
-        conLog((target.name || 'PC') + ' concentration save: ' + total + ' vs DC ' + dc + ' — FAILED [player]', target);
+        conLog((target.name || 'Combatant') + ' concentration save: ' + total + ' vs DC ' + dc + ' — FAILED' + (msg.fromPlayerNpc ? '' : ' [player]'), target);
         try {
-          if (typeof dropConcentration === 'function') dropConcentration(target, 'failed DC ' + dc + ' (player roll)');
+          if (typeof dropConcentration === 'function') dropConcentration(target, 'failed DC ' + dc);
+          else {
+            target.concentrating = false;
+            target.isConcentrating = false;
+          }
+        } catch (e) { target.concentrating = false; }
+      }
+      // Honor explicit flag from the resolving client
+      if (msg.concentrating === false) {
+        try {
+          if (typeof dropConcentration === 'function') dropConcentration(target, 'synced drop');
           else target.concentrating = false;
         } catch (e) { target.concentrating = false; }
       }
