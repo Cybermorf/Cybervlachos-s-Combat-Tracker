@@ -8059,17 +8059,19 @@ function parseAttackLines(ch) {
       }
       const beforeHp = Number(target.hp) || 0;
       target.hp = Math.max(0, beforeHp - left);
+      // Public log: never reveal current/max HP (FoW / hide-HP)
       const line = attackerName + ' deals ' + amt + ' damage to ' + (target.name || 'target')
-        + ' (' + beforeHp + ' → ' + target.hp + '/' + (target.hpMax || '?') + ')'
         + (halfBox ? ' [half]' : '');
       logLines.push(line);
-      try { if (typeof appendLog === 'function') appendLog(line); } catch (e) {}
+      // Only shared log once (avoid duplicate lines from appendLog + shared)
       try {
         if (typeof appendSharedCombatLog === 'function') {
           appendSharedCombatLog(line, {
             names: [attackerName, target.name],
             ids: [cb && cb.id, target.id]
           });
+        } else if (typeof appendLog === 'function') {
+          appendLog(line);
         }
       } catch (e) {}
       // Concentration on real HP loss
@@ -8171,12 +8173,16 @@ function parseAttackLines(ch) {
         try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
         try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
       }
-      // Sync combat log lines from the other window
+      // Sync combat log lines from the other window (once; strip any leaked HP text)
       if (msg.logLines && msg.logLines.length) {
         msg.logLines.forEach(function(line) {
-          try { if (typeof appendLog === 'function') appendLog(line); } catch (e) {}
+          var text = String(line || '');
+          // Strip patterns like (88 → 82/135) or (94→88/135)
+          text = text.replace(/\s*\(\s*\d+\s*[→\-]\s*\d+\s*\/\s*\d+\s*\)/g, '');
+          text = text.replace(/\s*\(\s*\d+\s*→\s*\d+\s*\)/g, '');
           try {
-            if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(String(line), {});
+            if (typeof appendSharedCombatLog === 'function') appendSharedCombatLog(text, {});
+            else if (typeof appendLog === 'function') appendLog(text);
           } catch (e) {}
         });
         try { if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog(); } catch (e) {}
@@ -8803,16 +8809,33 @@ function parseAttackLines(ch) {
     var dc = concentrationDcFromDamage(dmg);
     var isPc = isPlayerCombatant(target);
     conLog((target.name || 'Combatant') + ' was hit for ' + dmg + ' while concentrating — Constitution save DC ' + dc, target);
+
+    // Player window: only YOUR claimed PC gets the click-to-roll popup.
+    // Enemies / other PCs never open a concentration UI on the player client.
     if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-      showPlayerConcentrationPopup(target, dc);
+      var mine = false;
+      try {
+        var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        if (claimed && (String(claimed.id) === String(target.id) || claimed.name === target.name)) mine = true;
+      } catch (e) {}
+      if (mine && isPc) {
+        showPlayerConcentrationPopup(target, dc);
+        return;
+      }
+      // Player client seeing enemy/NPC (or other PC) concentration: do not auto-resolve
+      // (DM window owns NPC rolls). Just show log line already written.
       return;
     }
+
+    // DM window: PCs roll on their client
     if (isPc) {
       broadcastConcentrationRequest(target, dc, dmg);
       conLog((target.name || 'PC') + ' concentration check DC ' + dc + ' — waiting for player to roll', target);
       try { if (typeof toast === 'function') toast((target.name || 'PC') + ' — concentration DC ' + dc + ' (player rolls)'); } catch (e) {}
       return;
     }
+
+    // DM window: NPC / villain auto-roll (+ LR prompt on fail)
     var conMod = combatantConMod(target);
     var r1 = 1 + Math.floor(Math.random() * 20);
     var total = r1 + conMod;
@@ -8835,6 +8858,14 @@ function parseAttackLines(ch) {
         });
       } catch (e) {}
       if (!target) target = { id: msg.targetId, name: msg.targetName, concentrating: true, conMod: msg.conMod };
+      // Only the claimed PC rolls concentration on the player client
+      try {
+        var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        if (!claimed || (String(claimed.id) !== String(target.id) && claimed.name !== target.name
+            && String(claimed.id) !== String(msg.targetId) && claimed.name !== msg.targetName)) {
+          return;
+        }
+      } catch (e) { return; }
       showPlayerConcentrationPopup(target, msg.dc || 10);
     }
     window.addEventListener('storage', function(ev) {
