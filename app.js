@@ -7870,6 +7870,26 @@ function parseAttackLines(ch) {
       + '<div class="muted">' + (hits ? 'Damage Roll is ready.' : 'Miss — Damage Roll locked.') + '</div>';
     try { window.__pendingDiceFaces = (res.faces && res.faces.length) ? res.faces : [{ sides: 20, value: res.used }]; } catch (e) {}
     try { if (typeof publishCombatRollResult === 'function') publishCombatRollResult(rollHtml, cb); } catch (e) {}
+    var snapTargetIds = [];
+    var snapTargetIdxs = [];
+    try {
+      var selSnap = document.getElementById('cr-target');
+      var listSnap = [];
+      try {
+        var cSnap = getActive();
+        listSnap = (getCombat(cSnap).combatants || []);
+      } catch (eS) {}
+      if (selSnap) {
+        [...selSnap.selectedOptions].forEach(function(o) {
+          var ix = parseInt(o.value, 10);
+          if (!isNaN(ix)) {
+            snapTargetIdxs.push(ix);
+            if (listSnap[ix]) snapTargetIds.push(String(listSnap[ix].id || listSnap[ix].name));
+          }
+        });
+      }
+      if (snapTargetIds.length) window.__crSelectedTargetIds = snapTargetIds.slice();
+    } catch (eS2) {}
     window.__lastCombatRoll = {
       damage: 0,
       heal: 0,
@@ -7884,7 +7904,9 @@ function parseAttackLines(ch) {
       dmgBonus: parseInt((dmgBonusEl || {}).value, 10) || 0,
       toHit: toHit,
       hitBonus: hitBonus,
-      adv: adv
+      adv: adv,
+      targetIds: snapTargetIds,
+      targetIdxs: snapTargetIdxs
     };
     try {
       const rollPanel = typeof getCombatRollPanel === 'function' ? getCombatRollPanel() : null;
@@ -8049,6 +8071,24 @@ function parseAttackLines(ch) {
           const idx = parseInt(o.value, 10);
           if (!isNaN(idx) && list[idx]) packs.push({ combat: combat, idx: idx, target: list[idx] });
         });
+      }
+      if (!packs.length && combat) {
+        const last = window.__lastCombatRoll || {};
+        const ids = (last.targetIds && last.targetIds.length) ? last.targetIds : (window.__crSelectedTargetIds || []);
+        const idxs = last.targetIdxs || [];
+        if (ids && ids.length) {
+          list.forEach(function(x, idx) {
+            if (!x) return;
+            if (ids.indexOf(String(x.id)) !== -1 || ids.indexOf(String(x.name)) !== -1) {
+              packs.push({ combat: combat, idx: idx, target: x });
+            }
+          });
+        }
+        if (!packs.length && idxs && idxs.length) {
+          idxs.forEach(function(ix) {
+            if (list[ix]) packs.push({ combat: combat, idx: ix, target: list[ix] });
+          });
+        }
       }
       if (!packs.length && combat) {
         let tIdx = -1;
@@ -8976,19 +9016,71 @@ function parseAttackLines(ch) {
       } catch (e) { return; }
       showPlayerConcentrationPopup(target, msg.dc || 10);
     }
+    function handleConResult(msg) {
+      if (!msg || msg.type !== 'vtt-con-result') return;
+      // DM only
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+      if (msg.at && msg.at === window.__lastConResultAt) return;
+      window.__lastConResultAt = msg.at;
+      var target = null;
+      try {
+        var c = getActive();
+        var combat = getCombat(c);
+        target = (combat.combatants || []).find(function(x) {
+          return String(x.id) === String(msg.targetId) || x.name === msg.targetName;
+        });
+      } catch (e) {}
+      if (!target) return;
+      var dc = msg.dc || 10;
+      var total = msg.total;
+      if (total == null) return;
+      // Apply the same outcome the player already resolved
+      if (msg.success) {
+        conLog((target.name || 'PC') + ' concentration save: ' + total + ' vs DC ' + dc + ' — SUCCESS (held) [player]', target);
+        target.concentrating = target.concentrating || true;
+      } else {
+        conLog((target.name || 'PC') + ' concentration save: ' + total + ' vs DC ' + dc + ' — FAILED [player]', target);
+        try {
+          if (typeof dropConcentration === 'function') dropConcentration(target, 'failed DC ' + dc + ' (player roll)');
+          else target.concentrating = false;
+        } catch (e) { target.concentrating = false; }
+      }
+      try { if (typeof save === 'function') save(); } catch (e) {}
+      try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+      try { if (typeof renderSharedCombatLog === 'function') renderSharedCombatLog(); } catch (e) {}
+    }
     window.addEventListener('storage', function(ev) {
       if (ev.key === 'cybervlachos_vtt_con_check' && ev.newValue) {
         try { handleConMsg(JSON.parse(ev.newValue)); } catch (e) {}
       }
+      if (ev.key === 'cybervlachos_vtt_con_result' && ev.newValue) {
+        try { handleConResult(JSON.parse(ev.newValue)); } catch (e) {}
+      }
     });
     setInterval(function() {
       try {
-        if (typeof isPlayerRole !== 'function' || !isPlayerRole()) return;
-        var raw = localStorage.getItem('cybervlachos_vtt_con_check');
-        if (!raw) return;
-        handleConMsg(JSON.parse(raw));
+        if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+          var raw = localStorage.getItem('cybervlachos_vtt_con_check');
+          if (raw) handleConMsg(JSON.parse(raw));
+        } else {
+          var rawR = localStorage.getItem('cybervlachos_vtt_con_result');
+          if (rawR) handleConResult(JSON.parse(rawR));
+        }
       } catch (e) {}
     }, 600);
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch && typeof ch.addEventListener === 'function') {
+        ch.addEventListener('message', function(ev) {
+          try {
+            var m = ev.data;
+            if (!m) return;
+            if (m.type === 'vtt-con-check') handleConMsg(m);
+            if (m.type === 'vtt-con-result') handleConResult(m);
+          } catch (e) {}
+        });
+      }
+    } catch (e) {}
   }
 
 
@@ -9988,6 +10080,24 @@ function parseAttackLines(ch) {
         const c = getActive();
         combatants = (getCombat(c).combatants || []);
       } catch (e) {}
+      var prevIds = [];
+      try {
+        [...sel.selectedOptions].forEach(function(o) {
+          var ix = parseInt(o.value, 10);
+          if (!isNaN(ix) && combatants[ix]) prevIds.push(String(combatants[ix].id || combatants[ix].name));
+        });
+      } catch (e) {}
+      try {
+        if ((!prevIds || !prevIds.length) && window.__crSelectedTargetIds && window.__crSelectedTargetIds.length) {
+          prevIds = window.__crSelectedTargetIds.slice();
+        }
+      } catch (e) {}
+      try {
+        var last = window.__lastCombatRoll || {};
+        if ((!prevIds || !prevIds.length) && last.targetIds && last.targetIds.length) {
+          prevIds = last.targetIds.map(String);
+        }
+      } catch (e) {}
       const opts = [];
       combatants.forEach((x, idx) => {
         if (typeof playerCanSeeCombatant === 'function' && !playerCanSeeCombatant(cb, x)) return;
@@ -9998,16 +10108,53 @@ function parseAttackLines(ch) {
       });
       sel.innerHTML = opts.join('') || '<option value="" disabled>No visible combatants</option>';
       let picked = false;
-      for (let oi = 0; oi < sel.options.length; oi++) {
-        const idx = parseInt(sel.options[oi].value, 10);
-        const x = combatants[idx];
-        if (x && typeof isEnemySide === 'function' && isEnemySide(x) && String(x.id) !== String(cb.id)) {
-          sel.options[oi].selected = true;
-          picked = true;
-          break;
+      if (prevIds && prevIds.length) {
+        for (let oi = 0; oi < sel.options.length; oi++) {
+          const idx = parseInt(sel.options[oi].value, 10);
+          const x = combatants[idx];
+          if (!x) continue;
+          const id = String(x.id || x.name);
+          if (prevIds.indexOf(id) !== -1 || prevIds.indexOf(String(x.name)) !== -1) {
+            sel.options[oi].selected = true;
+            picked = true;
+          }
+        }
+      }
+      if (!picked) {
+        for (let oi = 0; oi < sel.options.length; oi++) {
+          const idx = parseInt(sel.options[oi].value, 10);
+          const x = combatants[idx];
+          if (x && typeof isEnemySide === 'function' && isEnemySide(x) && String(x.id) !== String(cb.id)) {
+            sel.options[oi].selected = true;
+            picked = true;
+            break;
+          }
         }
       }
       if (!picked && sel.options[0]) sel.options[0].selected = true;
+      try {
+        window.__crSelectedTargetIds = [...sel.selectedOptions].map(function(o) {
+          var ix = parseInt(o.value, 10);
+          var x = combatants[ix];
+          return x ? String(x.id || x.name) : '';
+        }).filter(Boolean);
+      } catch (e) {}
+      try {
+        sel.onchange = function() {
+          try {
+            var list = [];
+            try {
+              const c2 = getActive();
+              list = (getCombat(c2).combatants || []);
+            } catch (e2) {}
+            window.__crSelectedTargetIds = [...sel.selectedOptions].map(function(o) {
+              var ix = parseInt(o.value, 10);
+              var x = list[ix];
+              return x ? String(x.id || x.name) : '';
+            }).filter(Boolean);
+          } catch (e3) {}
+        };
+      } catch (e) {}
     })();
     try { applyAoeTargetsToRoller(panel); } catch (e) {}
 
