@@ -7869,8 +7869,15 @@ function parseAttackLines(ch) {
       if (window.__mapBc) window.__mapBc.postMessage(payload);
     } catch (e) {}
     try { toast((atkName || 'Attack') + ': ' + res.formula + hitLine); } catch (e) {}
-    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
     try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+    // Player popup: full panel rebuild so Action / Weapon attacks numbers always refresh
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel();
+        if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
+      }
+    } catch (e) {}
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
         playerPersistAndSyncCombat();
@@ -7878,7 +7885,7 @@ function parseAttackLines(ch) {
         save();
       }
     } catch (e) {}
-    // Lightweight economy ping (player → DM and reverse)
+    // Economy ping both directions
     try {
       var econMsg = {
         type: 'vtt-economy',
@@ -7900,8 +7907,15 @@ function parseAttackLines(ch) {
       } catch (e2) {}
     } catch (e) {}
     try {
-      setTimeout(function() { try { refreshTurnEconomyUI(cb); } catch (e) {} }, 30);
-      setTimeout(function() { try { refreshTurnEconomyUI(cb); } catch (e) {} }, 150);
+      setTimeout(function() {
+        try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+        try {
+          if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof renderPlayerCombatPanel === 'function') {
+            renderPlayerCombatPanel();
+            if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
+          }
+        } catch (e) {}
+      }, 40);
     } catch (e) {}
   }
   function runDelegatedDamageRoll() {
@@ -10065,8 +10079,8 @@ function parseAttackLines(ch) {
               left -= absorb;
             }
             target.hp = Math.max(0, (target.hp || 0) - left);
-            if (target.concentrating && left > 0 && typeof concentrationCheck === 'function') {
-              try { concentrationCheck(target, left); } catch (e) {}
+            if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
+              try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) { console.warn(e); }
             }
             appendLog(`${target.name || 'Target'} takes ${amt} damage (${target.hp} HP)`);
             try {
@@ -12046,15 +12060,17 @@ function parseAttackLines(ch) {
       }
       cb.hp = Math.max(0, before - dmg);
       // Concentration check when taking damage while concentrating
-      if (cb.concentrating && dmg > 0) {
-        const dc = Math.max(10, Math.floor(dmg / 2));
-        const roll = 1 + Math.floor(Math.random() * 20);
-        // CON mod unknown — use flat roll; DM can override
-        const ok = roll >= dc;
-        if (!cb.combatLog) cb.combatLog = [];
-        cb.combatLog.push(`Concentration DC ${dc}: rolled ${roll} → ${ok ? 'OK' : 'LOST'}`);
-        if (!ok) cb.concentrating = false;
-        toast(`Concentration DC ${dc}: ${roll} (${ok ? 'maintained' : 'lost'})`);
+      if (dmg > 0 && (typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(cb) : cb.concentrating)) {
+        try {
+          if (typeof concentrationCheck === 'function') concentrationCheck(cb, dmg);
+          else {
+            const dc = Math.max(10, Math.floor(dmg / 2));
+            const roll = 1 + Math.floor(Math.random() * 20);
+            const ok = roll >= dc;
+            if (!ok) cb.concentrating = false;
+            try { toast('Concentration DC ' + dc + ': ' + roll + ' (' + (ok ? 'maintained' : 'lost') + ')'); } catch (e) {}
+          }
+        } catch (e) { console.warn(e); }
       }
       if (cb.hp === 0) {
         cb.deathSaves = cb.deathSaves || { successes: 0, failures: 0 };
@@ -14471,9 +14487,11 @@ function escapeHtml(str) {
         if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
         try {
           if (typeof isPlayerRole === 'function' && isPlayerRole()) {
-            /* player panel already local */
+            if (typeof renderPlayerCombatPanel === 'function') renderPlayerCombatPanel();
+            if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
           } else if (typeof renderCombat === 'function') {
             renderCombat();
+            if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
           }
         } catch (e) {}
       } catch (e) {}
