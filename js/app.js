@@ -7930,6 +7930,34 @@ function parseAttackLines(ch) {
         if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb);
       }
     } catch (e) {}
+    // DM: re-assert Damage Roll enable after save/broadcast may have rebuilt the panel
+    try {
+      var lastHit = window.__lastCombatRoll || {};
+      if (lastHit.canDamage === true && lastHit.applied !== true) {
+        setTimeout(function() {
+          try {
+            var p = typeof getCombatRollPanel === 'function' ? getCombatRollPanel() : document;
+            if (typeof setDamageRollEnabled === 'function') setDamageRollEnabled(p, true, 'Roll damage and apply');
+            document.querySelectorAll('#cr-roll-dmg').forEach(function(btn) {
+              btn.disabled = false;
+              btn.removeAttribute('disabled');
+              btn.classList.add('is-ready');
+            });
+          } catch (e2) {}
+        }, 50);
+        setTimeout(function() {
+          try {
+            var last2 = window.__lastCombatRoll || {};
+            if (last2.canDamage !== true || last2.applied === true) return;
+            document.querySelectorAll('#cr-roll-dmg').forEach(function(btn) {
+              btn.disabled = false;
+              btn.removeAttribute('disabled');
+              btn.classList.add('is-ready');
+            });
+          } catch (e3) {}
+        }, 200);
+      }
+    } catch (e) {}
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof playerPersistAndSyncCombat === 'function') {
         playerPersistAndSyncCombat();
@@ -8643,11 +8671,13 @@ function parseAttackLines(ch) {
     if (!cb) return false;
     if (cb.concentrating) return true;
     try {
-      var conds = cb.conditions || [];
+      var conds = cb.conditions;
+      if (typeof conds === 'string' && /concentrat/i.test(conds)) return true;
       if (Array.isArray(conds) && conds.some(function(c) {
         return /concentrat/i.test(String(c && (c.name || c) || ''));
       })) return true;
     } catch (e) {}
+    if (cb.isConcentrating || cb.concentration) return true;
     return false;
   }
   function concentrationDcFromDamage(dmg) {
@@ -11698,6 +11728,21 @@ function parseAttackLines(ch) {
         btn.classList.add('active');
       });
     });
+    // After any panel rebuild, restore open Damage Roll gate (save/render was clearing disabled state)
+    try {
+      var lastGate = window.__lastCombatRoll || {};
+      if (lastGate.canDamage === true && lastGate.applied !== true) {
+        if (typeof setDamageRollEnabled === 'function') {
+          setDamageRollEnabled(panel, true, 'Roll damage and apply');
+        }
+        panel.querySelectorAll('#cr-roll-dmg').forEach(function(btn) {
+          btn.disabled = false;
+          btn.removeAttribute('disabled');
+          btn.classList.add('is-ready');
+          btn.title = 'Roll damage and apply to selected target(s)';
+        });
+      }
+    } catch (e) {}
   }
 
 
@@ -14642,6 +14687,13 @@ function escapeHtml(str) {
       try { renderCombat(); } catch (e) {}
       try { renderBattleMap(); } catch (e) {}
       try { renderMapRoster(); } catch (e) {}
+      // Restore DM Damage Roll if a hit is still open
+      try {
+        var lg = window.__lastCombatRoll || {};
+        if (lg.canDamage === true && lg.applied !== true && typeof setDamageRollEnabled === 'function') {
+          setDamageRollEnabled(document.getElementById('combat-detail') || document, true, 'Roll damage and apply');
+        }
+      } catch (e) {}
       // Refresh economy UI for every combatant that has attacks/actions (player may not be selected on DM)
       try {
         (combat.combatants || []).forEach(function(sel) {
