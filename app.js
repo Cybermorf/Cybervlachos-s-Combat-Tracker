@@ -10779,11 +10779,15 @@ function parseAttackLines(ch) {
       const sz = e.target.value || 'Medium';
       cb.size = sz;
       cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
-      try { save(); } catch (err) {}
+      // Light persist — avoid save() token broadcast storm
+      try {
+        var payload = typeof cloneStateForLocalStorage === 'function'
+          ? cloneStateForLocalStorage()
+          : { campaigns: state.campaigns, activeCampaignId: state.activeCampaignId };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } catch (err) {}
       try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (err) {}
-      try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (err) {}
       try { if (typeof syncMapTokenSizeSelect === 'function') syncMapTokenSizeSelect(); } catch (err) {}
-      try { if (typeof renderCombat === 'function') renderCombat(); } catch (err) {}
     });
     panel.querySelector('#cd-conc')?.addEventListener('change', (e) => {
       cb.concentrating = !!e.target.checked;
@@ -14258,11 +14262,15 @@ function escapeHtml(str) {
     const sz = sizeSel.value || 'Medium';
     cb.size = sz;
     cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
-    try { save(); } catch (e) {}
-    // Redraw only — do not touch token position sync channels
+    // Light persist only — NEVER call save() here (save broadcasts token positions → lag)
+    try {
+      var payload = typeof cloneStateForLocalStorage === 'function'
+        ? cloneStateForLocalStorage()
+        : { campaigns: state.campaigns, activeCampaignId: state.activeCampaignId };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {}
+    // Local redraw only
     try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
-    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
-    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
     try { if (typeof toast === 'function') toast((cb.name || 'Token') + ' size → ' + sz + ' (' + cb.tokenSize + ' sq)'); } catch (e) {}
   }
 
@@ -15808,10 +15816,7 @@ function escapeHtml(str) {
         }
       }
       const x = pos.x * scale, y = pos.y * scale;
-      // Size footprint → radius (Large=2, Huge=3, etc.)
-      if (cb && cb.tokenSize == null && cb.size && typeof sizeToTokenSquares === 'function') {
-        cb.tokenSize = sizeToTokenSquares(cb.size);
-      }
+      // Size footprint → radius (read-only; do not mutate combatant during paint)
       const r = typeof tokenRadiusForCombatant === 'function'
         ? tokenRadiusForCombatant(map, cb, scale)
         : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35 * (Number(cb && cb.tokenSize) || 1));
