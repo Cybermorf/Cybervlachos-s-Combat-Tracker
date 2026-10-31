@@ -9655,17 +9655,21 @@ function parseAttackLines(ch) {
     // Always see claimed/self character (player combat panel)
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     const map = getCombatMap();
-    // Theater of the mind / no map image: all roster combatants are valid targets
-    // (previous `return false` left only the claimed PC in the target list — broke player Damage Roll + concentration)
-    if (!map || !(map.image || map.video || map.mapImage || map.src || map.videoSrc)) {
+    // Has a real battle map? (image, video, or mediaType) — do not treat video maps as "no map"
+    var hasMapMedia = !!(map && (
+      map.image || map.video || map.mapImage || map.src || map.videoSrc || map.mediaUrl ||
+      map.mediaType === 'video' || map.mediaType === 'image' || map.mapDataUrl
+    ));
+    // Theater of the mind only when there is no map media at all
+    if (!map || !hasMapMedia) {
       return true;
     }
     const pos = (typeof getCombatantTokenPos === 'function')
       ? getCombatantTokenPos(target, map)
-      : (map.tokens && map.tokens[String(target.id)]);
-    // On the roster but no token placed yet — still targetable
+      : (map.tokens && (map.tokens[String(target.id)] || map.tokens[target.id]));
+    // No token on map: still list for targeting (ToTM hybrid), but not "seen" under fog as a map figure
     if (!pos) return true;
-    // Anyone under unrevealed FoW is hidden from player-facing lists (PC and enemy)
+    // Token on map + FoW: must be in a revealed cell
     if (!map.fogEnabled) return true;
     try {
       ensureMapFog(map);
@@ -14388,8 +14392,8 @@ function escapeHtml(str) {
     const goy = (Number(map.gridOffsetY) || 0) * scale;
     const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
     const isVideoMap = map && map.mediaType === 'video';
-    // Player / shared mapPopout: solid black; DM: translucent (darker on video so FoW is obvious)
-    ctx.fillStyle = playerView ? 'rgba(0,0,0,0.96)' : (isVideoMap ? 'rgba(0,0,0,0.78)' : 'rgba(0,0,0,0.55)');
+    // Player / shared mapPopout: fully opaque black; DM main: translucent
+    ctx.fillStyle = playerView ? 'rgba(0,0,0,1)' : (isVideoMap ? 'rgba(0,0,0,0.82)' : 'rgba(0,0,0,0.62)');
     const cols = Math.ceil(canvas.width / g) + 2;
     const rows = Math.ceil(canvas.height / g) + 2;
     const startCol = Math.floor(-gox / g) - 1;
@@ -15678,12 +15682,21 @@ function escapeHtml(str) {
       const resolved = typeof tokenPosForCombatant === 'function' ? tokenPosForCombatant(map, cb, idx) : null;
       const pos = resolved ? resolved.pos : (map.tokens[id]);
       if (!pos) return;
-      // Player / shared popout: hide tokens in unrevealed fog cells
-      // Only true player clients hide tokens in fog; DM mapPopout must see all tokens to move them
+      // Player clients: hide tokens in unrevealed fog (DM mapPopout still sees all so DM can move them)
       const hideFogTokens = typeof isPlayerRole === 'function' && isPlayerRole();
       if (hideFogTokens && map.fogEnabled) {
-        const cell = worldToFogCell(map, pos.x, pos.y);
-        if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+        try {
+          // Always show the player's own claimed token
+          var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          var isSelf = claimed && (String(claimed.id) === String(cb.id) || claimed.name === cb.name);
+          if (!isSelf) {
+            const cell = worldToFogCell(map, pos.x, pos.y);
+            if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+          }
+        } catch (e) {
+          const cell = worldToFogCell(map, pos.x, pos.y);
+          if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+        }
       }
       const x = pos.x * scale, y = pos.y * scale;
       const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
