@@ -3769,6 +3769,8 @@ function beginCombatantTurn(cb, ch) {
       isUmbrarian: !!ch.isUmbrarian,
       umbrarianStage: ch.umbrarianStage || '',
       shard: ch.shard || '',
+      size: ch.size || 'Medium',
+      tokenSize: ch.tokenSize != null ? Number(ch.tokenSize) : null,
       legendary: !!ch.legendary,
       legendaryResist: ch.legendaryResist != null ? Number(ch.legendaryResist) : null,
       legendaryResistMax: ch.legendaryResistMax != null ? Number(ch.legendaryResistMax) : null,
@@ -7502,6 +7504,8 @@ function parseAttackLines(ch) {
       legendaryActions: n.legendaryActions || ch.legendaryActions || [],
       legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')),
       // normalizeCharacter historically dropped these — always prefer raw roster values
+      size: (n.size || ch.size || 'Medium'),
+      tokenSize: (n.tokenSize != null ? n.tokenSize : (ch.tokenSize != null ? ch.tokenSize : sizeToTokenSquares(n.size || ch.size || 'Medium'))),
       legendaryResist: (n.legendaryResist != null ? n.legendaryResist : ch.legendaryResist),
       legendaryResistMax: (n.legendaryResistMax != null ? n.legendaryResistMax : ch.legendaryResistMax),
       legendaryActionsMax: (n.legendaryActionsMax != null ? n.legendaryActionsMax : ch.legendaryActionsMax),
@@ -9578,6 +9582,7 @@ function parseAttackLines(ch) {
             id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
             init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
             tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
+            size: cb.size, tokenSize: cb.tokenSize,
             turnState: cb.turnState, turnPhase: cb.turnPhase,
             actionUsed: cb.actionUsed, bonusUsed: cb.bonusUsed, reactionUsed: cb.reactionUsed,
             moveUsed: cb.moveUsed, attacksUsed: cb.attacksUsed,
@@ -10104,6 +10109,16 @@ function parseAttackLines(ch) {
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
             ${(cb.legendaryResistMax != null || cb.legendaryResist != null || cb.legendary) ? `<div class="muted small" style="margin-top:0.25rem">Legendary Resistance: <strong>${Number(cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) || 0}</strong> / ${Number(cb.legendaryResistMax != null ? cb.legendaryResistMax : cb.legendaryResist) || 0}</div>` : ''}
+            <div class="field" style="margin-top:0.4rem">
+              <label>Creature size (token footprint)</label>
+              <select id="cd-token-size" ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? 'disabled' : ''}>
+                ${['Tiny','Small','Medium','Large','Huge','Gargantuan'].map(function(sz) {
+                  const cur = String(cb.size || 'Medium');
+                  const sel = (cur.toLowerCase() === sz.toLowerCase()) || (sizeToTokenSquares(cur) === sizeToTokenSquares(sz) && !['Tiny','Small','Medium','Large','Huge','Gargantuan'].some(function(x){ return x.toLowerCase()===cur.toLowerCase(); }) && sz==='Medium');
+                  return '<option value="'+sz+'" '+(String(cb.size||'Medium').toLowerCase()===sz.toLowerCase()?'selected':'')+'>'+sz+' ('+sizeToTokenSquares(sz)+' sq)</option>';
+                }).join('')}
+              </select>
+            </div>
             ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>`}
         <div class="form-row" style="margin-top:0.35rem;gap:0.35rem;flex-wrap:wrap">
           <button type="button" class="btn secondary btn-tiny" id="cd-death-save">Death Save</button>
@@ -10759,6 +10774,15 @@ function parseAttackLines(ch) {
     panel.querySelector('#cd-conditions')?.addEventListener('change', (e) => {
       cb.conditions = e.target.value;
       try { save(); } catch (err) {}
+    });
+    panel.querySelector('#cd-token-size')?.addEventListener('change', (e) => {
+      const sz = e.target.value || 'Medium';
+      cb.size = sz;
+      cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
+      try { save(); } catch (err) {}
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (err) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('token-size'); } catch (err) {}
+      try { if (typeof renderCombat === 'function') renderCombat(); } catch (err) {}
     });
     panel.querySelector('#cd-conc')?.addEventListener('change', (e) => {
       cb.concentrating = !!e.target.checked;
@@ -14347,6 +14371,41 @@ function escapeHtml(str) {
     const gy = Math.floor((wy - oy) / g);
     return gx + ',' + gy;
   }
+  /** 5e size label → footprint in grid squares (Medium = 1). */
+  function sizeToTokenSquares(size) {
+    const s = String(size || '').toLowerCase().trim();
+    if (s === 'tiny') return 0.5;
+    if (s === 'small' || s === 'medium' || s === 'med' || s === '') return 1;
+    if (s === 'large') return 2;
+    if (s === 'huge') return 3;
+    if (s === 'gargantuan' || s === 'gargantua') return 4;
+    const n = Number(size);
+    if (!isNaN(n) && n > 0) return n;
+    return 1;
+  }
+  function combatantTokenSquares(cb) {
+    if (!cb) return 1;
+    if (cb.tokenSize != null && cb.tokenSize !== '' && !isNaN(Number(cb.tokenSize))) {
+      return Math.max(0.5, Math.min(8, Number(cb.tokenSize)));
+    }
+    if (cb.size) return sizeToTokenSquares(cb.size);
+    return 1;
+  }
+  /** Pixel radius for drawing/hit-test (circle fits footprint). */
+  function tokenRadiusForCombatant(map, cb, scale) {
+    const g = (Number(map && map.gridSize) || 70) * (scale || 1);
+    const sq = combatantTokenSquares(cb);
+    return Math.max(6, g * sq * 0.42);
+  }
+  function findCombatantByTokenId(id) {
+    try {
+      const c = getActive();
+      const list = (c && getCombat(c).combatants) || [];
+      return list.find(function(x) {
+        return x && (String(x.id) === String(id) || String(x.charId) === String(id));
+      }) || null;
+    } catch (e) { return null; }
+  }
   function getFogBrushSize(map) {
     const fromInput = parseInt(document.getElementById('map-fog-brush')?.value, 10);
     if (!isNaN(fromInput) && fromInput >= 1) return Math.min(12, fromInput);
@@ -15060,7 +15119,7 @@ function escapeHtml(str) {
         );
         if (!local) return;
         const fields = [
-          'hp','hpMax','tempHp','conditions','concentrating','dead',
+          'hp','hpMax','tempHp','conditions','concentrating','dead','size','tokenSize',
           'turnState','turnPhase','actionUsed','actionsUsed','actionsMax','bonusUsed','reactionUsed','moveUsed',
           'attacksUsed','attacksMax','lastAction','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
@@ -15699,7 +15758,9 @@ function escapeHtml(str) {
         }
       }
       const x = pos.x * scale, y = pos.y * scale;
-      const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+      const r = typeof tokenRadiusForCombatant === 'function'
+        ? tokenRadiusForCombatant(map, cb, scale)
+        : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
       const isAlly = side === 'ally' || side === 'allies';
@@ -15888,7 +15949,10 @@ function escapeHtml(str) {
       if (dragId && map.tokens && map.tokens[dragId]) {
         const pos = map.tokens[dragId];
         const x = pos.x * scale, y = pos.y * scale;
-        const r = Math.max(10, (Number(map.gridSize) || 70) * scale * 0.35);
+        const dragCb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(dragId) : null;
+        const r = typeof tokenRadiusForCombatant === 'function'
+          ? tokenRadiusForCombatant(map, dragCb || {}, scale)
+          : Math.max(10, (Number(map.gridSize) || 70) * scale * 0.35);
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255, 210, 74, 0.95)';
@@ -16456,11 +16520,13 @@ function bindMapCanvasInteractions(force) {
     };
     const hitToken = (map, x, y) => {
       const g = Number(map.gridSize) || 70;
-      const hitR = Math.max(g * 0.55, 24);
       let found = null, best = Infinity;
       Object.keys(map.tokens || {}).forEach((id) => {
         const p = map.tokens[id];
         if (!p) return;
+        const cb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(id) : null;
+        const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        const hitR = Math.max(g * 0.45 * sq, 16);
         const d = Math.hypot((p.x || 0) - x, (p.y || 0) - y);
         if (d <= hitR && d < best) { found = id; best = d; }
       });
