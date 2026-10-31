@@ -3769,7 +3769,7 @@ function beginCombatantTurn(cb, ch) {
       isUmbrarian: !!ch.isUmbrarian,
       umbrarianStage: ch.umbrarianStage || '',
       shard: ch.shard || '',
-      size: ch.size || 'Medium',
+      size: (typeof ch.size === 'object' && ch.size ? (ch.size.name || ch.size.label || 'Medium') : (ch.size || 'Medium')),
       tokenSize: ch.tokenSize != null ? Number(ch.tokenSize) : null,
       legendary: !!ch.legendary,
       legendaryResist: ch.legendaryResist != null ? Number(ch.legendaryResist) : null,
@@ -14328,14 +14328,22 @@ function escapeHtml(str) {
       // Shared/player popouts: never show enemy AC (and hideHp already covers HP)
       const hideAc = isEnemy && (playerMode || popout);
       const acPart = hideAc ? '' : (' · AC ' + (cb.ac != null ? cb.ac : '—'));
+      const sizeLabel = (function() {
+        try {
+          const sz = cb.size || 'Medium';
+          const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+          return escapeHtml(String(sz)) + ' · ' + sq + ' sq';
+        } catch (e) { return 'Medium · 1 sq'; }
+      })();
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
-        <div class="mr-meta">Init ${escapeHtml(String(init))}${acPart} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
+        <div class="mr-meta">Init ${escapeHtml(String(init))}${acPart} · ${escapeHtml(sideClass)} · ${sizeLabel}${placed ? '' : ' · <em>not on map</em>'}</div>
         <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '' : (hp + '/' + hpMax + ' HP')}</div>
         <div class="mr-bar">${hide ? '' : `<span style="width:${pct}%"></span>`}</div>
         <div class="tool-btns" style="margin-top:0.3rem">
           <button type="button" class="btn secondary btn-tiny mr-place" data-id="${escapeAttr(id)}">${placed ? 'Re-place' : 'Place'}</button>
           <button type="button" class="btn secondary btn-tiny mr-focus" data-id="${escapeAttr(id)}">Select</button>
+          <button type="button" class="btn secondary btn-tiny mr-center" data-id="${escapeAttr(id)}" title="Center map on token">Center</button>
         </div>
       </div>`;
     }).join('');
@@ -14369,6 +14377,14 @@ function escapeHtml(str) {
         selectCombatantById(btn.getAttribute('data-id'));
         renderMapRoster();
         renderBattleMap();
+      });
+    });
+    listEl.querySelectorAll('.mr-center').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        try { selectCombatantById(id); } catch (err) {}
+        try { centerMapOnCombatant(id); } catch (err) {}
       });
     });
   }
@@ -14429,7 +14445,7 @@ function escapeHtml(str) {
     const gy = Math.floor((wy - oy) / g);
     return gx + ',' + gy;
   }
-  /** 5e size label → footprint in grid squares (Medium = 1). */
+  /** 5e size label → footprint in grid squares (Medium = 1). Stable-checkpoint: size+VTT polish. */
   function sizeToTokenSquares(size) {
     const s = String(size || '').toLowerCase().trim();
     if (s === 'tiny') return 0.5;
@@ -14463,6 +14479,32 @@ function escapeHtml(str) {
         return x && (String(x.id) === String(id) || String(x.charId) === String(id));
       }) || null;
     } catch (e) { return null; }
+  }
+  /** Scroll map viewport to a token and briefly highlight it (no sync side-effects). */
+  function centerMapOnCombatant(id) {
+    try {
+      const map = getCombatMap();
+      if (!map) return;
+      const cb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(id) : null;
+      let pos = null;
+      if (typeof getCombatantTokenPos === 'function' && cb) pos = getCombatantTokenPos(cb, map);
+      if (!pos && map.tokens) pos = map.tokens[String(id)] || (cb && map.tokens[String(cb.id)]);
+      if (!pos) {
+        try { if (typeof toast === 'function') toast('Token not on map'); } catch (e) {}
+        return;
+      }
+      const scale = map.scale || 1;
+      const wrap = document.querySelector('.map-canvas-wrap');
+      if (wrap) {
+        const x = Number(pos.x) * scale;
+        const y = Number(pos.y) * scale;
+        wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
+        wrap.scrollTop = Math.max(0, y - wrap.clientHeight / 2);
+      }
+      window.__mapFocusTokenId = String(id);
+      window.__mapFocusUntil = Date.now() + 1400;
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    } catch (e) {}
   }
   function getFogBrushSize(map) {
     const fromInput = parseInt(document.getElementById('map-fog-brush')?.value, 10);
@@ -15820,6 +15862,32 @@ function escapeHtml(str) {
       const r = typeof tokenRadiusForCombatant === 'function'
         ? tokenRadiusForCombatant(map, cb, scale)
         : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35 * (Number(cb && cb.tokenSize) || 1));
+      try {
+        const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        if (sq >= 2) {
+          const g = (Number(map.gridSize) || 70) * scale;
+          const sidePx = g * sq;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 220, 120, 0.45)';
+          ctx.lineWidth = Math.max(1, 2 * scale);
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x - sidePx / 2, y - sidePx / 2, sidePx, sidePx);
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      } catch (e) {}
+      try {
+        if (window.__mapFocusTokenId && String(cb.id) === String(window.__mapFocusTokenId)
+            && window.__mapFocusUntil && Date.now() < window.__mapFocusUntil) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 230, 80, 0.95)';
+          ctx.lineWidth = Math.max(2, 3 * scale);
+          ctx.beginPath();
+          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      } catch (e) {}
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
       const isAlly = side === 'ally' || side === 'allies';
@@ -15933,24 +16001,32 @@ function escapeHtml(str) {
       const x1 = r.x1 * scale, y1 = r.y1 * scale;
       const x2 = (r.x2 != null ? r.x2 : r.x1) * scale;
       const y2 = (r.y2 != null ? r.y2 : r.y1) * scale;
-      ctx.strokeStyle = 'rgba(255,220,100,0.95)';
-      ctx.fillStyle = 'rgba(255,220,100,0.95)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
+      // Dark underlay for contrast on bright maps
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.lineWidth = 5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,220,100,0.98)';
+      ctx.fillStyle = 'rgba(255,220,100,0.98)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 5]);
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.beginPath(); ctx.arc(x1, y1, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x2, y2, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x1, y1, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x2, y2, 6, 0, Math.PI * 2); ctx.fill();
       const dx = (r.x2 != null ? r.x2 : r.x1) - r.x1;
       const dy = (r.y2 != null ? r.y2 : r.y1) - r.y1;
       const distPx = Math.sqrt(dx * dx + dy * dy);
       const ft = distPx / ((Number(map.gridSize) || 70) / 5);
       const label = (Math.round(ft * 2) / 2) + ' ft';
       const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      ctx.font = 'bold 13px system-ui,sans-serif';
+      ctx.font = 'bold 14px system-ui,sans-serif';
       ctx.textAlign = 'center';
       const tw = ctx.measureText(label).width + 10;
       ctx.fillStyle = 'rgba(0,0,0,0.75)';
@@ -15966,14 +16042,17 @@ function escapeHtml(str) {
       const ft = a.ft || 20;
       const pxPerFt = ((Number(map.gridSize) || 70) * scale) / 5; // 5 ft square
       const rad = (ft) * pxPerFt;
-      ctx.fillStyle = 'rgba(100,160,255,0.25)';
-      ctx.strokeStyle = 'rgba(100,180,255,0.9)';
-      ctx.lineWidth = 2;
+      ctx.fillStyle = 'rgba(80,150,255,0.28)';
+      ctx.strokeStyle = 'rgba(180,220,255,0.98)';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = 'rgba(0,0,0,0.45)';
+      ctx.shadowBlur = 4;
       if (a.shape === 'sphere' || a.shape === 'cube') {
       if (a.shape === 'sphere') {
         ctx.beginPath();
         ctx.arc(ox, oy, rad, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
+        ctx.fill();
+        ctx.shadowBlur = 0; ctx.stroke();
       } else {
         ctx.fillRect(ox - rad, oy - rad, rad * 2, rad * 2);
         ctx.strokeRect(ox - rad, oy - rad, rad * 2, rad * 2);
@@ -16561,6 +16640,17 @@ function escapeHtml(str) {
     });
     document.getElementById('map-token-size')?.addEventListener('change', () => {
       try { applyMapTokenSizeFromSelect(); } catch (e) {}
+    });
+    document.querySelectorAll('.map-fog-preset').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var n = parseInt(btn.getAttribute('data-brush'), 10) || 1;
+        var inp = document.getElementById('map-fog-brush');
+        if (inp) { inp.value = String(n); inp.dispatchEvent(new Event('change', { bubbles: true })); }
+        try {
+          var map = getCombatMap();
+          if (map) map.fogBrush = n;
+        } catch (e) {}
+      });
     });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;

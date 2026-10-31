@@ -334,6 +334,11 @@
           <button type="button" class="btn secondary" id="map-fog-hide" title="Hide fog brush">Hide</button>
           <button type="button" class="btn ghost" id="map-fog-reset" title="Cover all">Fog all</button>
           <label class="muted small">Brush <input type="number" id="map-fog-brush" min="1" max="8" value="1" style="width:3rem"></label>
+          <span class="muted small" style="display:inline-flex;gap:0.25rem;align-items:center">
+            <button type="button" class="btn ghost btn-tiny map-fog-preset" data-brush="1" title="Fine brush">1</button>
+            <button type="button" class="btn ghost btn-tiny map-fog-preset" data-brush="3" title="Medium brush">3</button>
+            <button type="button" class="btn ghost btn-tiny map-fog-preset" data-brush="5" title="Large brush">5</button>
+          </span>
           <span class="muted small" id="map-status">No map loaded</span>
         </div>
         <div class="map-layout">
