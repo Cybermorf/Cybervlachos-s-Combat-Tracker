@@ -10781,7 +10781,8 @@ function parseAttackLines(ch) {
       cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
       try { save(); } catch (err) {}
       try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (err) {}
-      try { if (typeof broadcastVttState === 'function') broadcastVttState('token-size'); } catch (err) {}
+      try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (err) {}
+      try { if (typeof syncMapTokenSizeSelect === 'function') syncMapTokenSizeSelect(); } catch (err) {}
       try { if (typeof renderCombat === 'function') renderCombat(); } catch (err) {}
     });
     panel.querySelector('#cd-conc')?.addEventListener('change', (e) => {
@@ -14211,9 +14212,58 @@ function escapeHtml(str) {
     const c = getActive();
     const combat = c ? getCombat(c) : null;
     const list = (combat && combat.combatants) || [];
+    const prev = sel.value;
     sel.innerHTML = list.map((cb, i) =>
       `<option value="${escapeAttr(cb.id || String(i))}">${escapeHtml(cb.name || ('#' + i))}</option>`
     ).join('') || '<option value="">No combatants</option>';
+    if (prev && [...sel.options].some(function(o) { return o.value === prev; })) sel.value = prev;
+    try { syncMapTokenSizeSelect(); } catch (e) {}
+  }
+  function syncMapTokenSizeSelect() {
+    const sizeSel = document.getElementById('map-token-size');
+    const tokSel = document.getElementById('map-token-combatant');
+    if (!sizeSel || !tokSel) return;
+    const id = tokSel.value;
+    if (!id) return;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    const cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+    if (!cb) return;
+    const sz = String(cb.size || 'Medium');
+    const opts = ['Tiny','Small','Medium','Large','Huge','Gargantuan'];
+    var match = opts.find(function(o) { return o.toLowerCase() === sz.toLowerCase(); });
+    if (!match && cb.tokenSize != null) {
+      var n = Number(cb.tokenSize);
+      if (n <= 0.5) match = 'Tiny';
+      else if (n <= 1) match = 'Medium';
+      else if (n <= 2) match = 'Large';
+      else if (n <= 3) match = 'Huge';
+      else match = 'Gargantuan';
+    }
+    sizeSel.value = match || 'Medium';
+  }
+  function applyMapTokenSizeFromSelect() {
+    const sizeSel = document.getElementById('map-token-size');
+    const tokSel = document.getElementById('map-token-combatant');
+    if (!sizeSel || !tokSel) return;
+    const id = tokSel.value;
+    if (!id) return;
+    const c = getActive();
+    if (!c) return;
+    const combat = getCombat(c);
+    const list = (combat && combat.combatants) || [];
+    const cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+    if (!cb) return;
+    const sz = sizeSel.value || 'Medium';
+    cb.size = sz;
+    cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
+    try { save(); } catch (e) {}
+    // Redraw only — do not touch token position sync channels
+    try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+    try { if (typeof toast === 'function') toast((cb.name || 'Token') + ' size → ' + sz + ' (' + cb.tokenSize + ' sq)'); } catch (e) {}
   }
 
   
@@ -15758,9 +15808,13 @@ function escapeHtml(str) {
         }
       }
       const x = pos.x * scale, y = pos.y * scale;
+      // Size footprint → radius (Large=2, Huge=3, etc.)
+      if (cb && cb.tokenSize == null && cb.size && typeof sizeToTokenSquares === 'function') {
+        cb.tokenSize = sizeToTokenSquares(cb.size);
+      }
       const r = typeof tokenRadiusForCombatant === 'function'
         ? tokenRadiusForCombatant(map, cb, scale)
-        : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+        : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35 * (Number(cb && cb.tokenSize) || 1));
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
       const isAlly = side === 'ally' || side === 'allies';
