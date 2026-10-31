@@ -16497,6 +16497,12 @@ function escapeHtml(str) {
       toast('AoE / ruler cleared');
     };
     document.getElementById('map-clear-aoe')?.addEventListener('click', clearMeasures);
+    document.getElementById('map-token-combatant')?.addEventListener('change', () => {
+      try { syncMapTokenSizeSelect(); } catch (e) {}
+    });
+    document.getElementById('map-token-size')?.addEventListener('change', () => {
+      try { applyMapTokenSizeFromSelect(); } catch (e) {}
+    });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
       try {
