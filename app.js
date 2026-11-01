@@ -946,14 +946,13 @@
     }
   }
 
-  /** Popouts lose blob: URLs — reload video from IndexedDB (try several keys). */
+  /** Popouts lose blob: URLs — reload from IndexedDB, then ask main window via BroadcastChannel. */
   async function ensureActiveMapVideo() {
     try {
       const c = typeof getActive === 'function' ? getActive() : null;
       if (!c || !c.combatMap) return false;
       const map = c.combatMap;
       if (map.videoObjectUrl) return true;
-      // Prefer video when flagged; also try if we have no image (DM may have only video)
       var wantVideo = !!(map.hasVideoInIdb || map.mediaType === 'video' || map.videoName ||
         (!map.imageDataUrl && !map.hasImageInIdb));
       if (!wantVideo && map.mediaType === 'image') return false;
@@ -962,7 +961,6 @@
       if (c.id) keys.push(c.id);
       try { if (state.activeCampaignId) keys.push(state.activeCampaignId); } catch (e) {}
       keys.push('active');
-      // All campaign ids as fallback (popout may resolve active late)
       try {
         (state.campaigns || []).forEach(function(camp) {
           if (camp && camp.id && keys.indexOf(camp.id) < 0) keys.push(camp.id);
@@ -971,21 +969,94 @@
 
       var blob = null;
       for (var i = 0; i < keys.length; i++) {
-        blob = await idbGetMapVideo(keys[i]);
+        try { blob = await idbGetMapVideo(keys[i]); } catch (e) { blob = null; }
         if (blob) break;
       }
-      if (!blob) return false;
-      if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
-        try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+      if (blob) {
+        if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+          try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+        }
+        map.videoObjectUrl = URL.createObjectURL(blob);
+        map.mediaType = 'video';
+        map.hasVideoInIdb = true;
+        return true;
       }
-      map.videoObjectUrl = URL.createObjectURL(blob);
-      map.mediaType = 'video';
-      map.hasVideoInIdb = true;
-      return true;
+      // IDB empty on this window — request blob from peers (main DM holds it in memory)
+      try { requestMapVideoFromPeers(); } catch (e) {}
+      return false;
     } catch (e) {
       console.warn('ensureActiveMapVideo', e);
       return false;
     }
+  }
+
+  function requestMapVideoFromPeers() {
+    try {
+      setupMapVideoBridge();
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) ch.postMessage({ type: 'vtt-request-map-video', at: Date.now() });
+    } catch (e) {}
+  }
+
+  function setupMapVideoBridge() {
+    if (window.__mapVideoBridgeBound) return;
+    window.__mapVideoBridgeBound = true;
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (!ch) return;
+      ch.addEventListener('message', function(ev) {
+        var msg = ev && ev.data;
+        if (!msg || !msg.type) return;
+        // Main (or any window that has the video) answers
+        if (msg.type === 'vtt-request-map-video') {
+          (async function() {
+            try {
+              // Don't answer our own request loop if we also need video
+              var c = typeof getActive === 'function' ? getActive() : null;
+              var map = c && c.combatMap;
+              var blob = null;
+              if (map && map.videoObjectUrl) {
+                try {
+                  var resp = await fetch(map.videoObjectUrl);
+                  blob = await resp.blob();
+                } catch (e) {}
+              }
+              if (!blob && c && c.id) {
+                try { blob = await idbGetMapVideo(c.id); } catch (e) {}
+              }
+              if (!blob) {
+                try { blob = await idbGetMapVideo('active'); } catch (e) {}
+              }
+              if (blob && ch) {
+                ch.postMessage({ type: 'vtt-map-video-blob', blob: blob, at: Date.now() });
+              }
+            } catch (e) { console.warn('video bridge respond', e); }
+          })();
+          return;
+        }
+        if (msg.type === 'vtt-map-video-blob' && msg.blob) {
+          (async function() {
+            try {
+              var c = typeof getActive === 'function' ? getActive() : null;
+              if (!c || !c.combatMap) return;
+              var map = c.combatMap;
+              if (map.videoObjectUrl && window.__mapVideoTicking) return;
+              if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+                try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+              }
+              map.videoObjectUrl = URL.createObjectURL(msg.blob);
+              map.mediaType = 'video';
+              map.hasVideoInIdb = true;
+              try {
+                if (c.id) await idbSetMapVideo(c.id, msg.blob);
+                await idbSetMapVideo('active', msg.blob);
+              } catch (e) {}
+              try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+            } catch (e) { console.warn('video bridge apply', e); }
+          })();
+        }
+      });
+    } catch (e) {}
   }
 
   function tryRestoreRosterBackupIfEmpty() {
@@ -13689,6 +13760,7 @@ function escapeHtml(str) {
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
     try {
       restoreMapImagesAfterLoad().then(() => {
+        try { setupMapVideoBridge(); } catch (e) {}
         try {
           if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
           else if (typeof initBattleMapUi === 'function') initBattleMapUi();
@@ -13939,6 +14011,7 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
+    try { setupMapVideoBridge(); } catch (e) {}
     try {
       var tries = 0;
       var kickVideo = function() {
@@ -13946,11 +14019,15 @@ function escapeHtml(str) {
         ensureActiveMapVideo().then(function(ok) {
           if (ok) {
             try { renderBattleMap(); } catch (e) {}
-          } else if (tries < 6) {
-            setTimeout(kickVideo, 400 * tries);
+          } else if (tries < 8) {
+            try { requestMapVideoFromPeers(); } catch (e) {}
+            setTimeout(kickVideo, 350 * tries);
           }
         }).catch(function() {
-          if (tries < 6) setTimeout(kickVideo, 400 * tries);
+          if (tries < 8) {
+            try { requestMapVideoFromPeers(); } catch (e) {}
+            setTimeout(kickVideo, 350 * tries);
+          }
         });
       };
       kickVideo();
@@ -14333,7 +14410,17 @@ function escapeHtml(str) {
     if (!cb) return;
     const sz = sizeSel.value || 'Medium';
     cb.size = sz;
-    cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
+    cb.tokenSize = Number(typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1);
+    // Keep size on linked source character if any
+    try {
+      var srcId = cb.sourceId || cb.charId;
+      if (srcId && typeof getActive === 'function') {
+        var camp = getActive();
+        var lists = [].concat((camp && camp.party) || [], (camp && camp.villains) || []);
+        var src = lists.find(function(x) { return x && String(x.id) === String(srcId); });
+        if (src) { src.size = sz; src.tokenSize = cb.tokenSize; }
+      }
+    } catch (e) {}
     // Light persist only — NEVER call save() here (save broadcasts token positions → lag)
     try {
       var payload = typeof cloneStateForLocalStorage === 'function'
@@ -14541,7 +14628,8 @@ function escapeHtml(str) {
   function tokenRadiusForCombatant(map, cb, scale) {
     const g = (Number(map && map.gridSize) || 70) * (scale || 1);
     const sq = combatantTokenSquares(cb);
-    return Math.max(6, g * sq * 0.42);
+    // Diameter fills most of the footprint (Large=2 cells → ~2x Medium)
+    return Math.max(8, g * sq * 0.48);
   }
   function findCombatantByTokenId(id) {
     try {
