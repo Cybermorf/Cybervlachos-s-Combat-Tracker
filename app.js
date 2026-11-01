@@ -3549,14 +3549,18 @@ function beginCombatantTurn(cb, ch) {
     const phase = cb.turnPhase || 'ready';
     // active: full turn (DM Next Turn)
     // ended: only reaction + legendary
+    // legendary / legendaryActionReady: off-turn Legendary Action attack or cast
     const lockedUntilStart = phase === 'ready' || phase === 'pending' || !phase;
     const turnEnded = phase === 'ended';
+    const laReady = !!cb.legendaryActionReady || phase === 'legendary';
     const allowMain = phase === 'active';
-    const allowReaction = phase === 'active' || turnEnded || lockedUntilStart; // reaction anytime until next start — but if not started yet, still allow reaction from prior turn
+    const allowLegendaryAct = laReady; // Roll Attack / Cast while a LA is pending
+    const allowReaction = phase === 'active' || turnEnded || lockedUntilStart || laReady;
     // Clarify rules:
     // - Before Start turn: block move/action/bonus/object/cast/attack (except reaction if not used)
     // - Active: all on-turn options
     // - Ended: only reaction + legendary (+ legendary resistance if present)
+    // - Legendary Action ready: unlock Roll Attack + Cast only
 
     const setDisabled = (el, dis, title) => {
       if (!el) return;
@@ -3567,14 +3571,19 @@ function beginCombatantTurn(cb, ch) {
     };
     const lockMsg = lockedUntilStart ? 'Wait for DM Next Turn' : (turnEnded ? 'Turn ended — only Reaction / Legendary' : '');
 
-    // Turn economy buttons
+    // Turn economy buttons (main turn only)
     ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
      'cd-action-toggle',
-     'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local',
-     'cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'
+     'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local'
     ].forEach(id => {
       const el = panel.querySelector('#' + id);
       setDisabled(el, !allowMain, lockMsg);
+    });
+    // Attack / cast: allowed on active turn OR when Legendary Action is ready (off-turn)
+    ['cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'].forEach(id => {
+      const el = panel.querySelector('#' + id);
+      const allow = allowMain || allowLegendaryAct;
+      setDisabled(el, !allow, allowLegendaryAct ? 'Legendary Action — attack or cast' : lockMsg);
     });
     // DM can always adjust/reset action & weapon budgets
     ['cd-atk-dec','cd-atk-inc','cd-atk-reset','cd-act-dec','cd-act-inc','cd-act-reset'].forEach(id => {
@@ -3660,7 +3669,10 @@ function beginCombatantTurn(cb, ch) {
       if (board) board.insertBefore(banner, board.firstChild);
     }
     if (banner) {
-      if (lockedUntilStart) {
+      if (laReady) {
+        banner.textContent = 'Legendary Action ready — use Roll Attack or Cast a spell (does not use their normal turn Action).';
+        banner.className = 'turn-phase-banner ok small';
+      } else if (lockedUntilStart) {
         banner.textContent = 'Press Start turn before moving, acting, casting, or attacking.';
         banner.className = 'turn-phase-banner warn small';
       } else if (turnEnded) {
@@ -3670,6 +3682,16 @@ function beginCombatantTurn(cb, ch) {
         banner.textContent = 'Turn in progress — move, action, and bonus action are independent.';
         banner.className = 'turn-phase-banner ok small';
       }
+    }
+    // Re-assert attack button when LA is pending (phase lock must not leave it disabled)
+    if (laReady) {
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
+      try {
+        ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
+          var el = panel.querySelector('#' + id);
+          if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+        });
+      } catch (e) {}
     }
   }
 
@@ -11238,10 +11260,8 @@ function parseAttackLines(ch) {
         cb.legendaryActionsMax = max;
         // Grant one real action (attack or cast) — does not use their normal turn Action
         cb.legendaryActionReady = true;
-        // Ensure combat UI allows Roll Attack
-        if (!cb.turnPhase || cb.turnPhase === 'ready' || cb.turnPhase === 'ended') {
-          cb.turnPhase = 'legendary';
-        }
+        // Keep turnPhase as ended/ready/active — LA is independent; do not force 'legendary' only
+        // Flag is enough; phase locks unlock roll/cast when legendaryActionReady
         var left = max - cb.legendaryActionsUsed;
         var el = panel.querySelector('#cd-leg-left');
         if (el) el.textContent = String(left);
@@ -11250,9 +11270,15 @@ function parseAttackLines(ch) {
         try { appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action (' + left + '/' + max + ' left) — Attack or Cast available'); } catch (e) {}
         try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
         try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+        try { if (typeof applyCombatTurnPhaseLocks === 'function') applyCombatTurnPhaseLocks(panel, cb); } catch (e) {}
         try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
-        // Avoid full renderCombat() here — it can rebuild the panel and look like LA "reset"
-        toast('Legendary Action ready — Roll Attack or Cast (' + left + ' LA left after this)');
+        try {
+          ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
+            var el = panel.querySelector('#' + id);
+            if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+          });
+        } catch (e) {}
+        toast('Legendary Action ready — Roll Attack or Cast now (' + left + ' LA remaining in pool)');
       } catch (e) {}
     });
     panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
