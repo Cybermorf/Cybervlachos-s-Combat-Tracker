@@ -14406,11 +14406,40 @@ function escapeHtml(str) {
     if (!c) return;
     const combat = getCombat(c);
     const list = (combat && combat.combatants) || [];
-    const cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
-    if (!cb) return;
+    var cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+    // Fallback: match by name from selected option text
+    if (!cb && tokSel.selectedOptions && tokSel.selectedOptions[0]) {
+      var nm = tokSel.selectedOptions[0].textContent || '';
+      cb = list.find(function(x) { return x && x.name && nm.indexOf(x.name) === 0; });
+    }
+    if (!cb) {
+      try { if (typeof toast === 'function') toast('No combatant selected for size'); } catch (e) {}
+      return;
+    }
     const sz = sizeSel.value || 'Medium';
     cb.size = sz;
     cb.tokenSize = Number(typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1);
+    // Stamp size onto map token so paint always sees it
+    try {
+      var map = getCombatMap();
+      if (map) {
+        map.tokens = map.tokens || {};
+        var tid = String(cb.id != null ? cb.id : id);
+        var pos = map.tokens[tid] || map.tokens[cb.id];
+        if (!pos) {
+          // try any key matching combatant
+          Object.keys(map.tokens).forEach(function(k) {
+            if (!pos && (k === tid || k === String(cb.charId))) pos = map.tokens[k];
+          });
+        }
+        if (pos) {
+          pos.tokenSize = cb.tokenSize;
+          pos.size = cb.size;
+        } else {
+          try { if (typeof toast === 'function') toast('Place the token on the map first, then set size'); } catch (e) {}
+        }
+      }
+    } catch (e) {}
     // Keep size on linked source character if any
     try {
       var srcId = cb.sourceId || cb.charId;
@@ -14625,11 +14654,15 @@ function escapeHtml(str) {
     return 1;
   }
   /** Pixel radius for drawing/hit-test (circle fits footprint). */
-  function tokenRadiusForCombatant(map, cb, scale) {
+  function tokenRadiusForCombatant(map, cb, scale, pos) {
     const g = (Number(map && map.gridSize) || 70) * (scale || 1);
-    const sq = combatantTokenSquares(cb);
-    // Diameter fills most of the footprint (Large=2 cells → ~2x Medium)
-    return Math.max(8, g * sq * 0.48);
+    var sq = combatantTokenSquares(cb);
+    // Prefer size stamped on the token position (survives list mismatches)
+    if (pos && pos.tokenSize != null && !isNaN(Number(pos.tokenSize))) {
+      sq = Math.max(0.5, Math.min(8, Number(pos.tokenSize)));
+    }
+    // Fill nearly the full footprint so Large/Huge is obvious
+    return Math.max(10, g * sq * 0.5 * 0.92);
   }
   function findCombatantByTokenId(id) {
     try {
@@ -16020,8 +16053,8 @@ function escapeHtml(str) {
       const x = pos.x * scale, y = pos.y * scale;
       // Size footprint → radius (read-only; do not mutate combatant during paint)
       const r = typeof tokenRadiusForCombatant === 'function'
-        ? tokenRadiusForCombatant(map, cb, scale)
-        : Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35 * (Number(cb && cb.tokenSize) || 1));
+        ? tokenRadiusForCombatant(map, cb, scale, pos)
+        : Math.max(10, (Number(map.gridSize) || 70) * scale * 0.46 * (Number((pos && pos.tokenSize) || (cb && cb.tokenSize) || 1)));
       try {
         const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
         if (sq >= 2) {
@@ -16815,6 +16848,14 @@ function escapeHtml(str) {
     document.getElementById('map-token-size')?.addEventListener('change', () => {
       try { applyMapTokenSizeFromSelect(); } catch (e) {}
     });
+    if (!window.__mapTokenSizeDelegated) {
+      window.__mapTokenSizeDelegated = true;
+      document.addEventListener('change', function(ev) {
+        if (ev.target && ev.target.id === 'map-token-size') {
+          try { applyMapTokenSizeFromSelect(); } catch (e) {}
+        }
+      }, true);
+    }
     document.querySelectorAll('.map-fog-preset').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var n = parseInt(btn.getAttribute('data-brush'), 10) || 1;
@@ -16955,7 +16996,18 @@ function bindMapCanvasInteractions(force) {
           }
           if (!id) return;
           map.tokens = map.tokens || {};
-          map.tokens[id] = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
+          var placed = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x: x, y: y };
+          // Carry creature size onto the token so draw scale works even if list lookup fails
+          try {
+            var combat = getCombat(getActive());
+            var list = (combat && combat.combatants) || [];
+            var pcb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+            if (pcb) {
+              placed.tokenSize = pcb.tokenSize != null ? Number(pcb.tokenSize) : (typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(pcb.size || 'Medium') : 1);
+              placed.size = pcb.size || 'Medium';
+            }
+          } catch (e) {}
+          map.tokens[id] = placed;
           try { save(); } catch (e) {}
           try { broadcastTokenPositions('place'); } catch (e) {}
           paintNow();
