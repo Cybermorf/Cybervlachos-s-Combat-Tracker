@@ -8217,12 +8217,13 @@ function parseAttackLines(ch) {
     try { if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, null); } catch (e) {}
     const atkMaxGate = Math.max(1, Number(cb.attacksMax) || 1);
     const sessGate = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
-    if (sessGate >= atkMaxGate) {
+    // Legendary Action ready bypasses normal/session attack budget for one attack
+    if (sessGate >= atkMaxGate && !cb.legendaryActionReady) {
       try { toast('No weapon attacks left this turn (' + sessGate + '/' + atkMaxGate + ')'); } catch (e) {}
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
       return;
     }
-    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
+    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb) && !cb.legendaryActionReady) {
       try { toast('No actions / weapon attacks left this turn'); } catch (e) {}
       return;
     }
