@@ -2713,10 +2713,12 @@ function requestMapVideoFromPeers() {
       } catch (e) {}
       const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess, mirrorUsed);
       cb.attacksUsed = atkUsed;
-      const atkLeft = Math.max(0, atkMax - atkUsed);
+      // Legendary Action ready → show at least 1 attack available without rewriting turn budget
+      var atkLeft = Math.max(0, atkMax - atkUsed);
+      if (cb.legendaryActionReady) atkLeft = Math.max(atkLeft, 1);
       let actMax = Math.max(1, Number(cb.actionsMax) || 1);
       let actUsed = Math.max(Number(cb.actionsUsed) || 0, mirrorAct || 0);
-      if (atkUsed > 0 && actUsed < 1) {
+      if (!cb.legendaryActionReady && atkUsed > 0 && actUsed < 1) {
         actUsed = 1;
         cb.actionsUsed = 1;
         cb.actionUsed = true;
@@ -2848,8 +2850,11 @@ function requestMapVideoFromPeers() {
       cb.lastAction = label || ('Legendary Action (' + (kind || 'act') + ')');
       try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
       try {
-        appendSharedCombatLog((cb.name || 'NPC') + ' takes a Legendary Action' + (label ? (': ' + label) : ''));
+        appendSharedCombatLog((cb.name || 'NPC') + ' takes a Legendary Action' + (label ? (': ' + label) : '') +
+          ' (' + Math.max(0, (Number(cb.legendaryActionsMax)||3) - (Number(cb.legendaryActionsUsed)||0)) + ' LA left)');
       } catch (e) {}
+      try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
       try { toast('Legendary Action resolved'); } catch (e) {}
       return true;
     }
@@ -2986,10 +2991,13 @@ function beginCombatantTurn(cb, ch) {
       var isLeg = !!(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || (cb.side && /enemy|villain/i.test(String(cb.side))));
       if (isLeg && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
         var lr = cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistance;
-        // Refresh legendary action pool each of their turns
+        // Refresh legendary action pool at the START of this creature's turn only (5e rules)
         if (cb.legendaryActionsMax == null) cb.legendaryActionsMax = 3;
         cb.legendaryActionsUsed = 0;
-        toast((cb.name || 'NPC') + ' — legendary actions available (' + cb.legendaryActionsMax + ') ' + (lr != null ? (' · LR ' + lr) : ''));
+        cb.legendaryActionReady = false;
+        cb.legendaryActionsLeft = cb.legendaryActionsMax;
+        try { appendSharedCombatLog((cb.name || 'NPC') + ' regains Legendary Actions (' + cb.legendaryActionsMax + ')'); } catch (e) {}
+        toast((cb.name || 'NPC') + ' — legendary actions available (' + cb.legendaryActionsMax + ')' + (lr != null ? (' · LR ' + lr) : ''));
       }
     } catch (e) {}
     // Recalculate Extra Attack budget every turn start (fixes DM 2/2 vs player 3/3)
@@ -11240,9 +11248,11 @@ function parseAttackLines(ch) {
         try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (err) {}
         try { save(); } catch (err) {}
         try { appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action (' + left + '/' + max + ' left) — Attack or Cast available'); } catch (e) {}
+        try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+        try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
         try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
-        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
-        toast('Legendary Action ready — Roll Attack or Cast a spell');
+        // Avoid full renderCombat() here — it can rebuild the panel and look like LA "reset"
+        toast('Legendary Action ready — Roll Attack or Cast (' + left + ' LA left after this)');
       } catch (e) {}
     });
     panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
@@ -13295,17 +13305,7 @@ function parseAttackLines(ch) {
       combat.round = (combat.round || 1) + 1;
       try { appendSharedCombatLog('— Round ' + combat.round + ' —'); } catch (e) {}
       tickConditionDurations(combat);
-      // Refresh legendary actions budget each round (NOT legendary resistances — those are /day)
-      combat.combatants.forEach(cb => {
-        if (cb.legendary || cb.legendaryActionsMax || (cb.legendaryActions && cb.legendaryActions.length)) {
-          const max = cb.legendaryActionsMax != null ? cb.legendaryActionsMax
-            : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3);
-          cb.legendaryActionsMax = max;
-          cb.legendaryActionsLeft = max;
-          cb.legendaryActionsUsed = 0;
-        }
-        // Do not reset legendaryResist here
-      });
+      // Legendary actions refresh on THAT creature's turn start (beginCombatantTurn), not for everyone at round change
     }
     const cur = combat.combatants[combat.turnIndex];
     if (cur) {
