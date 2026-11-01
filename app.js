@@ -991,7 +991,58 @@
   }
 
   
-  function revealFogAroundSelectedToken() {
+  
+  function loadL20TestRoster() {
+    var c = getActive();
+    if (!c) { toast('No active workspace'); return; }
+    if (!c.combat) c.combat = { combatants: [], round: 1, turnIndex: 0, selectedIndex: 0 };
+    var mk = function(name, side, opts) {
+      opts = opts || {};
+      var row = {
+        id: (typeof uid === 'function' ? uid() : ('t' + Math.random().toString(36).slice(2, 9))),
+        name: name,
+        side: side,
+        init: opts.init != null ? opts.init : 10,
+        hp: opts.hp || 100,
+        hpMax: opts.hpMax || opts.hp || 100,
+        ac: opts.ac || 16,
+        size: opts.size || 'Medium',
+        tokenSize: opts.tokenSize != null ? opts.tokenSize : (typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(opts.size || 'Medium') : 1),
+        conditions: opts.conditions || '',
+        legendary: !!opts.legendary,
+        legendaryActionsMax: opts.legendary ? (opts.legendaryActionsMax || 3) : null,
+        legendaryActionsUsed: 0,
+        legendaryResist: opts.legendaryResist != null ? opts.legendaryResist : (opts.legendary ? 3 : null),
+        legendaryResistMax: opts.legendary ? 3 : null,
+        attacksMax: opts.attacksMax || 1,
+        attacksUsed: 0,
+        reactionUsed: false,
+        actionUsed: false,
+        turnPhase: 'ready',
+        speed: opts.speed || 30
+      };
+      return row;
+    };
+    var list = [
+      mk('Garrick Spellblade', 'party', { init: 18, hp: 150, hpMax: 168, ac: 18, attacksMax: 3 }),
+      mk('Selene of the Pale Path', 'party', { init: 15, hp: 134, hpMax: 134, ac: 17, size: 'Small', tokenSize: 1 }),
+      mk('Thornroot', 'party', { init: 12, hp: 120, hpMax: 120, ac: 16 }),
+      mk('Archlich Mourne', 'enemy', { init: 14, hp: 200, hpMax: 200, ac: 19, size: 'Medium', legendary: true, legendaryResist: 3 }),
+      mk('Vanishing Archive Colossus', 'enemy', { init: 8, hp: 280, hpMax: 280, ac: 18, size: 'Gargantuan', tokenSize: 4, legendary: true })
+    ];
+    c.combat.combatants = list;
+    c.combat.round = 1;
+    c.combat.turnIndex = 0;
+    c.combat.selectedIndex = 0;
+    c.combat.sharedLog = c.combat.sharedLog || [];
+    try { appendSharedCombatLog('L20 test roster loaded (' + list.length + ' combatants)'); } catch (e) {}
+    try { save(); } catch (e) {}
+    try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+    toast('L20 test roster loaded — place tokens on the map');
+  }
+
+function revealFogAroundSelectedToken() {
     try {
       var map = getCombatMap();
       if (!map) { toast('No map'); return; }
@@ -1031,6 +1082,49 @@
       try { paintMapFrame(); } catch (e) {}
       try { renderBattleMap(); } catch (e) {}
       toast('Revealed ~' + ft + ' ft around token (' + revealed + ' new cells)');
+    } catch (e) { console.warn(e); }
+  }
+
+  function revealFogAroundAllPcs() {
+    try {
+      var map = getCombatMap();
+      if (!map) { toast('No map'); return; }
+      var combat = getCombat(getActive());
+      var list = (combat && combat.combatants) || [];
+      var ftEl = document.getElementById('map-vision-ft');
+      var ft = parseInt(ftEl && ftEl.value, 10) || 30;
+      var g = Number(map.gridSize) || 70;
+      var cells = Math.max(1, Math.round(ft / 5));
+      ensureMapFog(map);
+      map.fogEnabled = true;
+      var ox = Number(map.gridOffsetX) || 0;
+      var oy = Number(map.gridOffsetY) || 0;
+      var total = 0;
+      var count = 0;
+      list.forEach(function(cb) {
+        var side = String(cb.side || '').toLowerCase();
+        if (side === 'enemy' || side === 'villain') return;
+        var id = String(cb.id);
+        var pos = map.tokens && (map.tokens[id] || map.tokens[cb.id]);
+        if (!pos) return;
+        count++;
+        var cx = Math.floor((pos.x - ox) / g);
+        var cy = Math.floor((pos.y - oy) / g);
+        for (var dy = -cells; dy <= cells; dy++) {
+          for (var dx = -cells; dx <= cells; dx++) {
+            if (dx * dx + dy * dy > cells * cells) continue;
+            var key = (cx + dx) + ',' + (cy + dy);
+            if (!map.fogRevealed[key]) total++;
+            map.fogRevealed[key] = true;
+          }
+        }
+      });
+      if (!count) { toast('No PC tokens on map'); return; }
+      try { save(); } catch (e) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('fog-vision-pcs'); } catch (e) {}
+      try { paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('Revealed ~' + ft + ' ft around ' + count + ' PC(s) (' + total + ' new cells)');
     } catch (e) { console.warn(e); }
   }
 
@@ -2874,7 +2968,10 @@ function beginCombatantTurn(cb, ch) {
       var isLeg = !!(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || (cb.side && /enemy|villain/i.test(String(cb.side))));
       if (isLeg && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
         var lr = cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistance;
-        toast((cb.name || 'NPC') + ' — legendary actions available' + (lr != null ? (' · LR ' + lr) : ''));
+        // Refresh legendary action pool each of their turns
+        if (cb.legendaryActionsMax == null) cb.legendaryActionsMax = 3;
+        cb.legendaryActionsUsed = 0;
+        toast((cb.name || 'NPC') + ' — legendary actions available (' + cb.legendaryActionsMax + ') ' + (lr != null ? (' · LR ' + lr) : ''));
       }
     } catch (e) {}
     // Recalculate Extra Attack budget every turn start (fixes DM 2/2 vs player 3/3)
@@ -7586,6 +7683,13 @@ function parseAttackLines(ch) {
     }
     const impBtn = document.querySelector('#roster-import-btn');
     const impFile = document.querySelector('#roster-import-file');
+    const l20Btn = document.querySelector('#roster-l20-test-btn');
+    if (l20Btn && !l20Btn.dataset.wired) {
+      l20Btn.dataset.wired = '1';
+      l20Btn.addEventListener('click', function() {
+        try { loadL20TestRoster(); } catch (e) { console.warn(e); toast('L20 test roster failed'); }
+      });
+    }
     if (impBtn && impFile && !impBtn.dataset.wired) {
       impBtn.dataset.wired = '1';
       impBtn.addEventListener('click', function() { impFile.click(); });
@@ -7743,7 +7847,11 @@ function parseAttackLines(ch) {
       bonusActions: n.bonusActions || [],
       reactions: n.reactions || [],
       legendaryActions: n.legendaryActions || ch.legendaryActions || [],
-      legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')),
+      legendaryActionsMax: (n.legendaryActionsMax != null ? Number(n.legendaryActionsMax)
+        : (ch.legendaryActionsMax != null ? Number(ch.legendaryActionsMax)
+        : ((n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')) ? 3 : null))),
+      legendaryActionsUsed: Number(n.legendaryActionsUsed != null ? n.legendaryActionsUsed : ch.legendaryActionsUsed) || 0,
+      legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain') || (n.legendaryActions && n.legendaryActions.length) || (ch.legendaryActions && ch.legendaryActions.length)),
       // normalizeCharacter historically dropped these — always prefer raw roster values
       size: (n.size || ch.size || 'Medium'),
       tokenSize: (n.tokenSize != null ? n.tokenSize : (ch.tokenSize != null ? ch.tokenSize : sizeToTokenSquares(n.size || ch.size || 'Medium'))),
@@ -8955,6 +9063,14 @@ function parseAttackLines(ch) {
       left -= absorb;
     }
     target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+    // Reaction window: target still has reaction and took damage
+    try {
+      if (left > 0 && !target.reactionUsed && target.hp > 0) {
+        if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          toast('Reaction available: ' + (target.name || 'target') + '?');
+        }
+      }
+    } catch (e) {}
     // Concentration
     if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
       try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) { console.warn(e); }
@@ -10362,9 +10478,42 @@ function parseAttackLines(ch) {
           ${typeof combatSpellSlotsHtml === 'function' ? combatSpellSlotsHtml(cb) : ''}
           <div class="detail-block">
             <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
+            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.3rem;align-items:center">
+              <select id="cd-status-lib" style="min-width:8rem">
+                <option value="">Add status…</option>
+                <option value="Blinded">Blinded</option>
+                <option value="Charmed">Charmed</option>
+                <option value="Deafened">Deafened</option>
+                <option value="Frightened">Frightened</option>
+                <option value="Grappled">Grappled</option>
+                <option value="Incapacitated">Incapacitated</option>
+                <option value="Invisible">Invisible</option>
+                <option value="Paralyzed">Paralyzed</option>
+                <option value="Petrified">Petrified</option>
+                <option value="Poisoned">Poisoned</option>
+                <option value="Prone">Prone</option>
+                <option value="Restrained">Restrained</option>
+                <option value="Stunned">Stunned</option>
+                <option value="Unconscious">Unconscious</option>
+                <option value="Blessed">Blessed</option>
+                <option value="Hasted">Hasted</option>
+                <option value="Raging">Raging</option>
+              </select>
+              <label class="muted small">Rounds <input type="number" id="cd-status-rounds" min="1" max="20" value="1" style="width:3rem"></label>
+              <button type="button" class="btn secondary btn-tiny" id="cd-status-add">Add</button>
+            </div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
             ${(cb.legendaryResistMax != null || cb.legendaryResist != null || cb.legendary) ? `<div class="muted small" style="margin-top:0.25rem">Legendary Resistance: <strong>${Number(cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) || 0}</strong> / ${Number(cb.legendaryResistMax != null ? cb.legendaryResistMax : cb.legendaryResist) || 0}</div>` : ''}
+            ${(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || cb.legendaryActionsMax != null) ? (() => {
+              const max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
+              const used = Number(cb.legendaryActionsUsed) || 0;
+              const left = Math.max(0, max - used);
+              return `<div class="muted small" style="margin-top:0.25rem">Legendary Actions: <strong id="cd-leg-left">${left}</strong> / ${max}
+                <button type="button" class="btn ghost btn-tiny" id="cd-leg-use" title="Spend one legendary action">Use</button>
+                <button type="button" class="btn ghost btn-tiny" id="cd-leg-reset" title="Reset to full">Reset</button>
+              </div>`;
+            })() : ''}
             <div class="field" style="margin-top:0.4rem">
               <label>Creature size (token footprint)</label>
               <select id="cd-token-size" ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? 'disabled' : ''}>
@@ -11030,6 +11179,50 @@ function parseAttackLines(ch) {
     panel.querySelector('#cd-conditions')?.addEventListener('change', (e) => {
       cb.conditions = e.target.value;
       try { save(); } catch (err) {}
+    });
+    panel.querySelector('#cd-status-add')?.addEventListener('click', () => {
+      try {
+        var lib = panel.querySelector('#cd-status-lib');
+        var roundsEl = panel.querySelector('#cd-status-rounds');
+        var name = lib && lib.value;
+        if (!name) { toast('Pick a status'); return; }
+        var rounds = parseInt(roundsEl && roundsEl.value, 10) || 1;
+        var piece = name + ' (' + rounds + ')';
+        var cur = (cb.conditions || '').trim();
+        cb.conditions = cur ? (cur.replace(/;\s*$/, '') + '; ' + piece) : piece;
+        var inp = panel.querySelector('#cd-conditions');
+        if (inp) inp.value = cb.conditions;
+        if (lib) lib.value = '';
+        try { save(); } catch (err) {}
+        try { appendSharedCombatLog((cb.name || 'Combatant') + ' gains ' + piece); } catch (e) {}
+        toast(piece + ' added');
+      } catch (e) { console.warn(e); }
+    });
+    panel.querySelector('#cd-leg-use')?.addEventListener('click', () => {
+      try {
+        var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
+        var used = Number(cb.legendaryActionsUsed) || 0;
+        if (used >= max) { toast('No legendary actions left'); return; }
+        cb.legendaryActionsUsed = used + 1;
+        cb.legendaryActionsMax = max;
+        var left = max - cb.legendaryActionsUsed;
+        var el = panel.querySelector('#cd-leg-left');
+        if (el) el.textContent = String(left);
+        try { save(); } catch (err) {}
+        try { appendSharedCombatLog((cb.name || 'NPC') + ' uses a Legendary Action (' + left + '/' + max + ' left)'); } catch (e) {}
+        toast('Legendary Action used (' + left + ' left)');
+      } catch (e) {}
+    });
+    panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
+      try {
+        var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
+        cb.legendaryActionsUsed = 0;
+        cb.legendaryActionsMax = max;
+        var el = panel.querySelector('#cd-leg-left');
+        if (el) el.textContent = String(max);
+        try { save(); } catch (err) {}
+        toast('Legendary Actions reset');
+      } catch (e) {}
     });
     panel.querySelector('#cd-token-size')?.addEventListener('change', (e) => {
       const sz = e.target.value || 'Medium';
@@ -14728,6 +14921,61 @@ function escapeHtml(str) {
         try { centerMapOnCombatant(id); } catch (err) {}
       });
     });
+    try { renderMapInitStrip(); } catch (e) {}
+  }
+
+  function renderMapInitStrip() {
+    var el = document.getElementById('map-init-strip');
+    if (!el) return;
+    var c = getActive();
+    var combat = c ? getCombat(c) : null;
+    var list = (combat && combat.combatants) ? combat.combatants.slice() : [];
+    if (!list.length) {
+      el.innerHTML = '';
+      el.style.display = 'none';
+      return;
+    }
+    list.sort(function(a, b) {
+      var ia = Number(a.init != null ? a.init : a.initiative);
+      var ib = Number(b.init != null ? b.init : b.initiative);
+      if (isNaN(ia)) ia = -99;
+      if (isNaN(ib)) ib = -99;
+      return ib - ia;
+    });
+    var cur = combat.current != null ? combat.current : combat.turnIndex;
+    var curId = null;
+    try {
+      if (typeof cur === 'number' && list[cur]) curId = list[cur].id;
+      else if (combat.combatants && combat.combatants[combat.turnIndex]) curId = combat.combatants[combat.turnIndex].id;
+    } catch (e) {}
+    // Prefer combat.combatants order for "current" marker by matching turnPhase active
+    var active = (combat.combatants || []).find(function(x) { return x && x.turnPhase === 'active'; });
+    if (active) curId = active.id;
+    el.style.display = 'flex';
+    el.style.flexWrap = 'wrap';
+    el.style.gap = '0.25rem';
+    el.style.padding = '0.35rem 0.4rem';
+    el.style.borderBottom = '1px solid rgba(196,163,90,0.25)';
+    el.style.fontSize = '0.72rem';
+    el.innerHTML = list.map(function(cb) {
+      var init = cb.init != null ? cb.init : (cb.initiative != null ? cb.initiative : '—');
+      var side = String(cb.side || '').toLowerCase();
+      var col = (side === 'enemy' || side === 'villain') ? '#c45' : (side === 'ally' ? '#6a8' : '#c4a35a');
+      var on = String(cb.id) === String(curId);
+      var name = (cb.name || '?');
+      if (name.length > 12) name = name.slice(0, 11) + '…';
+      return '<button type="button" class="btn ghost btn-tiny map-init-chip" data-id="' +
+        (typeof escapeAttr === 'function' ? escapeAttr(String(cb.id)) : String(cb.id)) +
+        '" style="border-color:' + col + ';' + (on ? 'background:rgba(196,163,90,0.25);font-weight:700;' : '') +
+        '">' + init + ' · ' + (typeof escapeHtml === 'function' ? escapeHtml(name) : name) + '</button>';
+    }).join('');
+    el.querySelectorAll('.map-init-chip').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        try { selectCombatantById(btn.getAttribute('data-id')); } catch (e) {}
+        try { centerMapOnCombatant(btn.getAttribute('data-id')); } catch (e) {}
+        try { renderMapRoster(); } catch (e) {}
+      });
+    });
   }
 
 
@@ -16033,6 +16281,25 @@ function escapeHtml(str) {
       console.error(e);
       body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
     }
+    // Ping from player combat panel
+    try {
+      if (!body.querySelector('#pc-map-ping')) {
+        var pingRow = document.createElement('div');
+        pingRow.style.cssText = 'margin:0.4rem 0;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center';
+        pingRow.innerHTML = '<button type="button" class="btn secondary btn-tiny" id="pc-map-ping" title="Ping your token on the map">Ping my token</button>';
+        body.insertBefore(pingRow, body.firstChild);
+        pingRow.querySelector('#pc-map-ping').addEventListener('click', function() {
+          try {
+            var map = getCombatMap();
+            if (!map || !map.tokens) { toast('No map'); return; }
+            var pos = map.tokens[String(me.id)] || map.tokens[me.id];
+            if (!pos) { toast('Your token is not on the map'); return; }
+            broadcastMapPing(pos.x, pos.y);
+            toast('Ping sent');
+          } catch (err) { console.warn(err); }
+        });
+      }
+    } catch (e) {}
     try { applyRollAttackButtonState(body, me); } catch (e) {}
     try { restorePlayerRollResult(me); } catch (e) {}
     try {
@@ -17054,6 +17321,9 @@ function escapeHtml(str) {
     }
     document.getElementById('map-reveal-token')?.addEventListener('click', function() {
       try { revealFogAroundSelectedToken(); } catch (e) { console.warn(e); }
+    });
+    document.getElementById('map-reveal-pcs')?.addEventListener('click', function() {
+      try { revealFogAroundAllPcs(); } catch (e) { console.warn(e); }
     });
     if (!window.__clogFilterBound) {
       window.__clogFilterBound = true;

@@ -341,6 +341,7 @@
           <button type="button" class="btn secondary" id="map-fog-hide" title="Hide fog brush">Hide</button>
           <button type="button" class="btn ghost" id="map-fog-reset" title="Cover all">Fog all</button>
           <button type="button" class="btn ghost" id="map-reveal-token" title="Reveal fog around selected token">Reveal around token</button>
+          <button type="button" class="btn ghost" id="map-reveal-pcs" title="Reveal fog around all PC tokens">Reveal around PCs</button>
           <label class="muted small">Vision <input type="number" id="map-vision-ft" min="5" max="120" step="5" value="30" style="width:3.5rem" title="Reveal radius in feet"></label>
           <label class="muted small">Brush <input type="number" id="map-fog-brush" min="1" max="8" value="1" style="width:3rem"></label>
           <span class="muted small" style="display:inline-flex;gap:0.25rem;align-items:center">
@@ -360,6 +361,7 @@
               <strong>Combatants</strong>
               <button type="button" class="btn secondary btn-tiny" id="map-snap-all" title="Snap all tokens to grid centers">Snap all</button>
             </div>
+            <div id="map-init-strip" class="map-init-strip" title="Initiative order"></div>
             <div class="map-roster-list" id="map-roster-list">
               <p class="muted small">Add combatants in Combat, then place them here.</p>
             </div>
@@ -390,6 +392,7 @@
           <div class="tool-btns" style="flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem">
             <button type="button" class="btn primary" id="roster-export-btn">Export Roster JSON</button>
             <button type="button" class="btn secondary" id="roster-import-btn">Import Roster JSON</button>
+            <button type="button" class="btn secondary" id="roster-l20-test-btn" title="Load a small regression combat roster">Load L20 test roster</button>
             <input type="file" id="roster-import-file" accept=".json,application/json" hidden />
             <label class="muted small" style="display:flex;align-items:center;gap:0.35rem">
               Mode
