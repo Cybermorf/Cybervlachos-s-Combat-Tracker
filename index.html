@@ -204,7 +204,13 @@
         <div class="card combat-log-panel" style="margin-bottom:0.75rem;padding:0.6rem 0.75rem">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;margin-bottom:0.35rem">
             <strong style="color:var(--gold,#c4a35a)">Combat Log</strong>
-            <button type="button" class="btn ghost small" id="combat-log-clear" title="Clear shared log">Clear log</button>
+            <span style="display:inline-flex;gap:0.25rem;flex-wrap:wrap;align-items:center">
+              <button type="button" class="btn ghost small clog-filter active" data-filter="all">All</button>
+              <button type="button" class="btn ghost small clog-filter" data-filter="attack">Attacks</button>
+              <button type="button" class="btn ghost small clog-filter" data-filter="concentration">Concentration</button>
+              <button type="button" class="btn ghost small clog-filter" data-filter="turn">Turns</button>
+              <button type="button" class="btn ghost small" id="combat-log-clear" title="Clear shared log">Clear log</button>
+            </span>
           </div>
           <div id="combat-shared-log" class="combat-shared-log"></div>
         </div>
@@ -301,6 +307,7 @@
               <option value="aoe-line">AoE: Line</option>
               <option value="aoe-cube">AoE: Cube / square</option>
               <option value="ruler">Ruler / range</option>
+              <option value="ping">Ping / pointer</option>
               <option value="grid-offset">Adjust grid (drag)</option>
               <option value="fog-reveal">Fog: Reveal</option>
               <option value="fog-hide">Fog: Hide</option>
@@ -333,6 +340,8 @@
           <button type="button" class="btn secondary" id="map-fog-reveal" title="Reveal fog brush">Reveal</button>
           <button type="button" class="btn secondary" id="map-fog-hide" title="Hide fog brush">Hide</button>
           <button type="button" class="btn ghost" id="map-fog-reset" title="Cover all">Fog all</button>
+          <button type="button" class="btn ghost" id="map-reveal-token" title="Reveal fog around selected token">Reveal around token</button>
+          <label class="muted small">Vision <input type="number" id="map-vision-ft" min="5" max="120" step="5" value="30" style="width:3.5rem" title="Reveal radius in feet"></label>
           <label class="muted small">Brush <input type="number" id="map-fog-brush" min="1" max="8" value="1" style="width:3rem"></label>
           <span class="muted small" style="display:inline-flex;gap:0.25rem;align-items:center">
             <button type="button" class="btn ghost btn-tiny map-fog-preset" data-brush="1" title="Fine brush">1</button>

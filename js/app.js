@@ -990,7 +990,112 @@
     }
   }
 
-  function requestMapVideoFromPeers() {
+  
+  function revealFogAroundSelectedToken() {
+    try {
+      var map = getCombatMap();
+      if (!map) { toast('No map'); return; }
+      var sel = document.getElementById('map-token-combatant');
+      var id = sel && sel.value;
+      if (!id) {
+        try {
+          var combat = getCombat(getActive());
+          var cur = combat && combat.combatants && combat.combatants[combat.selectedIndex];
+          if (cur) id = String(cur.id != null ? cur.id : combat.selectedIndex);
+        } catch (e) {}
+      }
+      if (!id) { toast('Select a token first'); return; }
+      var pos = map.tokens && (map.tokens[id] || map.tokens[String(id)]);
+      if (!pos) { toast('Token not on map'); return; }
+      var ftEl = document.getElementById('map-vision-ft');
+      var ft = parseInt(ftEl && ftEl.value, 10) || 30;
+      var g = Number(map.gridSize) || 70;
+      var cells = Math.max(1, Math.round(ft / 5));
+      ensureMapFog(map);
+      map.fogEnabled = true;
+      var ox = Number(map.gridOffsetX) || 0;
+      var oy = Number(map.gridOffsetY) || 0;
+      var cx = Math.floor((pos.x - ox) / g);
+      var cy = Math.floor((pos.y - oy) / g);
+      var revealed = 0;
+      for (var dy = -cells; dy <= cells; dy++) {
+        for (var dx = -cells; dx <= cells; dx++) {
+          if (dx * dx + dy * dy > cells * cells) continue;
+          var key = (cx + dx) + ',' + (cy + dy);
+          if (!map.fogRevealed[key]) revealed++;
+          map.fogRevealed[key] = true;
+        }
+      }
+      try { save(); } catch (e) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('fog-vision'); } catch (e) {}
+      try { paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('Revealed ~' + ft + ' ft around token (' + revealed + ' new cells)');
+    } catch (e) { console.warn(e); }
+  }
+
+  function mapPingAt(wx, wy, fromName) {
+    try {
+      window.__mapPings = window.__mapPings || [];
+      window.__mapPings.push({ x: wx, y: wy, at: Date.now(), name: fromName || '' });
+      // Keep last few
+      window.__mapPings = window.__mapPings.filter(function(p) { return Date.now() - p.at < 2500; });
+      try { paintMapFrame(); } catch (e) {}
+      // Animate a couple redraws
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 400);
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 900);
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 1600);
+    } catch (e) {}
+  }
+
+  function broadcastMapPing(wx, wy) {
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      var name = '';
+      try {
+        var cb = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        name = (cb && cb.name) || (typeof isPlayerRole === 'function' && isPlayerRole() ? 'Player' : 'DM');
+      } catch (e) {}
+      if (ch) ch.postMessage({ type: 'vtt-map-ping', x: wx, y: wy, name: name, at: Date.now() });
+      try {
+        localStorage.setItem('cybervlachos_vtt_ping', JSON.stringify({ type: 'vtt-map-ping', x: wx, y: wy, name: name, at: Date.now() }));
+      } catch (e) {}
+      mapPingAt(wx, wy, name);
+    } catch (e) {}
+  }
+
+  function setupMapPingBridge() {
+    if (window.__mapPingBridgeBound) return;
+    window.__mapPingBridgeBound = true;
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) {
+        ch.addEventListener('message', function(ev) {
+          var msg = ev && ev.data;
+          if (msg && msg.type === 'vtt-map-ping') {
+            mapPingAt(msg.x, msg.y, msg.name);
+          }
+          if (msg && msg.type === 'vtt-player-hello') {
+            try {
+              if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+                toast((msg.name || 'Player') + ' joined room ' + (msg.room || ''));
+              }
+            } catch (e) {}
+          }
+        });
+      }
+    } catch (e) {}
+    window.addEventListener('storage', function(ev) {
+      if (ev.key === 'cybervlachos_vtt_ping' && ev.newValue) {
+        try {
+          var msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-map-ping') mapPingAt(msg.x, msg.y, msg.name);
+        } catch (e) {}
+      }
+    });
+  }
+
+function requestMapVideoFromPeers() {
     try {
       setupMapVideoBridge();
       var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
@@ -2751,6 +2856,27 @@ function beginCombatantTurn(cb, ch) {
     cb.attacksUsed = 0;
     cb.moveUsed = 0;
     cb.actionsUsed = 0;
+    // Tick down timed conditions like "Poisoned (2)" → "Poisoned (1)"
+    try {
+      if (cb.conditions && typeof cb.conditions === 'string') {
+        cb.conditions = cb.conditions.replace(/\b([A-Za-z][\w\s-]*?)\s*\((\d+)\)/g, function(_, name, n) {
+          var left = parseInt(n, 10) - 1;
+          if (left <= 0) {
+            try { appendSharedCombatLog((cb.name || 'Combatant') + ': ' + name.trim() + ' ended'); } catch (e) {}
+            return '';
+          }
+          return name.trim() + ' (' + left + ')';
+        }).replace(/;\s*;/g, ';').replace(/^;\s*|;\s*$/g, '').trim();
+      }
+    } catch (e) {}
+    // Legendary action reminder for villains/NPCs
+    try {
+      var isLeg = !!(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || (cb.side && /enemy|villain/i.test(String(cb.side))));
+      if (isLeg && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+        var lr = cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistance;
+        toast((cb.name || 'NPC') + ' — legendary actions available' + (lr != null ? (' · LR ' + lr) : ''));
+      }
+    } catch (e) {}
     // Recalculate Extra Attack budget every turn start (fixes DM 2/2 vs player 3/3)
     try {
       if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch);
@@ -9521,7 +9647,20 @@ function parseAttackLines(ch) {
   function renderSharedCombatLog() {
     const lines = getSharedCombatLog();
     const facing = (typeof isPlayerFacingView === 'function') ? isPlayerFacingView() : (typeof isPlayerRole === 'function' && isPlayerRole());
-    const visible = facing ? lines.filter(sharedLogEntryVisible) : lines;
+    var visible = facing ? lines.filter(sharedLogEntryVisible) : lines;
+    // DM log filters
+    try {
+      var filt = window.__clogFilter || 'all';
+      if (filt && filt !== 'all') {
+        visible = visible.filter(function(l) {
+          var s = (typeof formatSharedLogEntry === 'function' ? formatSharedLogEntry(l) : (l && l.text) || String(l || '')).toLowerCase();
+          if (filt === 'attack') return /damage|attack|hit|miss|heal|crit/.test(s);
+          if (filt === 'concentration') return /concentration|concentrat/.test(s);
+          if (filt === 'turn') return /start turn|end turn|round/.test(s);
+          return true;
+        });
+      }
+    } catch (e) {}
     const htmlLines = visible.slice(-40).map(l => {
       const s = formatSharedLogEntry(l);
       return '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(s) : s) + '</div>';
@@ -13761,6 +13900,7 @@ function escapeHtml(str) {
     try {
       restoreMapImagesAfterLoad().then(() => {
         try { setupMapVideoBridge(); } catch (e) {}
+        try { setupMapPingBridge(); } catch (e) {}
         try {
           if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
           else if (typeof initBattleMapUi === 'function') initBattleMapUi();
@@ -14012,6 +14152,19 @@ function escapeHtml(str) {
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
     try { setupMapVideoBridge(); } catch (e) {}
+    try { setupMapPingBridge(); } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        var room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+        var nm = 'Player';
+        try {
+          var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          if (claimed && claimed.name) nm = claimed.name;
+        } catch (e) {}
+        if (ch) ch.postMessage({ type: 'vtt-player-hello', name: nm, room: room, at: Date.now() });
+      }
+    } catch (e) {}
     try {
       var tries = 0;
       var kickVideo = function() {
@@ -16008,6 +16161,37 @@ function escapeHtml(str) {
       }
     }
 
+
+    // Map pings / pointers
+    try {
+      var pings = window.__mapPings || [];
+      var now = Date.now();
+      pings = pings.filter(function(p) { return now - p.at < 2200; });
+      window.__mapPings = pings;
+      pings.forEach(function(p) {
+        var age = (now - p.at) / 2200;
+        var px = p.x * scale, py = p.y * scale;
+        var rad = 12 + age * 48;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 220, 80,' + (1 - age).toFixed(2) + ')';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(px, py, rad, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 220, 80,' + (1 - age * 0.5).toFixed(2) + ')';
+        ctx.fill();
+        if (p.name) {
+          ctx.font = '600 11px system-ui,sans-serif';
+          ctx.fillStyle = 'rgba(255,240,180,' + (1 - age).toFixed(2) + ')';
+          ctx.textAlign = 'center';
+          ctx.fillText(String(p.name), px, py - rad - 6);
+        }
+        ctx.restore();
+      });
+    } catch (e) {}
+
     // walls
     if (map.walls && map.walls.length) {
       ctx.strokeStyle = 'rgba(255,80,80,0.55)';
@@ -16157,6 +16341,18 @@ function escapeHtml(str) {
       ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#efe6d6';
       ctx.fillText(label, x, ly + 1);
+      // Size badge for non-Medium creatures
+      try {
+        var sqBadge = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        if (pos && pos.tokenSize != null) sqBadge = Math.max(sqBadge, Number(pos.tokenSize) || 1);
+        var sizeNm = (pos && pos.size) || cb.size || '';
+        if (sqBadge > 1 || (sizeNm && !/^medium$/i.test(String(sizeNm)))) {
+          ctx.font = '600 9px system-ui,sans-serif';
+          ctx.fillStyle = '#e8c878';
+          ctx.fillText(String(sizeNm || ('×' + sqBadge)), x, ly + lh + 1);
+          ly += 11;
+        }
+      } catch (e) {}
       if (cb.concentrating) {
         ctx.font = '600 9px system-ui,sans-serif';
         ctx.fillStyle = '#9ec9ff';
@@ -16856,6 +17052,21 @@ function escapeHtml(str) {
         }
       }, true);
     }
+    document.getElementById('map-reveal-token')?.addEventListener('click', function() {
+      try { revealFogAroundSelectedToken(); } catch (e) { console.warn(e); }
+    });
+    if (!window.__clogFilterBound) {
+      window.__clogFilterBound = true;
+      document.addEventListener('click', function(ev) {
+        var btn = ev.target && ev.target.closest && ev.target.closest('.clog-filter');
+        if (!btn) return;
+        window.__clogFilter = btn.getAttribute('data-filter') || 'all';
+        document.querySelectorAll('.clog-filter').forEach(function(b) {
+          b.classList.toggle('active', b === btn);
+        });
+        try { renderSharedCombatLog(); } catch (e) {}
+      });
+    }
     document.querySelectorAll('.map-fog-preset').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var n = parseInt(btn.getAttribute('data-brush'), 10) || 1;
@@ -16967,6 +17178,10 @@ function bindMapCanvasInteractions(force) {
         map.aoe = { x: x, y: y, ft: ft, shape: shape, angle: -Math.PI / 2 };
         window.__aoeDrag = { startX: x, startY: y, shape: shape };
         paintNow();
+        return;
+      }
+      if (tool === 'ping') {
+        try { broadcastMapPing(x, y); } catch (e) {}
         return;
       }
 
