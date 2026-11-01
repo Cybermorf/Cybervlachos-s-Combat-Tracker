@@ -944,6 +944,29 @@
     }
   }
 
+  /** Popouts lose blob: URLs — reload video from IndexedDB for the active workspace. */
+  async function ensureActiveMapVideo() {
+    try {
+      const c = typeof getActive === 'function' ? getActive() : null;
+      if (!c || !c.combatMap) return false;
+      const map = c.combatMap;
+      if (map.videoObjectUrl) return true;
+      if (!(map.hasVideoInIdb || map.mediaType === 'video')) return false;
+      const blob = await idbGetMapVideo(c.id);
+      if (!blob) return false;
+      if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+        try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+      }
+      map.videoObjectUrl = URL.createObjectURL(blob);
+      map.mediaType = 'video';
+      map.hasVideoInIdb = true;
+      return true;
+    } catch (e) {
+      console.warn('ensureActiveMapVideo', e);
+      return false;
+    }
+  }
+
   function tryRestoreRosterBackupIfEmpty() {
     try {
       if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) return;
@@ -9660,10 +9683,12 @@ function parseAttackLines(ch) {
     // Always see claimed/self character (player combat panel)
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     const map = getCombatMap();
-    // Has a real battle map? (image, video, or mediaType) — do not treat video maps as "no map"
+    // Has a real battle map? (image/video blob, data URL, or mediaType/IDB flags)
     var hasMapMedia = !!(map && (
-      map.image || map.video || map.mapImage || map.src || map.videoSrc || map.mediaUrl ||
-      map.mediaType === 'video' || map.mediaType === 'image' || map.mapDataUrl
+      map.imageDataUrl || map.videoObjectUrl || map.image || map.video || map.mapImage ||
+      map.src || map.videoSrc || map.mediaUrl || map.mapDataUrl ||
+      map.mediaType === 'video' || map.mediaType === 'image' ||
+      map.hasVideoInIdb || map.hasImageInIdb
     ));
     // Theater of the mind only when there is no map media at all
     if (!map || !hasMapMedia) {
@@ -9672,8 +9697,8 @@ function parseAttackLines(ch) {
     const pos = (typeof getCombatantTokenPos === 'function')
       ? getCombatantTokenPos(target, map)
       : (map.tokens && (map.tokens[String(target.id)] || map.tokens[target.id]));
-    // No token on map: still list for targeting (ToTM hybrid), but not "seen" under fog as a map figure
-    if (!pos) return true;
+    // Has a map but token not placed yet — hide from player/popup lists
+    if (!pos) return false;
     // Token on map + FoW: must be in a revealed cell
     if (!map.fogEnabled) return true;
     try {
@@ -13893,6 +13918,11 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
+    try {
+      ensureActiveMapVideo().then(function(ok) {
+        if (ok) { try { renderBattleMap(); } catch (e) {} }
+      });
+    } catch (e) {}
     const playerPop = typeof isPlayerRole === 'function' && isPlayerRole();
     // Physically remove chrome so it cannot reappear or stay clickable
     // DM share popout: KEEP .map-toolbar so FoW tools work; player popout: strip toolbar
@@ -14075,6 +14105,16 @@ function escapeHtml(str) {
         if (map0 && map0.tokens && guardVer) guardTokens = JSON.parse(JSON.stringify(map0.tokens));
       } catch (err) {}
       try { if (typeof load === 'function') load(); } catch (err) {}
+      // Popout: localStorage has no blob URL — reload video from IDB after state sync
+      try {
+        if (typeof ensureActiveMapVideo === 'function') {
+          ensureActiveMapVideo().then(function(ok) {
+            if (ok) {
+              try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e2) {}
+            }
+          });
+        }
+      } catch (err) {}
       try {
         if (guardTokens && guardVer) {
           const map1 = typeof getCombatMap === 'function' ? getCombatMap() : null;
@@ -16191,6 +16231,20 @@ function escapeHtml(str) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const map = getCombatMap();
+    // Popout / second window: blob URLs are not shared — restore video from IDB once
+    try {
+      if (map && map.mediaType === 'video' && !map.videoObjectUrl && (map.hasVideoInIdb || map.mediaType === 'video')) {
+        if (!window.__videoRestoreInflight) {
+          window.__videoRestoreInflight = true;
+          ensureActiveMapVideo().then(function(ok) {
+            window.__videoRestoreInflight = false;
+            if (ok) {
+              try { renderBattleMap(); } catch (e) {}
+            }
+          }).catch(function() { window.__videoRestoreInflight = false; });
+        }
+      }
+    } catch (e) {}
     const status = document.getElementById('map-status');
     const videoEl = document.getElementById('map-video');
     const hasVideo = !!(map && map.mediaType === 'video' && map.videoObjectUrl);
@@ -16745,6 +16799,15 @@ function bindMapCanvasInteractions(force) {
         paintNow();
         return;
       }
+      if (tool && String(tool).indexOf('aoe-') === 0) {
+        var shape = String(tool).slice(4) || 'sphere';
+        var ftInp = document.getElementById('map-aoe-ft');
+        var ft = parseInt(ftInp && ftInp.value, 10) || 20;
+        map.aoe = { x: x, y: y, ft: ft, shape: shape, angle: -Math.PI / 2 };
+        window.__aoeDrag = { startX: x, startY: y, shape: shape };
+        paintNow();
+        return;
+      }
 
       if (tool === 'token' || tool === 'pan' || !tool) {
         const found = hitToken(map, x, y);
@@ -16803,6 +16866,21 @@ function bindMapCanvasInteractions(force) {
         paintNow();
         return;
       }
+      if (window.__aoeDrag && map.aoe) {
+        var ang = Math.atan2(y - map.aoe.y, x - map.aoe.x);
+        map.aoe.angle = ang;
+        var shape = map.aoe.shape || window.__aoeDrag.shape;
+        if (shape === 'sphere' || shape === 'cube') {
+          var g = Number(map.gridSize) || 70;
+          var dist = Math.hypot(x - map.aoe.x, y - map.aoe.y);
+          var ftFromDist = Math.max(5, Math.round((dist / g) * 5 / 5) * 5);
+          var ftInp2 = document.getElementById('map-aoe-ft');
+          var baseFt = parseInt(ftInp2 && ftInp2.value, 10) || 20;
+          map.aoe.ft = Math.max(baseFt, ftFromDist);
+        }
+        paintNow();
+        return;
+      }
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
@@ -16828,16 +16906,25 @@ function bindMapCanvasInteractions(force) {
     };
 
     const onUp = (ev) => {
-      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
+      const hadToken = !!window.__mapDragId;
+      const hadFog = !!window.__fogDrag;
+      const hadGrid = !!window.__gridDrag;
+      const hadRuler = !!window.__rulerDrag;
+      const hadAoe = !!window.__aoeDrag;
       window.__mapDragId = null;
       window.__tokenDragActive = false;
       window.__fogDrag = null;
       window.__gridDrag = null;
       window.__rulerDrag = false;
-      if (had) {
-        // Tokens first (works for player — does not depend on player save())
+      window.__aoeDrag = null;
+      if (hadToken) {
         try { broadcastTokenPositions('up'); } catch (e) {}
         try { save(); } catch (e) {}
+        paintNow();
+      } else if (hadFog || hadGrid) {
+        try { save(); } catch (e) {}
+        paintNow();
+      } else if (hadRuler || hadAoe) {
         paintNow();
       }
     };
