@@ -2780,6 +2780,8 @@ function requestMapVideoFromPeers() {
   function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
+    // Legendary Action "Use" grants one attack outside (or after) normal budget
+    if (cb.legendaryActionReady) return 1;
     const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
     const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
     const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
@@ -2813,7 +2815,11 @@ function requestMapVideoFromPeers() {
     // Keep enabled so click can show a toast (disabled buttons do not fire click)
     btn.disabled = false;
     btn.removeAttribute('disabled');
-    if (left <= 0) {
+    if (cb.legendaryActionReady) {
+      btn.title = 'Legendary Action — roll attack';
+      btn.classList.remove('is-budget-locked');
+      btn.dataset.budgetLocked = '0';
+    } else if (left <= 0) {
       btn.title = 'No weapon attacks left this turn';
       btn.classList.add('is-budget-locked');
       btn.dataset.budgetLocked = '1';
@@ -2835,6 +2841,18 @@ function requestMapVideoFromPeers() {
     const actUsed = Number(cb.actionsUsed) || 0;
     const atkMax = Number(cb.attacksMax) || 1;
     const atkUsed = Number(cb.attacksUsed) || 0;
+
+    // Legendary Action: one free attack or cast (does not spend the creature's normal turn Action)
+    if (cb.legendaryActionReady) {
+      cb.legendaryActionReady = false;
+      cb.lastAction = label || ('Legendary Action (' + (kind || 'act') + ')');
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try {
+        appendSharedCombatLog((cb.name || 'NPC') + ' takes a Legendary Action' + (label ? (': ' + label) : ''));
+      } catch (e) {}
+      try { toast('Legendary Action resolved'); } catch (e) {}
+      return true;
+    }
 
     if (kind === 'cast') {
       if (actUsed >= actMax) {
@@ -11203,14 +11221,27 @@ function parseAttackLines(ch) {
         var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
         var used = Number(cb.legendaryActionsUsed) || 0;
         if (used >= max) { toast('No legendary actions left'); return; }
+        if (cb.legendaryActionReady) {
+          toast('Resolve the pending Legendary Action (Attack or Cast) first');
+          return;
+        }
         cb.legendaryActionsUsed = used + 1;
         cb.legendaryActionsMax = max;
+        // Grant one real action (attack or cast) — does not use their normal turn Action
+        cb.legendaryActionReady = true;
+        // Ensure combat UI allows Roll Attack
+        if (!cb.turnPhase || cb.turnPhase === 'ready' || cb.turnPhase === 'ended') {
+          cb.turnPhase = 'legendary';
+        }
         var left = max - cb.legendaryActionsUsed;
         var el = panel.querySelector('#cd-leg-left');
         if (el) el.textContent = String(left);
+        try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (err) {}
         try { save(); } catch (err) {}
-        try { appendSharedCombatLog((cb.name || 'NPC') + ' uses a Legendary Action (' + left + '/' + max + ' left)'); } catch (e) {}
-        toast('Legendary Action used (' + left + ' left)');
+        try { appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action (' + left + '/' + max + ' left) — Attack or Cast available'); } catch (e) {}
+        try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
+        try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+        toast('Legendary Action ready — Roll Attack or Cast a spell');
       } catch (e) {}
     });
     panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
