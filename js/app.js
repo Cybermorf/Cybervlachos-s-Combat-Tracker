@@ -2779,7 +2779,73 @@ function requestMapVideoFromPeers() {
     } catch (e) { console.warn('refreshTurnEconomyUI', e); }
   }
 
-  function remainingWeaponAttacks(cb) {
+  
+  /** Spend 1 Legendary Action and unlock one Attack or Cast (off-turn). */
+  function grantLegendaryAction(cb, panel) {
+    if (!cb) return false;
+    var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax
+      : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3;
+    cb.legendaryActionsMax = max;
+    cb.legendaryActionsPerRound = max;
+    var used = Number(cb.legendaryActionsUsed) || 0;
+    // Prefer left counter if it is the board source of truth
+    if (cb.legendaryActionsLeft != null) {
+      used = Math.max(used, max - Number(cb.legendaryActionsLeft));
+    }
+    if (used >= max) {
+      try { toast('No legendary actions left'); } catch (e) {}
+      return false;
+    }
+    if (cb.legendaryActionReady) {
+      try { toast('Resolve the pending Legendary Action (Attack or Cast) first'); } catch (e) {}
+      return false;
+    }
+    cb.legendaryActionsUsed = used + 1;
+    cb.legendaryActionsLeft = Math.max(0, max - cb.legendaryActionsUsed);
+    cb.legendaryActionReady = true;
+    var left = cb.legendaryActionsLeft;
+    try {
+      if (panel) {
+        var el = panel.querySelector('#cd-leg-left');
+        if (el) el.textContent = String(left);
+        var el2 = panel.querySelector('.combat-res-val strong');
+        // update board display more carefully
+        panel.querySelectorAll('.combat-res-row').forEach(function(row) {
+          if (/Legendary Action/i.test(row.textContent || '')) {
+            var strong = row.querySelector('strong');
+            if (strong) strong.textContent = String(left);
+          }
+        });
+      }
+    } catch (e) {}
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try {
+      var c = getActive();
+      var combat = c ? getCombat(c) : null;
+      if (combat && combat.turnEconomy && cb.id != null) {
+        var id = String(cb.id);
+        combat.turnEconomy[id] = combat.turnEconomy[id] || {};
+        combat.turnEconomy[id].legendaryActionReady = true;
+        combat.turnEconomy[id].legendaryActionsUsed = cb.legendaryActionsUsed;
+        combat.turnEconomy[id].legendaryActionsLeft = cb.legendaryActionsLeft;
+      }
+    } catch (e) {}
+    try { save(); } catch (e) {}
+    try { appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action (' + left + '/' + max + ' left) — Attack or Cast available'); } catch (e) {}
+    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+    try { if (typeof applyCombatTurnPhaseLocks === 'function') applyCombatTurnPhaseLocks(panel || document, cb); } catch (e) {}
+    try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel || document, cb); } catch (e) {}
+    try {
+      ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
+        var el = (panel || document).querySelector('#' + id);
+        if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+      });
+    } catch (e) {}
+    try { toast('Legendary Action ready — Roll Attack or Cast now (' + left + ' left)'); } catch (e) {}
+    return true;
+  }
+
+function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
     // Legendary Action "Use" grants one attack outside (or after) normal budget
@@ -2847,6 +2913,10 @@ function requestMapVideoFromPeers() {
     // Legendary Action: one free attack or cast (does not spend the creature's normal turn Action)
     if (cb.legendaryActionReady) {
       cb.legendaryActionReady = false;
+      try {
+        var max = Number(cb.legendaryActionsMax || cb.legendaryActionsPerRound) || 3;
+        cb.legendaryActionsLeft = Math.max(0, max - (Number(cb.legendaryActionsUsed) || 0));
+      } catch (e) {}
       cb.lastAction = label || ('Legendary Action (' + (kind || 'act') + ')');
       try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
       try {
@@ -2958,9 +3028,13 @@ function spendAction(cb, label) {
       else if (row.lastAction != null && (Number(cb.attacksUsed) || 0) > 0) cb.lastAction = cb.lastAction || row.lastAction;
       if (row.bonusUsed != null) cb.bonusUsed = !!(cb.bonusUsed || row.bonusUsed);
       if (row.reactionUsed != null) cb.reactionUsed = !!(cb.reactionUsed || row.reactionUsed);
+      if (row.legendaryActionReady) cb.legendaryActionReady = true;
+      if (row.legendaryActionsUsed != null) cb.legendaryActionsUsed = Math.max(Number(cb.legendaryActionsUsed) || 0, Number(row.legendaryActionsUsed) || 0);
+      if (row.legendaryActionsLeft != null) cb.legendaryActionsLeft = Number(row.legendaryActionsLeft);
       if (row.turnPhase != null) {
         // Prefer active over ready if we already started
         if (cb.turnPhase === 'active' || row.turnPhase === 'active') cb.turnPhase = 'active';
+        else if (cb.legendaryActionReady) { /* keep */ }
         else cb.turnPhase = row.turnPhase;
       }
       if (row.extraActionsGranted != null) cb.extraActionsGranted = Math.max(Number(cb.extraActionsGranted) || 0, Number(row.extraActionsGranted) || 0);
@@ -4006,7 +4080,7 @@ function beginCombatantTurn(cb, ch) {
         </div>
         <div class="combat-res-row">
           <button type="button" class="btn secondary btn-tiny" id="cd-la-dec">−</button>
-          <span class="combat-res-val"><strong>${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3}</strong> / ${cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3}</span>
+          <span class="combat-res-val"><strong>${(function(){ var mx = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3; var left = cb.legendaryActionsLeft != null ? Number(cb.legendaryActionsLeft) : Math.max(0, mx - (Number(cb.legendaryActionsUsed)||0)); return left; })()}</strong> / ${(function(){ return Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3; })()}</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-la-inc">+</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-spend-la">Spend</button>
         </div>
@@ -11248,38 +11322,7 @@ function parseAttackLines(ch) {
       } catch (e) { console.warn(e); }
     });
     panel.querySelector('#cd-leg-use')?.addEventListener('click', () => {
-      try {
-        var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
-        var used = Number(cb.legendaryActionsUsed) || 0;
-        if (used >= max) { toast('No legendary actions left'); return; }
-        if (cb.legendaryActionReady) {
-          toast('Resolve the pending Legendary Action (Attack or Cast) first');
-          return;
-        }
-        cb.legendaryActionsUsed = used + 1;
-        cb.legendaryActionsMax = max;
-        // Grant one real action (attack or cast) — does not use their normal turn Action
-        cb.legendaryActionReady = true;
-        // Keep turnPhase as ended/ready/active — LA is independent; do not force 'legendary' only
-        // Flag is enough; phase locks unlock roll/cast when legendaryActionReady
-        var left = max - cb.legendaryActionsUsed;
-        var el = panel.querySelector('#cd-leg-left');
-        if (el) el.textContent = String(left);
-        try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (err) {}
-        try { save(); } catch (err) {}
-        try { appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action (' + left + '/' + max + ' left) — Attack or Cast available'); } catch (e) {}
-        try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
-        try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
-        try { if (typeof applyCombatTurnPhaseLocks === 'function') applyCombatTurnPhaseLocks(panel, cb); } catch (e) {}
-        try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
-        try {
-          ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
-            var el = panel.querySelector('#' + id);
-            if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
-          });
-        } catch (e) {}
-        toast('Legendary Action ready — Roll Attack or Cast now (' + left + ' LA remaining in pool)');
-      } catch (e) {}
+      try { grantLegendaryAction(cb, panel); } catch (e) { console.warn(e); }
     });
     panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
       try {
@@ -11521,9 +11564,7 @@ function parseAttackLines(ch) {
       });
       panel.querySelector('#cd-toggle-reaction')?.addEventListener('click', () => { cb.reactionUsed = !cb.reactionUsed; save(); renderCombat(); });
       panel.querySelector('#cd-spend-la')?.addEventListener('click', () => {
-        const max = cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3;
-        cb.legendaryActionsLeft = Math.max(0, (cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : max) - 1);
-        save(); renderCombat();
+        try { grantLegendaryAction(cb, panel); } catch (e) { console.warn(e); }
       });
       panel.querySelector('#cd-spend-lr')?.addEventListener('click', () => {
         if (typeof spendLegendaryResist === 'function') spendLegendaryResist(cb);
