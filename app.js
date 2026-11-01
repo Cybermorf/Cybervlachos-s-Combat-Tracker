@@ -234,10 +234,12 @@
           copy.combatMap.hasImageInIdb = true;
           copy.combatMap.imageDataUrl = null;
         }
-        if (copy.combatMap.videoObjectUrl) {
+        if (copy.combatMap.videoObjectUrl || (c.combatMap && c.combatMap.mediaType === 'video') || (c.combatMap && c.combatMap.hasVideoInIdb)) {
           copy.combatMap.hasVideoInIdb = true;
+          copy.combatMap.mediaType = 'video';
           copy.combatMap.videoObjectUrl = null;
         }
+        if (c.combatMap && c.combatMap.videoName) copy.combatMap.videoName = c.combatMap.videoName;
       }
       stripHeavyFields(copy);
       return copy;
@@ -944,15 +946,34 @@
     }
   }
 
-  /** Popouts lose blob: URLs — reload video from IndexedDB for the active workspace. */
+  /** Popouts lose blob: URLs — reload video from IndexedDB (try several keys). */
   async function ensureActiveMapVideo() {
     try {
       const c = typeof getActive === 'function' ? getActive() : null;
       if (!c || !c.combatMap) return false;
       const map = c.combatMap;
       if (map.videoObjectUrl) return true;
-      if (!(map.hasVideoInIdb || map.mediaType === 'video')) return false;
-      const blob = await idbGetMapVideo(c.id);
+      // Prefer video when flagged; also try if we have no image (DM may have only video)
+      var wantVideo = !!(map.hasVideoInIdb || map.mediaType === 'video' || map.videoName ||
+        (!map.imageDataUrl && !map.hasImageInIdb));
+      if (!wantVideo && map.mediaType === 'image') return false;
+
+      var keys = [];
+      if (c.id) keys.push(c.id);
+      try { if (state.activeCampaignId) keys.push(state.activeCampaignId); } catch (e) {}
+      keys.push('active');
+      // All campaign ids as fallback (popout may resolve active late)
+      try {
+        (state.campaigns || []).forEach(function(camp) {
+          if (camp && camp.id && keys.indexOf(camp.id) < 0) keys.push(camp.id);
+        });
+      } catch (e) {}
+
+      var blob = null;
+      for (var i = 0; i < keys.length; i++) {
+        blob = await idbGetMapVideo(keys[i]);
+        if (blob) break;
+      }
       if (!blob) return false;
       if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
         try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
@@ -13919,9 +13940,20 @@ function escapeHtml(str) {
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
     try {
-      ensureActiveMapVideo().then(function(ok) {
-        if (ok) { try { renderBattleMap(); } catch (e) {} }
-      });
+      var tries = 0;
+      var kickVideo = function() {
+        tries++;
+        ensureActiveMapVideo().then(function(ok) {
+          if (ok) {
+            try { renderBattleMap(); } catch (e) {}
+          } else if (tries < 6) {
+            setTimeout(kickVideo, 400 * tries);
+          }
+        }).catch(function() {
+          if (tries < 6) setTimeout(kickVideo, 400 * tries);
+        });
+      };
+      kickVideo();
     } catch (e) {}
     const playerPop = typeof isPlayerRole === 'function' && isPlayerRole();
     // Physically remove chrome so it cannot reappear or stay clickable
@@ -17358,7 +17390,9 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             if (c && c.id) {
               try {
                 await idbSetMapVideo(c.id, blob);
+                try { await idbSetMapVideo('active', blob); } catch (e2) {}
                 map.hasVideoInIdb = true;
+                map.mediaType = 'video';
               } catch (e) {
                 console.warn('video IDB', e);
               }
