@@ -1,3 +1,5 @@
+// STABLE-1-4-table-content-2026-11-04
+// STABLE-checkpoint-1-4-table-2026-11-04
 /**
  * Dark Sun Chronicles — DM Companion
  * Local-first campaign tracker + dice roller for Eldoria living campaigns.
@@ -234,10 +236,12 @@
           copy.combatMap.hasImageInIdb = true;
           copy.combatMap.imageDataUrl = null;
         }
-        if (copy.combatMap.videoObjectUrl) {
+        if (copy.combatMap.videoObjectUrl || (c.combatMap && c.combatMap.mediaType === 'video') || (c.combatMap && c.combatMap.hasVideoInIdb)) {
           copy.combatMap.hasVideoInIdb = true;
+          copy.combatMap.mediaType = 'video';
           copy.combatMap.videoObjectUrl = null;
         }
+        if (c.combatMap && c.combatMap.videoName) copy.combatMap.videoName = c.combatMap.videoName;
       }
       stripHeavyFields(copy);
       return copy;
@@ -942,6 +946,330 @@
     } catch (e) {
       console.warn('restore map media', e);
     }
+  }
+
+  /** Popouts lose blob: URLs — reload from IndexedDB, then ask main window via BroadcastChannel. */
+  async function ensureActiveMapVideo() {
+    try {
+      const c = typeof getActive === 'function' ? getActive() : null;
+      if (!c || !c.combatMap) return false;
+      const map = c.combatMap;
+      if (map.videoObjectUrl) return true;
+      var wantVideo = !!(map.hasVideoInIdb || map.mediaType === 'video' || map.videoName ||
+        (!map.imageDataUrl && !map.hasImageInIdb));
+      if (!wantVideo && map.mediaType === 'image') return false;
+
+      var keys = [];
+      if (c.id) keys.push(c.id);
+      try { if (state.activeCampaignId) keys.push(state.activeCampaignId); } catch (e) {}
+      keys.push('active');
+      try {
+        (state.campaigns || []).forEach(function(camp) {
+          if (camp && camp.id && keys.indexOf(camp.id) < 0) keys.push(camp.id);
+        });
+      } catch (e) {}
+
+      var blob = null;
+      for (var i = 0; i < keys.length; i++) {
+        try { blob = await idbGetMapVideo(keys[i]); } catch (e) { blob = null; }
+        if (blob) break;
+      }
+      if (blob) {
+        if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+          try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+        }
+        map.videoObjectUrl = URL.createObjectURL(blob);
+        map.mediaType = 'video';
+        map.hasVideoInIdb = true;
+        return true;
+      }
+      // IDB empty on this window — request blob from peers (main DM holds it in memory)
+      try { requestMapVideoFromPeers(); } catch (e) {}
+      return false;
+    } catch (e) {
+      console.warn('ensureActiveMapVideo', e);
+      return false;
+    }
+  }
+
+  
+  
+  function loadL20TestRoster() {
+    var c = getActive();
+    if (!c) { toast('No active workspace'); return; }
+    if (!c.combat) c.combat = { combatants: [], round: 1, turnIndex: 0, selectedIndex: 0 };
+    var mk = function(name, side, opts) {
+      opts = opts || {};
+      var row = {
+        id: (typeof uid === 'function' ? uid() : ('t' + Math.random().toString(36).slice(2, 9))),
+        name: name,
+        side: side,
+        init: opts.init != null ? opts.init : 10,
+        hp: opts.hp || 100,
+        hpMax: opts.hpMax || opts.hp || 100,
+        ac: opts.ac || 16,
+        size: opts.size || 'Medium',
+        tokenSize: opts.tokenSize != null ? opts.tokenSize : (typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(opts.size || 'Medium') : 1),
+        conditions: opts.conditions || '',
+        legendary: !!opts.legendary,
+        legendaryActions: opts.legendaryActions || [],
+        legendaryActionsMax: opts.legendary ? (opts.legendaryActionsMax || 3) : null,
+        legendaryActionsPerRound: opts.legendary ? (opts.legendaryActionsMax || 3) : null,
+        legendaryActionsUsed: 0,
+        legendaryActionsLeft: opts.legendary ? (opts.legendaryActionsMax || 3) : null,
+        legendaryResist: opts.legendaryResist != null ? opts.legendaryResist : (opts.legendary ? 3 : null),
+        legendaryResistMax: opts.legendary ? 3 : null,
+        attacksMax: opts.attacksMax || 1,
+        attacksUsed: 0,
+        reactionUsed: false,
+        actionUsed: false,
+        turnPhase: 'ready',
+        speed: opts.speed || 30
+      };
+      return row;
+    };
+    var list = [
+      mk('Garrick Spellblade', 'party', { init: 18, hp: 150, hpMax: 168, ac: 18, attacksMax: 3 }),
+      mk('Selene of the Pale Path', 'party', { init: 15, hp: 134, hpMax: 134, ac: 17, size: 'Small', tokenSize: 1 }),
+      mk('Thornroot', 'party', { init: 12, hp: 120, hpMax: 120, ac: 16 }),
+      mk('Brother Aldric', 'party', { init: 11, hp: 110, hpMax: 110, ac: 18 }),
+      mk('Nyx Shadowstep', 'party', { init: 20, hp: 98, hpMax: 98, ac: 17 }),
+      mk('Kael Stormfist', 'party', { init: 17, hp: 140, hpMax: 140, ac: 18, attacksMax: 2, conditions: '' }),
+      mk('Vesper Multiclass', 'party', { init: 14, hp: 125, hpMax: 125, ac: 16, attacksMax: 2 }),
+      mk('Archlich Mourne', 'enemy', { init: 14, hp: 200, hpMax: 200, ac: 19, size: 'Medium', legendary: true, legendaryResist: 3,
+        legendaryActions: [{ name: 'Cantrip', cost: 1 }, { name: 'Paralyzing Touch', cost: 2 }, { name: 'Frightening Gaze', cost: 2 }, { name: 'Disrupt Life', cost: 3 }] }),
+      mk('Ashen Sovereign', 'enemy', { init: 16, hp: 220, hpMax: 220, ac: 20, size: 'Large', tokenSize: 2, legendary: true, legendaryResist: 3,
+        legendaryActions: [{ name: 'Detect', cost: 1 }, { name: 'Tail Attack', cost: 1 }, { name: 'Wing Attack', cost: 2 }] }),
+      mk('Vanishing Archive Colossus', 'enemy', { init: 8, hp: 280, hpMax: 280, ac: 18, size: 'Gargantuan', tokenSize: 4, legendary: true }),
+      mk('Cult Fanatic', 'enemy', { init: 10, hp: 44, hpMax: 44, ac: 13, size: 'Medium' }),
+      mk('Shadow Mastiff', 'enemy', { init: 13, hp: 33, hpMax: 33, ac: 12, size: 'Medium' })
+    ];
+    c.combat.combatants = list;
+    c.combat.round = 1;
+    c.combat.turnIndex = 0;
+    c.combat.selectedIndex = 0;
+    c.combat.sharedLog = c.combat.sharedLog || [];
+    try { appendSharedCombatLog('L20 test roster loaded (' + list.length + ' combatants)'); } catch (e) {}
+    try { save(); } catch (e) {}
+    try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    try { if (typeof renderMapRoster === 'function') renderMapRoster(); } catch (e) {}
+    toast('L20 test roster loaded — place tokens on the map');
+  }
+
+function revealFogAroundSelectedToken() {
+    try {
+      var map = getCombatMap();
+      if (!map) { toast('No map'); return; }
+      var sel = document.getElementById('map-token-combatant');
+      var id = sel && sel.value;
+      if (!id) {
+        try {
+          var combat = getCombat(getActive());
+          var cur = combat && combat.combatants && combat.combatants[combat.selectedIndex];
+          if (cur) id = String(cur.id != null ? cur.id : combat.selectedIndex);
+        } catch (e) {}
+      }
+      if (!id) { toast('Select a token first'); return; }
+      var pos = map.tokens && (map.tokens[id] || map.tokens[String(id)]);
+      if (!pos) { toast('Token not on map'); return; }
+      var ftEl = document.getElementById('map-vision-ft');
+      var ft = parseInt(ftEl && ftEl.value, 10) || 30;
+      var g = Number(map.gridSize) || 70;
+      var cells = Math.max(1, Math.round(ft / 5));
+      ensureMapFog(map);
+      map.fogEnabled = true;
+      var ox = Number(map.gridOffsetX) || 0;
+      var oy = Number(map.gridOffsetY) || 0;
+      var cx = Math.floor((pos.x - ox) / g);
+      var cy = Math.floor((pos.y - oy) / g);
+      var revealed = 0;
+      for (var dy = -cells; dy <= cells; dy++) {
+        for (var dx = -cells; dx <= cells; dx++) {
+          if (dx * dx + dy * dy > cells * cells) continue;
+          var key = (cx + dx) + ',' + (cy + dy);
+          if (!map.fogRevealed[key]) revealed++;
+          map.fogRevealed[key] = true;
+        }
+      }
+      try { save(); } catch (e) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('fog-vision'); } catch (e) {}
+      try { paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('Revealed ~' + ft + ' ft around token (' + revealed + ' new cells)');
+    } catch (e) { console.warn(e); }
+  }
+
+  function revealFogAroundAllPcs() {
+    try {
+      var map = getCombatMap();
+      if (!map) { toast('No map'); return; }
+      var combat = getCombat(getActive());
+      var list = (combat && combat.combatants) || [];
+      var ftEl = document.getElementById('map-vision-ft');
+      var ft = parseInt(ftEl && ftEl.value, 10) || 30;
+      var g = Number(map.gridSize) || 70;
+      var cells = Math.max(1, Math.round(ft / 5));
+      ensureMapFog(map);
+      map.fogEnabled = true;
+      var ox = Number(map.gridOffsetX) || 0;
+      var oy = Number(map.gridOffsetY) || 0;
+      var total = 0;
+      var count = 0;
+      list.forEach(function(cb) {
+        var side = String(cb.side || '').toLowerCase();
+        if (side === 'enemy' || side === 'villain') return;
+        var id = String(cb.id);
+        var pos = map.tokens && (map.tokens[id] || map.tokens[cb.id]);
+        if (!pos) return;
+        count++;
+        var cx = Math.floor((pos.x - ox) / g);
+        var cy = Math.floor((pos.y - oy) / g);
+        for (var dy = -cells; dy <= cells; dy++) {
+          for (var dx = -cells; dx <= cells; dx++) {
+            if (dx * dx + dy * dy > cells * cells) continue;
+            var key = (cx + dx) + ',' + (cy + dy);
+            if (!map.fogRevealed[key]) total++;
+            map.fogRevealed[key] = true;
+          }
+        }
+      });
+      if (!count) { toast('No PC tokens on map'); return; }
+      try { save(); } catch (e) {}
+      try { if (typeof broadcastVttState === 'function') broadcastVttState('fog-vision-pcs'); } catch (e) {}
+      try { paintMapFrame(); } catch (e) {}
+      try { renderBattleMap(); } catch (e) {}
+      toast('Revealed ~' + ft + ' ft around ' + count + ' PC(s) (' + total + ' new cells)');
+    } catch (e) { console.warn(e); }
+  }
+
+  function mapPingAt(wx, wy, fromName) {
+    try {
+      window.__mapPings = window.__mapPings || [];
+      window.__mapPings.push({ x: wx, y: wy, at: Date.now(), name: fromName || '' });
+      // Keep last few
+      window.__mapPings = window.__mapPings.filter(function(p) { return Date.now() - p.at < 2500; });
+      try { paintMapFrame(); } catch (e) {}
+      // Animate a couple redraws
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 400);
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 900);
+      setTimeout(function() { try { paintMapFrame(); } catch (e) {} }, 1600);
+    } catch (e) {}
+  }
+
+  function broadcastMapPing(wx, wy) {
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      var name = '';
+      try {
+        var cb = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+        name = (cb && cb.name) || (typeof isPlayerRole === 'function' && isPlayerRole() ? 'Player' : 'DM');
+      } catch (e) {}
+      if (ch) ch.postMessage({ type: 'vtt-map-ping', x: wx, y: wy, name: name, at: Date.now() });
+      try {
+        localStorage.setItem('cybervlachos_vtt_ping', JSON.stringify({ type: 'vtt-map-ping', x: wx, y: wy, name: name, at: Date.now() }));
+      } catch (e) {}
+      mapPingAt(wx, wy, name);
+    } catch (e) {}
+  }
+
+  function setupMapPingBridge() {
+    if (window.__mapPingBridgeBound) return;
+    window.__mapPingBridgeBound = true;
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) {
+        ch.addEventListener('message', function(ev) {
+          var msg = ev && ev.data;
+          if (msg && msg.type === 'vtt-map-ping') {
+            mapPingAt(msg.x, msg.y, msg.name);
+          }
+          if (msg && msg.type === 'vtt-player-hello') {
+            try {
+              if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+                toast((msg.name || 'Player') + ' joined room ' + (msg.room || ''));
+              }
+            } catch (e) {}
+          }
+        });
+      }
+    } catch (e) {}
+    window.addEventListener('storage', function(ev) {
+      if (ev.key === 'cybervlachos_vtt_ping' && ev.newValue) {
+        try {
+          var msg = JSON.parse(ev.newValue);
+          if (msg && msg.type === 'vtt-map-ping') mapPingAt(msg.x, msg.y, msg.name);
+        } catch (e) {}
+      }
+    });
+  }
+
+function requestMapVideoFromPeers() {
+    try {
+      setupMapVideoBridge();
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) ch.postMessage({ type: 'vtt-request-map-video', at: Date.now() });
+    } catch (e) {}
+  }
+
+  function setupMapVideoBridge() {
+    if (window.__mapVideoBridgeBound) return;
+    window.__mapVideoBridgeBound = true;
+    try {
+      var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (!ch) return;
+      ch.addEventListener('message', function(ev) {
+        var msg = ev && ev.data;
+        if (!msg || !msg.type) return;
+        // Main (or any window that has the video) answers
+        if (msg.type === 'vtt-request-map-video') {
+          (async function() {
+            try {
+              // Don't answer our own request loop if we also need video
+              var c = typeof getActive === 'function' ? getActive() : null;
+              var map = c && c.combatMap;
+              var blob = null;
+              if (map && map.videoObjectUrl) {
+                try {
+                  var resp = await fetch(map.videoObjectUrl);
+                  blob = await resp.blob();
+                } catch (e) {}
+              }
+              if (!blob && c && c.id) {
+                try { blob = await idbGetMapVideo(c.id); } catch (e) {}
+              }
+              if (!blob) {
+                try { blob = await idbGetMapVideo('active'); } catch (e) {}
+              }
+              if (blob && ch) {
+                ch.postMessage({ type: 'vtt-map-video-blob', blob: blob, at: Date.now() });
+              }
+            } catch (e) { console.warn('video bridge respond', e); }
+          })();
+          return;
+        }
+        if (msg.type === 'vtt-map-video-blob' && msg.blob) {
+          (async function() {
+            try {
+              var c = typeof getActive === 'function' ? getActive() : null;
+              if (!c || !c.combatMap) return;
+              var map = c.combatMap;
+              if (map.videoObjectUrl && window.__mapVideoTicking) return;
+              if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+                try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+              }
+              map.videoObjectUrl = URL.createObjectURL(msg.blob);
+              map.mediaType = 'video';
+              map.hasVideoInIdb = true;
+              try {
+                if (c.id) await idbSetMapVideo(c.id, msg.blob);
+                await idbSetMapVideo('active', msg.blob);
+              } catch (e) {}
+              try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+            } catch (e) { console.warn('video bridge apply', e); }
+          })();
+        }
+      });
+    } catch (e) {}
   }
 
   function tryRestoreRosterBackupIfEmpty() {
@@ -2399,10 +2727,12 @@
       } catch (e) {}
       const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess, mirrorUsed);
       cb.attacksUsed = atkUsed;
-      const atkLeft = Math.max(0, atkMax - atkUsed);
+      // Legendary Action ready → show at least 1 attack available without rewriting turn budget
+      var atkLeft = Math.max(0, atkMax - atkUsed);
+      if (cb.legendaryActionReady) atkLeft = Math.max(atkLeft, 1);
       let actMax = Math.max(1, Number(cb.actionsMax) || 1);
       let actUsed = Math.max(Number(cb.actionsUsed) || 0, mirrorAct || 0);
-      if (atkUsed > 0 && actUsed < 1) {
+      if (!cb.legendaryActionReady && atkUsed > 0 && actUsed < 1) {
         actUsed = 1;
         cb.actionsUsed = 1;
         cb.actionUsed = true;
@@ -2463,9 +2793,278 @@
     } catch (e) { console.warn('refreshTurnEconomyUI', e); }
   }
 
-  function remainingWeaponAttacks(cb) {
+  
+  /** Spend 1 Legendary Action and unlock one Attack or Cast (off-turn). */
+  
+  function offerReactionPrompt(target) {
+    if (!target || target.reactionUsed || (Number(target.hp) || 0) <= 0) return;
+    // Avoid spamming
+    var key = String(target.id || target.name || '');
+    if (window.__rxPromptAt && window.__rxPromptAt[key] && Date.now() - window.__rxPromptAt[key] < 2500) return;
+    window.__rxPromptAt = window.__rxPromptAt || {};
+    window.__rxPromptAt[key] = Date.now();
+    var name = target.name || 'Combatant';
+    var existing = document.getElementById('rx-prompt-toast');
+    if (existing) existing.remove();
+    var el = document.createElement('div');
+    el.id = 'rx-prompt-toast';
+    el.style.cssText = 'position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:99999;background:#1a1a22;border:1px solid #c4a35a;border-radius:8px;padding:0.65rem 0.9rem;display:flex;gap:0.5rem;align-items:center;box-shadow:0 8px 24px rgba(0,0,0,0.45);color:#efe6d6;font-size:0.9rem;';
+    el.innerHTML = '<span>Reaction available: <strong>' + (typeof escapeHtml === 'function' ? escapeHtml(name) : name) + '</strong></span>' +
+      '<button type="button" class="btn primary btn-tiny" id="rx-use-btn">Use reaction</button>' +
+      '<button type="button" class="btn ghost btn-tiny" id="rx-dismiss-btn">Dismiss</button>';
+    document.body.appendChild(el);
+    el.querySelector('#rx-use-btn').onclick = function() {
+      try {
+        if (typeof useReactionForCombatant === 'function') useReactionForCombatant(target, window.__combatDetailPanel || document);
+        else {
+          target.reactionUsed = true;
+          appendSharedCombatLog(name + ' uses their Reaction');
+          save();
+          if (typeof renderCombat === 'function') renderCombat();
+          toast(name + ' — reaction used');
+        }
+      } catch (e) {}
+      el.remove();
+    };
+    el.querySelector('#rx-dismiss-btn').onclick = function() { el.remove(); };
+    setTimeout(function() { try { if (el.parentNode) el.remove(); } catch (e) {} }, 12000);
+  }
+
+
+  function statusEffectNote(name) {
+    var n = String(name || '').toLowerCase();
+    var map = {
+      blinded: 'Auto: attacks have disadvantage; attacks vs them have advantage',
+      charmed: 'Auto: cannot attack charmer; charmer has advantage on social checks',
+      deafened: 'Auto: cannot hear; auto-fail sound-based checks',
+      frightened: 'Auto: disadvantage on checks/attacks while source in sight',
+      grappled: 'Auto: speed 0',
+      incapacitated: 'Auto: cannot take actions or reactions',
+      invisible: 'Auto: advantage on attacks; attacks vs them have disadvantage',
+      paralyzed: 'Auto: incapacitated; auto-fail Str/Dex saves; attacks vs have advantage',
+      petrified: 'Auto: incapacitated; resistant to all damage; weight x10',
+      poisoned: 'Auto: disadvantage on attack rolls and ability checks',
+      prone: 'Auto: disadvantage on attacks; melee vs them advantage; ranged disadvantage',
+      restrained: 'Auto: speed 0; attacks have disadvantage; attacks vs have advantage',
+      stunned: 'Auto: incapacitated; auto-fail Str/Dex saves; attacks vs have advantage',
+      unconscious: 'Auto: incapacitated; prone; auto-fail Str/Dex; melee crits vs them',
+      blessed: 'Auto: +1d4 to attacks and saves',
+      hasted: 'Auto: +2 AC; advantage on Dex saves; extra action (Attack/Dash/Disengage/Hide)',
+      raging: 'Auto: advantage on Str checks/saves; bonus rage damage; resistance bludgeoning/piercing/slashing'
+    };
+    return map[n] || '';
+  }
+
+
+  function checkOpportunityAttacksAfterMove(fromInfo) {
+    try {
+      if (!fromInfo || !fromInfo.id) return;
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) return; // DM resolves OA
+      var map = getCombatMap();
+      if (!map || !map.tokens) return;
+      var id = String(fromInfo.id);
+      var to = map.tokens[id];
+      if (!to) return;
+      var g = Number(map.gridSize) || 70;
+      var fromX = fromInfo.x, fromY = fromInfo.y;
+      if (fromX == null || fromY == null) return;
+      // If barely moved (< half cell), skip
+      var distPx = Math.hypot((to.x - fromX), (to.y - fromY));
+      if (distPx < g * 0.45) return;
+      var combat = getCombat(getActive());
+      var list = (combat && combat.combatants) || [];
+      var mover = list.find(function(c) { return String(c.id) === id; });
+      if (!mover) return;
+      var reach = 5; // ft default melee
+      var reachPx = (reach / 5) * g * 1.15;
+      var threats = [];
+      list.forEach(function(enemy) {
+        if (!enemy || String(enemy.id) === id) return;
+        if ((Number(enemy.hp) || 0) <= 0) return;
+        if (enemy.reactionUsed) return;
+        var es = String(enemy.side || '').toLowerCase();
+        var ms = String(mover.side || '').toLowerCase();
+        var hostile = (es === 'enemy' || es === 'villain') !== (ms === 'enemy' || ms === 'villain');
+        if (!hostile && es !== ms) hostile = true;
+        if (es === ms || (ms !== 'enemy' && ms !== 'villain' && es !== 'enemy' && es !== 'villain')) {
+          // allies don't OA each other
+          if (!((es === 'enemy' || es === 'villain') ^ (ms === 'enemy' || ms === 'villain'))) return;
+        }
+        var ep = map.tokens[String(enemy.id)];
+        if (!ep) return;
+        var dFrom = Math.hypot(ep.x - fromX, ep.y - fromY);
+        var dTo = Math.hypot(ep.x - to.x, ep.y - to.y);
+        // Was in reach, now out of reach
+        if (dFrom <= reachPx && dTo > reachPx) {
+          threats.push(enemy);
+        }
+      });
+      if (!threats.length) return;
+      threats.forEach(function(en) {
+        try { offerOpportunityAttackPrompt(en, mover); } catch (e) {}
+      });
+    } catch (e) { console.warn('OA check', e); }
+  }
+
+  function offerOpportunityAttackPrompt(attacker, mover) {
+    if (!attacker || !mover) return;
+    var key = String(attacker.id) + '>' + String(mover.id);
+    window.__oaPromptAt = window.__oaPromptAt || {};
+    if (window.__oaPromptAt[key] && Date.now() - window.__oaPromptAt[key] < 3000) return;
+    window.__oaPromptAt[key] = Date.now();
+    var aName = attacker.name || 'Enemy';
+    var mName = mover.name || 'creature';
+    var id = 'oa-prompt-' + String(attacker.id).replace(/\\W/g, '');
+    var old = document.getElementById(id);
+    if (old) old.remove();
+    var el = document.createElement('div');
+    el.id = id;
+    el.style.cssText = 'position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:99999;background:#1a1a22;border:1px solid #c45;border-radius:8px;padding:0.65rem 0.9rem;display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;box-shadow:0 8px 24px rgba(0,0,0,0.45);color:#efe6d6;font-size:0.9rem;max-width:92vw;';
+    el.innerHTML = '<span><strong>' + (typeof escapeHtml === 'function' ? escapeHtml(aName) : aName) + '</strong> may take an Opportunity Attack vs <strong>' +
+      (typeof escapeHtml === 'function' ? escapeHtml(mName) : mName) + '</strong></span>' +
+      '<button type="button" class="btn primary btn-tiny" data-oa="use">Use reaction (OA)</button>' +
+      '<button type="button" class="btn ghost btn-tiny" data-oa="skip">Skip</button>';
+    document.body.appendChild(el);
+    el.querySelector('[data-oa="use"]').onclick = function() {
+      attacker.reactionUsed = true;
+      try { appendSharedCombatLog(aName + ' takes an Opportunity Attack against ' + mName); } catch (e) {}
+      try {
+        // Select attacker and open combat detail for the roll
+        var combat = getCombat(getActive());
+        if (combat && combat.combatants) {
+          var idx = combat.combatants.findIndex(function(c) { return String(c.id) === String(attacker.id); });
+          if (idx >= 0) combat.selectedIndex = idx;
+        }
+        if (typeof showCombatDetail === 'function') showCombatDetail(attacker);
+      } catch (e) {}
+      try { save(); } catch (e) {}
+      try { toast(aName + ' — OA: Roll Attack now'); } catch (e) {}
+      el.remove();
+    };
+    el.querySelector('[data-oa="skip"]').onclick = function() { el.remove(); };
+    setTimeout(function() { try { if (el.parentNode) el.remove(); } catch (e) {} }, 15000);
+  }
+
+
+  function highlightReactionPrompt(target) {
+    try {
+      var panel = window.__combatDetailPanel || document.getElementById('combat-detail') || document;
+      var btn = panel.querySelector('#cd-use-reaction');
+      if (btn) {
+        btn.classList.add('btn-primary');
+        btn.disabled = false;
+        btn.removeAttribute('disabled');
+        btn.title = 'Use reaction for ' + (target && target.name ? target.name : 'combatant');
+      }
+      // Also show a floating one-click if board reaction toggle exists
+      var tog = panel.querySelector('#cd-reaction-toggle, #cd-toggle-reaction');
+      if (tog) {
+        tog.classList.add('btn-primary');
+        tog.title = 'Reaction available — click to mark used';
+      }
+    } catch (e) {}
+  }
+
+  function useReactionForCombatant(cb, panel) {
+    if (!cb) return false;
+    if (cb.reactionUsed) {
+      try { toast('Reaction already used'); } catch (e) {}
+      return false;
+    }
+    cb.reactionUsed = true;
+    window.__pendingReaction = null;
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try { save(); } catch (e) {}
+    try { appendSharedCombatLog((cb.name || 'Combatant') + ' uses their Reaction'); } catch (e) {}
+    try { toast((cb.name || 'Combatant') + ' — Reaction used'); } catch (e) {}
+    try {
+      if (panel) {
+        var tog = panel.querySelector('#cd-reaction-toggle, #cd-toggle-reaction, #cd-use-reaction');
+        if (tog) { tog.classList.remove('btn-primary'); }
+      }
+    } catch (e) {}
+    try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    return true;
+  }
+
+function grantLegendaryAction(cb, panel) {
+    if (!cb) return false;
+    var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax
+      : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3;
+    cb.legendaryActionsMax = max;
+    cb.legendaryActionsPerRound = max;
+    var used = Number(cb.legendaryActionsUsed) || 0;
+    // Prefer left counter if it is the board source of truth
+    if (cb.legendaryActionsLeft != null) {
+      used = Math.max(used, max - Number(cb.legendaryActionsLeft));
+    }
+    if (used >= max) {
+      try { toast('No legendary actions left'); } catch (e) {}
+      return false;
+    }
+    if (cb.legendaryActionReady) {
+      try { toast('Resolve the pending Legendary Action (Attack or Cast) first'); } catch (e) {}
+      return false;
+    }
+    cb.legendaryActionsUsed = used + 1;
+    cb.legendaryActionsLeft = Math.max(0, max - cb.legendaryActionsUsed);
+    cb.legendaryActionReady = true;
+    var left = cb.legendaryActionsLeft;
+    try {
+      if (panel) {
+        var el = panel.querySelector('#cd-leg-left');
+        if (el) el.textContent = String(left);
+        var el2 = panel.querySelector('.combat-res-val strong');
+        // update board display more carefully
+        panel.querySelectorAll('.combat-res-row').forEach(function(row) {
+          if (/Legendary Action/i.test(row.textContent || '')) {
+            var strong = row.querySelector('strong');
+            if (strong) strong.textContent = String(left);
+          }
+        });
+      }
+    } catch (e) {}
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+    try {
+      var c = getActive();
+      var combat = c ? getCombat(c) : null;
+      if (combat && combat.turnEconomy && cb.id != null) {
+        var id = String(cb.id);
+        combat.turnEconomy[id] = combat.turnEconomy[id] || {};
+        combat.turnEconomy[id].legendaryActionReady = true;
+        combat.turnEconomy[id].legendaryActionsUsed = cb.legendaryActionsUsed;
+        combat.turnEconomy[id].legendaryActionsLeft = cb.legendaryActionsLeft;
+      }
+    } catch (e) {}
+    try { save(); } catch (e) {}
+    try {
+      var optLabel = '';
+      try {
+        var sel = panel && panel.querySelector && panel.querySelector('#cd-leg-opt');
+        if (sel && sel.selectedOptions && sel.selectedOptions[0]) optLabel = sel.selectedOptions[0].textContent || '';
+        if (optLabel) cb.lastLegendaryOption = optLabel;
+      } catch (e2) {}
+      appendSharedCombatLog((cb.name || 'NPC') + ' spends a Legendary Action' + (optLabel ? (' (' + optLabel + ')') : '') +
+        ' (' + left + '/' + max + ' left) — Attack or Cast available');
+    } catch (e) {}
+    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+    try { if (typeof applyCombatTurnPhaseLocks === 'function') applyCombatTurnPhaseLocks(panel || document, cb); } catch (e) {}
+    try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel || document, cb); } catch (e) {}
+    try {
+      ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
+        var el = (panel || document).querySelector('#' + id);
+        if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+      });
+    } catch (e) {}
+    try { toast('Legendary Action ready — Roll Attack or Cast now (' + left + ' left)'); } catch (e) {}
+    return true;
+  }
+
+function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
+    // Legendary Action "Use" grants one attack outside (or after) normal budget
+    if (cb.legendaryActionReady) return 1;
     const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
     const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
     const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
@@ -2499,7 +3098,11 @@
     // Keep enabled so click can show a toast (disabled buttons do not fire click)
     btn.disabled = false;
     btn.removeAttribute('disabled');
-    if (left <= 0) {
+    if (cb.legendaryActionReady) {
+      btn.title = 'Legendary Action — roll attack';
+      btn.classList.remove('is-budget-locked');
+      btn.dataset.budgetLocked = '0';
+    } else if (left <= 0) {
       btn.title = 'No weapon attacks left this turn';
       btn.classList.add('is-budget-locked');
       btn.dataset.budgetLocked = '1';
@@ -2521,6 +3124,25 @@
     const actUsed = Number(cb.actionsUsed) || 0;
     const atkMax = Number(cb.attacksMax) || 1;
     const atkUsed = Number(cb.attacksUsed) || 0;
+
+    // Legendary Action: one free attack or cast (does not spend the creature's normal turn Action)
+    if (cb.legendaryActionReady) {
+      cb.legendaryActionReady = false;
+      try {
+        var max = Number(cb.legendaryActionsMax || cb.legendaryActionsPerRound) || 3;
+        cb.legendaryActionsLeft = Math.max(0, max - (Number(cb.legendaryActionsUsed) || 0));
+      } catch (e) {}
+      cb.lastAction = label || ('Legendary Action (' + (kind || 'act') + ')');
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try {
+        appendSharedCombatLog((cb.name || 'NPC') + ' takes a Legendary Action' + (label ? (': ' + label) : '') +
+          ' (' + Math.max(0, (Number(cb.legendaryActionsMax)||3) - (Number(cb.legendaryActionsUsed)||0)) + ' LA left)');
+      } catch (e) {}
+      try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
+      try { toast('Legendary Action resolved'); } catch (e) {}
+      return true;
+    }
 
     if (kind === 'cast') {
       if (actUsed >= actMax) {
@@ -2621,9 +3243,13 @@ function spendAction(cb, label) {
       else if (row.lastAction != null && (Number(cb.attacksUsed) || 0) > 0) cb.lastAction = cb.lastAction || row.lastAction;
       if (row.bonusUsed != null) cb.bonusUsed = !!(cb.bonusUsed || row.bonusUsed);
       if (row.reactionUsed != null) cb.reactionUsed = !!(cb.reactionUsed || row.reactionUsed);
+      if (row.legendaryActionReady) cb.legendaryActionReady = true;
+      if (row.legendaryActionsUsed != null) cb.legendaryActionsUsed = Math.max(Number(cb.legendaryActionsUsed) || 0, Number(row.legendaryActionsUsed) || 0);
+      if (row.legendaryActionsLeft != null) cb.legendaryActionsLeft = Number(row.legendaryActionsLeft);
       if (row.turnPhase != null) {
         // Prefer active over ready if we already started
         if (cb.turnPhase === 'active' || row.turnPhase === 'active') cb.turnPhase = 'active';
+        else if (cb.legendaryActionReady) { /* keep */ }
         else cb.turnPhase = row.turnPhase;
       }
       if (row.extraActionsGranted != null) cb.extraActionsGranted = Math.max(Number(cb.extraActionsGranted) || 0, Number(row.extraActionsGranted) || 0);
@@ -2636,6 +3262,33 @@ function beginCombatantTurn(cb, ch) {
     cb.attacksUsed = 0;
     cb.moveUsed = 0;
     cb.actionsUsed = 0;
+    // Tick down timed conditions like "Poisoned (2)" → "Poisoned (1)"
+    try {
+      if (cb.conditions && typeof cb.conditions === 'string') {
+        cb.conditions = cb.conditions.replace(/\b([A-Za-z][\w\s-]*?)\s*\((\d+)\)/g, function(_, name, n) {
+          var left = parseInt(n, 10) - 1;
+          if (left <= 0) {
+            try { appendSharedCombatLog((cb.name || 'Combatant') + ': ' + name.trim() + ' ended'); } catch (e) {}
+            return '';
+          }
+          return name.trim() + ' (' + left + ')';
+        }).replace(/;\s*;/g, ';').replace(/^;\s*|;\s*$/g, '').trim();
+      }
+    } catch (e) {}
+    // Legendary action reminder for villains/NPCs
+    try {
+      var isLeg = !!(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || (cb.side && /enemy|villain/i.test(String(cb.side))));
+      if (isLeg && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+        var lr = cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistance;
+        // Refresh legendary action pool at the START of this creature's turn only (5e rules)
+        if (cb.legendaryActionsMax == null) cb.legendaryActionsMax = 3;
+        cb.legendaryActionsUsed = 0;
+        cb.legendaryActionReady = false;
+        cb.legendaryActionsLeft = cb.legendaryActionsMax;
+        try { appendSharedCombatLog((cb.name || 'NPC') + ' regains Legendary Actions (' + cb.legendaryActionsMax + ')'); } catch (e) {}
+        toast((cb.name || 'NPC') + ' — legendary actions available (' + cb.legendaryActionsMax + ')' + (lr != null ? (' · LR ' + lr) : ''));
+      }
+    } catch (e) {}
     // Recalculate Extra Attack budget every turn start (fixes DM 2/2 vs player 3/3)
     try {
       if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, ch);
@@ -3185,14 +3838,18 @@ function beginCombatantTurn(cb, ch) {
     const phase = cb.turnPhase || 'ready';
     // active: full turn (DM Next Turn)
     // ended: only reaction + legendary
+    // legendary / legendaryActionReady: off-turn Legendary Action attack or cast
     const lockedUntilStart = phase === 'ready' || phase === 'pending' || !phase;
     const turnEnded = phase === 'ended';
+    const laReady = !!cb.legendaryActionReady || phase === 'legendary';
     const allowMain = phase === 'active';
-    const allowReaction = phase === 'active' || turnEnded || lockedUntilStart; // reaction anytime until next start — but if not started yet, still allow reaction from prior turn
+    const allowLegendaryAct = laReady; // Roll Attack / Cast while a LA is pending
+    const allowReaction = phase === 'active' || turnEnded || lockedUntilStart || laReady;
     // Clarify rules:
     // - Before Start turn: block move/action/bonus/object/cast/attack (except reaction if not used)
     // - Active: all on-turn options
     // - Ended: only reaction + legendary (+ legendary resistance if present)
+    // - Legendary Action ready: unlock Roll Attack + Cast only
 
     const setDisabled = (el, dis, title) => {
       if (!el) return;
@@ -3203,14 +3860,19 @@ function beginCombatantTurn(cb, ch) {
     };
     const lockMsg = lockedUntilStart ? 'Wait for DM Next Turn' : (turnEnded ? 'Turn ended — only Reaction / Legendary' : '');
 
-    // Turn economy buttons
+    // Turn economy buttons (main turn only)
     ['cd-move-dec','cd-move-inc','cd-move-all','cd-move-reset',
      'cd-action-toggle',
-     'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local',
-     'cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'
+     'cd-bonus-toggle','cd-object-toggle','cd-end-turn-local'
     ].forEach(id => {
       const el = panel.querySelector('#' + id);
       setDisabled(el, !allowMain, lockMsg);
+    });
+    // Attack / cast: allowed on active turn OR when Legendary Action is ready (off-turn)
+    ['cr-spell-cast','cr-spell-pick','cr-spell-slot','cr-roll-btn'].forEach(id => {
+      const el = panel.querySelector('#' + id);
+      const allow = allowMain || allowLegendaryAct;
+      setDisabled(el, !allow, allowLegendaryAct ? 'Legendary Action — attack or cast' : lockMsg);
     });
     // DM can always adjust/reset action & weapon budgets
     ['cd-atk-dec','cd-atk-inc','cd-atk-reset','cd-act-dec','cd-act-inc','cd-act-reset'].forEach(id => {
@@ -3296,7 +3958,10 @@ function beginCombatantTurn(cb, ch) {
       if (board) board.insertBefore(banner, board.firstChild);
     }
     if (banner) {
-      if (lockedUntilStart) {
+      if (laReady) {
+        banner.textContent = 'Legendary Action ready — use Roll Attack or Cast a spell (does not use their normal turn Action).';
+        banner.className = 'turn-phase-banner ok small';
+      } else if (lockedUntilStart) {
         banner.textContent = 'Press Start turn before moving, acting, casting, or attacking.';
         banner.className = 'turn-phase-banner warn small';
       } else if (turnEnded) {
@@ -3306,6 +3971,16 @@ function beginCombatantTurn(cb, ch) {
         banner.textContent = 'Turn in progress — move, action, and bonus action are independent.';
         banner.className = 'turn-phase-banner ok small';
       }
+    }
+    // Re-assert attack button when LA is pending (phase lock must not leave it disabled)
+    if (laReady) {
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(panel, cb); } catch (e) {}
+      try {
+        ['cr-roll-btn','cr-spell-cast'].forEach(function(id) {
+          var el = panel.querySelector('#' + id);
+          if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+        });
+      } catch (e) {}
     }
   }
 
@@ -3620,10 +4295,26 @@ function beginCombatantTurn(cb, ch) {
         </div>
         <div class="combat-res-row">
           <button type="button" class="btn secondary btn-tiny" id="cd-la-dec">−</button>
-          <span class="combat-res-val"><strong>${cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : 3}</strong> / ${cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3}</span>
+          <span class="combat-res-val"><strong>${(function(){ var mx = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3; var left = cb.legendaryActionsLeft != null ? Number(cb.legendaryActionsLeft) : Math.max(0, mx - (Number(cb.legendaryActionsUsed)||0)); return left; })()}</strong> / ${(function(){ return Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3)) || 3; })()}</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-la-inc">+</button>
           <button type="button" class="btn secondary btn-tiny" id="cd-spend-la">Spend</button>
         </div>
+        ${(function(){
+          var acts = cb.legendaryActions;
+          if (!acts) return '';
+          if (typeof acts === 'string') {
+            try { acts = JSON.parse(acts); } catch (e) { acts = acts.split(/\n+/).filter(Boolean).map(function(s){ return { name: s.trim() }; }); }
+          }
+          if (!Array.isArray(acts) || !acts.length) return '';
+          var opts = acts.map(function(a, i) {
+            var nm = (a && (a.name || a.title || a.action)) || ('Option ' + (i+1));
+            var cost = (a && (a.cost != null ? a.cost : a.legendaryActionsCost)) || 1;
+            var desc = (a && (a.desc || a.description || a.text)) || '';
+            return '<button type="button" class="btn ghost btn-tiny cd-la-option" data-la-i="' + i + '" data-la-cost="' + cost + '" title="' + (typeof escapeAttr === 'function' ? escapeAttr(String(desc).slice(0, 180)) : '') + '">' +
+              (typeof escapeHtml === 'function' ? escapeHtml(String(nm)) : nm) + (cost > 1 ? ' (' + cost + ')' : '') + '</button>';
+          }).join(' ');
+          return '<div class="muted small" style="margin:0.25rem 0 0.35rem;display:flex;flex-wrap:wrap;gap:0.25rem;align-items:center"><span>LA options:</span> ' + opts + '</div>';
+        })()}
         <div class="combat-res-row" style="margin-top:0.35rem">
           <span class="muted small">Legendary Resistance</span>
           <button type="button" class="btn secondary btn-tiny" id="cd-lr-dec">−</button>
@@ -3769,6 +4460,8 @@ function beginCombatantTurn(cb, ch) {
       isUmbrarian: !!ch.isUmbrarian,
       umbrarianStage: ch.umbrarianStage || '',
       shard: ch.shard || '',
+      size: (typeof ch.size === 'object' && ch.size ? (ch.size.name || ch.size.label || 'Medium') : (ch.size || 'Medium')),
+      tokenSize: ch.tokenSize != null ? Number(ch.tokenSize) : null,
       legendary: !!ch.legendary,
       legendaryResist: ch.legendaryResist != null ? Number(ch.legendaryResist) : null,
       legendaryResistMax: ch.legendaryResistMax != null ? Number(ch.legendaryResistMax) : null,
@@ -7343,6 +8036,13 @@ function parseAttackLines(ch) {
     }
     const impBtn = document.querySelector('#roster-import-btn');
     const impFile = document.querySelector('#roster-import-file');
+    const l20Btn = document.querySelector('#roster-l20-test-btn');
+    if (l20Btn && !l20Btn.dataset.wired) {
+      l20Btn.dataset.wired = '1';
+      l20Btn.addEventListener('click', function() {
+        try { loadL20TestRoster(); } catch (e) { console.warn(e); toast('L20 test roster failed'); }
+      });
+    }
     if (impBtn && impFile && !impBtn.dataset.wired) {
       impBtn.dataset.wired = '1';
       impBtn.addEventListener('click', function() { impFile.click(); });
@@ -7500,8 +8200,14 @@ function parseAttackLines(ch) {
       bonusActions: n.bonusActions || [],
       reactions: n.reactions || [],
       legendaryActions: n.legendaryActions || ch.legendaryActions || [],
-      legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')),
+      legendaryActionsMax: (n.legendaryActionsMax != null ? Number(n.legendaryActionsMax)
+        : (ch.legendaryActionsMax != null ? Number(ch.legendaryActionsMax)
+        : ((n.legendary || ch.legendary || (side === 'enemy' || side === 'villain')) ? 3 : null))),
+      legendaryActionsUsed: Number(n.legendaryActionsUsed != null ? n.legendaryActionsUsed : ch.legendaryActionsUsed) || 0,
+      legendary: !!(n.legendary || ch.legendary || (side === 'enemy' || side === 'villain') || (n.legendaryActions && n.legendaryActions.length) || (ch.legendaryActions && ch.legendaryActions.length)),
       // normalizeCharacter historically dropped these — always prefer raw roster values
+      size: (n.size || ch.size || 'Medium'),
+      tokenSize: (n.tokenSize != null ? n.tokenSize : (ch.tokenSize != null ? ch.tokenSize : sizeToTokenSquares(n.size || ch.size || 'Medium'))),
       legendaryResist: (n.legendaryResist != null ? n.legendaryResist : ch.legendaryResist),
       legendaryResistMax: (n.legendaryResistMax != null ? n.legendaryResistMax : ch.legendaryResistMax),
       legendaryActionsMax: (n.legendaryActionsMax != null ? n.legendaryActionsMax : ch.legendaryActionsMax),
@@ -7846,12 +8552,13 @@ function parseAttackLines(ch) {
     try { if (typeof ensureCombatantTurnState === 'function') ensureCombatantTurnState(cb, null); } catch (e) {}
     const atkMaxGate = Math.max(1, Number(cb.attacksMax) || 1);
     const sessGate = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
-    if (sessGate >= atkMaxGate) {
+    // Legendary Action ready bypasses normal/session attack budget for one attack
+    if (sessGate >= atkMaxGate && !cb.legendaryActionReady) {
       try { toast('No weapon attacks left this turn (' + sessGate + '/' + atkMaxGate + ')'); } catch (e) {}
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
       return;
     }
-    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb)) {
+    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb) && !cb.legendaryActionReady) {
       try { toast('No actions / weapon attacks left this turn'); } catch (e) {}
       return;
     }
@@ -8710,6 +9417,16 @@ function parseAttackLines(ch) {
       left -= absorb;
     }
     target.hp = Math.max(0, (Number(target.hp) || 0) - left);
+    // Reaction window: target still has reaction and took damage
+    try {
+      if (left > 0 && !target.reactionUsed && target.hp > 0) {
+        if (!(typeof isPlayerRole === 'function' && isPlayerRole())) {
+          try { offerReactionPrompt(target); } catch (e) {
+            toast('Reaction available: ' + (target.name || 'target') + '?');
+          }
+        }
+      }
+    } catch (e) {}
     // Concentration
     if ((typeof isConcentratingCombatant === 'function' ? isConcentratingCombatant(target) : target.concentrating) && left > 0) {
       try { if (typeof concentrationCheck === 'function') concentrationCheck(target, left); } catch (e) { console.warn(e); }
@@ -9402,7 +10119,20 @@ function parseAttackLines(ch) {
   function renderSharedCombatLog() {
     const lines = getSharedCombatLog();
     const facing = (typeof isPlayerFacingView === 'function') ? isPlayerFacingView() : (typeof isPlayerRole === 'function' && isPlayerRole());
-    const visible = facing ? lines.filter(sharedLogEntryVisible) : lines;
+    var visible = facing ? lines.filter(sharedLogEntryVisible) : lines;
+    // DM log filters
+    try {
+      var filt = window.__clogFilter || 'all';
+      if (filt && filt !== 'all') {
+        visible = visible.filter(function(l) {
+          var s = (typeof formatSharedLogEntry === 'function' ? formatSharedLogEntry(l) : (l && l.text) || String(l || '')).toLowerCase();
+          if (filt === 'attack') return /damage|attack|hit|miss|heal|crit/.test(s);
+          if (filt === 'concentration') return /concentration|concentrat/.test(s);
+          if (filt === 'turn') return /start turn|end turn|round/.test(s);
+          return true;
+        });
+      }
+    } catch (e) {}
     const htmlLines = visible.slice(-40).map(l => {
       const s = formatSharedLogEntry(l);
       return '<div class="clog-line">' + (typeof escapeHtml === 'function' ? escapeHtml(s) : s) + '</div>';
@@ -9578,6 +10308,7 @@ function parseAttackLines(ch) {
             id: cb.id, name: cb.name, hp: cb.hp, hpMax: cb.hpMax, ac: cb.ac,
             init: cb.init, side: cb.side, conditions: cb.conditions, hideHp: cb.hideHp,
             tempHp: cb.tempHp, concentrating: cb.concentrating, dead: cb.dead,
+            size: cb.size, tokenSize: cb.tokenSize,
             turnState: cb.turnState, turnPhase: cb.turnPhase,
             actionUsed: cb.actionUsed, bonusUsed: cb.bonusUsed, reactionUsed: cb.reactionUsed,
             moveUsed: cb.moveUsed, attacksUsed: cb.attacksUsed,
@@ -9655,17 +10386,23 @@ function parseAttackLines(ch) {
     // Always see claimed/self character (player combat panel)
     if (viewer && (String(target.id) === String(viewer.id) || target.name === viewer.name)) return true;
     const map = getCombatMap();
-    // Theater of the mind / no map image: all roster combatants are valid targets
-    // (previous `return false` left only the claimed PC in the target list — broke player Damage Roll + concentration)
-    if (!map || !(map.image || map.video || map.mapImage || map.src || map.videoSrc)) {
+    // Has a real battle map? (image/video blob, data URL, or mediaType/IDB flags)
+    var hasMapMedia = !!(map && (
+      map.imageDataUrl || map.videoObjectUrl || map.image || map.video || map.mapImage ||
+      map.src || map.videoSrc || map.mediaUrl || map.mapDataUrl ||
+      map.mediaType === 'video' || map.mediaType === 'image' ||
+      map.hasVideoInIdb || map.hasImageInIdb
+    ));
+    // Theater of the mind only when there is no map media at all
+    if (!map || !hasMapMedia) {
       return true;
     }
     const pos = (typeof getCombatantTokenPos === 'function')
       ? getCombatantTokenPos(target, map)
-      : (map.tokens && map.tokens[String(target.id)]);
-    // On the roster but no token placed yet — still targetable
-    if (!pos) return true;
-    // Anyone under unrevealed FoW is hidden from player-facing lists (PC and enemy)
+      : (map.tokens && (map.tokens[String(target.id)] || map.tokens[target.id]));
+    // Has a map but token not placed yet — hide from player/popup lists
+    if (!pos) return false;
+    // Token on map + FoW: must be in a revealed cell
     if (!map.fogEnabled) return true;
     try {
       ensureMapFog(map);
@@ -10097,9 +10834,60 @@ function parseAttackLines(ch) {
           ${typeof combatSpellSlotsHtml === 'function' ? combatSpellSlotsHtml(cb) : ''}
           <div class="detail-block">
             <div class="detail-label">Conditions & Effects (buffs + debuffs)</div>
+            <div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-bottom:0.3rem;align-items:center">
+              <select id="cd-status-lib" style="min-width:8rem">
+                <option value="">Add status…</option>
+                <option value="Blinded">Blinded</option>
+                <option value="Charmed">Charmed</option>
+                <option value="Deafened">Deafened</option>
+                <option value="Frightened">Frightened</option>
+                <option value="Grappled">Grappled</option>
+                <option value="Incapacitated">Incapacitated</option>
+                <option value="Invisible">Invisible</option>
+                <option value="Paralyzed">Paralyzed</option>
+                <option value="Petrified">Petrified</option>
+                <option value="Poisoned">Poisoned</option>
+                <option value="Prone">Prone</option>
+                <option value="Restrained">Restrained</option>
+                <option value="Stunned">Stunned</option>
+                <option value="Unconscious">Unconscious</option>
+                <option value="Blessed">Blessed</option>
+                <option value="Hasted">Hasted</option>
+                <option value="Raging">Raging</option>
+              </select>
+              <label class="muted small">Rounds <input type="number" id="cd-status-rounds" min="1" max="20" value="1" style="width:3rem"></label>
+              <button type="button" class="btn secondary btn-tiny" id="cd-status-add">Add</button>
+            </div>
             <input type="text" id="cd-conditions" value="${escapeAttr(cb.conditions || '')}" placeholder="poisoned, prone…" style="width:100%" />
             <label class="checkbox-row" style="margin-top:0.35rem"><input type="checkbox" id="cd-conc" ${cb.concentrating ? 'checked' : ''}/> Concentrating</label>
             ${(cb.legendaryResistMax != null || cb.legendaryResist != null || cb.legendary) ? `<div class="muted small" style="margin-top:0.25rem">Legendary Resistance: <strong>${Number(cb.legendaryResist != null ? cb.legendaryResist : cb.legendaryResistMax) || 0}</strong> / ${Number(cb.legendaryResistMax != null ? cb.legendaryResistMax : cb.legendaryResist) || 0}</div>` : ''}
+            ${(cb.legendary || (cb.legendaryActions && cb.legendaryActions.length) || cb.legendaryActionsMax != null) ? (() => {
+              const max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
+              const used = Number(cb.legendaryActionsUsed) || 0;
+              const left = Math.max(0, max - used);
+              const opts = Array.isArray(cb.legendaryActions) ? cb.legendaryActions : [];
+              const optHtml = opts.length ? (`<select id="cd-leg-opt" style="max-width:12rem;margin:0.2rem 0.25rem 0 0">` +
+                opts.map(function(o, i) {
+                  var lab = (typeof o === 'string') ? o : (o.name || o.title || ('Option ' + (i+1)));
+                  var cost = (typeof o === 'object' && o.cost != null) ? o.cost : 1;
+                  return '<option value="' + i + '">' + lab + (cost > 1 ? (' (' + cost + ' actions)') : '') + '</option>';
+                }).join('') + '</select>') : '';
+              return `<div class="muted small" style="margin-top:0.25rem">Legendary Actions: <strong id="cd-leg-left">${left}</strong> / ${max}
+                ${optHtml}
+                <button type="button" class="btn ghost btn-tiny" id="cd-leg-use" title="Spend one legendary action">Use</button>
+                <button type="button" class="btn ghost btn-tiny" id="cd-leg-reset" title="Reset to full">Reset</button>
+              </div>`;
+            })() : ''}
+            <div class="field" style="margin-top:0.4rem">
+              <label>Creature size (token footprint)</label>
+              <select id="cd-token-size" ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? 'disabled' : ''}>
+                ${['Tiny','Small','Medium','Large','Huge','Gargantuan'].map(function(sz) {
+                  const cur = String(cb.size || 'Medium');
+                  const sel = (cur.toLowerCase() === sz.toLowerCase()) || (sizeToTokenSquares(cur) === sizeToTokenSquares(sz) && !['Tiny','Small','Medium','Large','Huge','Gargantuan'].some(function(x){ return x.toLowerCase()===cur.toLowerCase(); }) && sz==='Medium');
+                  return '<option value="'+sz+'" '+(String(cb.size||'Medium').toLowerCase()===sz.toLowerCase()?'selected':'')+'>'+sz+' ('+sizeToTokenSquares(sz)+' sq)</option>';
+                }).join('')}
+              </select>
+            </div>
             ${(typeof isPlayerRole === 'function' && isPlayerRole()) ? '' : `<label class="checkbox-row"><input type="checkbox" id="cd-hidden-hp" ${cb.hideHp ? 'checked' : ''}/> Hide HP on map</label>`}
         <div class="form-row" style="margin-top:0.35rem;gap:0.35rem;flex-wrap:wrap">
           <button type="button" class="btn secondary btn-tiny" id="cd-death-save">Death Save</button>
@@ -10756,6 +11544,53 @@ function parseAttackLines(ch) {
       cb.conditions = e.target.value;
       try { save(); } catch (err) {}
     });
+    panel.querySelector('#cd-status-add')?.addEventListener('click', () => {
+      try {
+        var lib = panel.querySelector('#cd-status-lib');
+        var roundsEl = panel.querySelector('#cd-status-rounds');
+        var name = lib && lib.value;
+        if (!name) { toast('Pick a status'); return; }
+        var rounds = parseInt(roundsEl && roundsEl.value, 10) || 1;
+        var piece = name + ' (' + rounds + ')';
+        var cur = (cb.conditions || '').trim();
+        cb.conditions = cur ? (cur.replace(/;\s*$/, '') + '; ' + piece) : piece;
+        var inp = panel.querySelector('#cd-conditions');
+        if (inp) inp.value = cb.conditions;
+        if (lib) lib.value = '';
+        var note = statusEffectNote(name);
+        try { save(); } catch (err) {}
+        try { appendSharedCombatLog((cb.name || 'Combatant') + ' gains ' + piece + (note ? (' — ' + note) : '')); } catch (e) {}
+        toast(piece + (note ? (' · ' + note) : '') + ' added');
+      } catch (e) { console.warn(e); }
+    });
+    panel.querySelector('#cd-leg-use')?.addEventListener('click', () => {
+      try { grantLegendaryAction(cb, panel); } catch (e) { console.warn(e); }
+    });
+    panel.querySelector('#cd-leg-reset')?.addEventListener('click', () => {
+      try {
+        var max = Number(cb.legendaryActionsMax != null ? cb.legendaryActionsMax : 3) || 3;
+        cb.legendaryActionsUsed = 0;
+        cb.legendaryActionsMax = max;
+        var el = panel.querySelector('#cd-leg-left');
+        if (el) el.textContent = String(max);
+        try { save(); } catch (err) {}
+        toast('Legendary Actions reset');
+      } catch (e) {}
+    });
+    panel.querySelector('#cd-token-size')?.addEventListener('change', (e) => {
+      const sz = e.target.value || 'Medium';
+      cb.size = sz;
+      cb.tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1;
+      // Light persist — avoid save() token broadcast storm
+      try {
+        var payload = typeof cloneStateForLocalStorage === 'function'
+          ? cloneStateForLocalStorage()
+          : { campaigns: state.campaigns, activeCampaignId: state.activeCampaignId };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } catch (err) {}
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (err) {}
+      try { if (typeof syncMapTokenSizeSelect === 'function') syncMapTokenSizeSelect(); } catch (err) {}
+    });
     panel.querySelector('#cd-conc')?.addEventListener('change', (e) => {
       cb.concentrating = !!e.target.checked;
       if (cb.concentrating) {
@@ -10969,11 +11804,31 @@ function parseAttackLines(ch) {
         cb.deathSaves.failures = Math.min(3, (cb.deathSaves.failures || 0) + 1);
         syncLinkedCharacterHp(cb); save(); renderCombat();
       });
-      panel.querySelector('#cd-toggle-reaction')?.addEventListener('click', () => { cb.reactionUsed = !cb.reactionUsed; save(); renderCombat(); });
+      panel.querySelector('#cd-toggle-reaction')?.addEventListener('click', () => { try { useReactionForCombatant(cb, panel); } catch (e) { cb.reactionUsed = !cb.reactionUsed; save(); renderCombat(); } });
+      panel.querySelector('#cd-reaction-toggle')?.addEventListener('click', () => { try { useReactionForCombatant(cb, panel); } catch (e) { cb.reactionUsed = true; save(); renderCombat(); } });
+      panel.querySelector('#cd-use-reaction')?.addEventListener('click', () => { try { useReactionForCombatant(cb, panel); } catch (e) {} });
       panel.querySelector('#cd-spend-la')?.addEventListener('click', () => {
-        const max = cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3;
-        cb.legendaryActionsLeft = Math.max(0, (cb.legendaryActionsLeft != null ? cb.legendaryActionsLeft : max) - 1);
-        save(); renderCombat();
+        try { grantLegendaryAction(cb, panel); } catch (e) { console.warn(e); }
+      });
+      panel.querySelectorAll('.cd-la-option').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          try {
+            var cost = parseInt(btn.getAttribute('data-la-cost'), 10) || 1;
+            var label = (btn.textContent || 'Legendary Action').trim();
+            // Spend cost times (or once if not enough)
+            var ok = true;
+            for (var k = 0; k < cost && ok; k++) {
+              ok = grantLegendaryAction(cb, panel);
+            }
+            if (ok || cost === 1) {
+              try { appendSharedCombatLog((cb.name || 'NPC') + ' chooses LA: ' + label); } catch (e) {}
+              // If multi-cost, still only one ready action
+              cb.legendaryActionReady = true;
+              try { applyCombatTurnPhaseLocks(panel, cb); } catch (e) {}
+              try { applyRollAttackButtonState(panel, cb); } catch (e) {}
+            }
+          } catch (e) { console.warn(e); }
+        });
       });
       panel.querySelector('#cd-spend-lr')?.addEventListener('click', () => {
         if (typeof spendLegendaryResist === 'function') spendLegendaryResist(cb);
@@ -12781,17 +13636,7 @@ function parseAttackLines(ch) {
       combat.round = (combat.round || 1) + 1;
       try { appendSharedCombatLog('— Round ' + combat.round + ' —'); } catch (e) {}
       tickConditionDurations(combat);
-      // Refresh legendary actions budget each round (NOT legendary resistances — those are /day)
-      combat.combatants.forEach(cb => {
-        if (cb.legendary || cb.legendaryActionsMax || (cb.legendaryActions && cb.legendaryActions.length)) {
-          const max = cb.legendaryActionsMax != null ? cb.legendaryActionsMax
-            : (cb.legendaryActionsPerRound != null ? cb.legendaryActionsPerRound : 3);
-          cb.legendaryActionsMax = max;
-          cb.legendaryActionsLeft = max;
-          cb.legendaryActionsUsed = 0;
-        }
-        // Do not reset legendaryResist here
-      });
+      // Legendary actions refresh on THAT creature's turn start (beginCombatantTurn), not for everyone at round change
     }
     const cur = combat.combatants[combat.turnIndex];
     if (cur) {
@@ -12965,18 +13810,44 @@ function parseAttackLines(ch) {
   }
 
   function combatantFromBestiary(b, side) {
+    var sizeRaw = b.size || b.sz || b.Size || 'Medium';
+    if (sizeRaw && typeof sizeRaw === 'object') sizeRaw = sizeRaw.name || sizeRaw.label || 'Medium';
+    var size = String(sizeRaw || 'Medium');
+    var tokenSize = typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(size) : 1;
+    var legendary = !!(b.legendary || b.legendaryActions || b.legendary_actions || (Number(b.cr) >= 10 && /dragon|lich|demon|devil|arch/i.test(String(b.n || ''))));
+    var legActs = b.legendaryActions || b.legendary_actions || [];
+    if (typeof legActs === 'string') {
+      try { legActs = JSON.parse(legActs); } catch (e) { legActs = legActs ? [legActs] : []; }
+    }
+    if (!Array.isArray(legActs)) legActs = [];
+    var legMax = b.legendaryActionsMax != null ? Number(b.legendaryActionsMax)
+      : (b.legendaryActionsPerRound != null ? Number(b.legendaryActionsPerRound)
+      : (legendary || legActs.length ? 3 : null));
+    var lr = b.legendaryResist != null ? Number(b.legendaryResist)
+      : (b.legendaryResistance != null ? Number(b.legendaryResistance)
+      : (legendary ? (Number(b.cr) >= 13 ? 3 : 1) : null));
     return {
       id: uid(),
       sourceId: null,
       bestiaryName: b.n,
       name: b.n,
-      init: 10,
+      init: 10 + (Number(b.dexMod) || 0),
       hp: b.hp,
       hpMax: b.hp,
       ac: b.ac,
       conditions: '',
       side: side || 'enemy',
-      notes: `CR ${b.cr} · ${b.o} · ${b.w}`
+      size: size,
+      tokenSize: tokenSize,
+      legendary: legendary || !!legActs.length,
+      legendaryActions: legActs,
+      legendaryActionsMax: legMax,
+      legendaryActionsPerRound: legMax,
+      legendaryActionsUsed: 0,
+      legendaryActionsLeft: legMax,
+      legendaryResist: lr,
+      legendaryResistMax: lr,
+      notes: `CR ${b.cr} · ${b.o || ''} · ${b.w || ''} · ${size}`
     };
   }
 
@@ -13610,6 +14481,8 @@ function escapeHtml(str) {
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
     try {
       restoreMapImagesAfterLoad().then(() => {
+        try { setupMapVideoBridge(); } catch (e) {}
+        try { setupMapPingBridge(); } catch (e) {}
         try {
           if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
           else if (typeof initBattleMapUi === 'function') initBattleMapUi();
@@ -13860,6 +14733,40 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
+    try { setupMapVideoBridge(); } catch (e) {}
+    try { setupMapPingBridge(); } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+        var room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+        var nm = 'Player';
+        try {
+          var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          if (claimed && claimed.name) nm = claimed.name;
+        } catch (e) {}
+        if (ch) ch.postMessage({ type: 'vtt-player-hello', name: nm, room: room, at: Date.now() });
+      }
+    } catch (e) {}
+    try {
+      var tries = 0;
+      var kickVideo = function() {
+        tries++;
+        ensureActiveMapVideo().then(function(ok) {
+          if (ok) {
+            try { renderBattleMap(); } catch (e) {}
+          } else if (tries < 8) {
+            try { requestMapVideoFromPeers(); } catch (e) {}
+            setTimeout(kickVideo, 350 * tries);
+          }
+        }).catch(function() {
+          if (tries < 8) {
+            try { requestMapVideoFromPeers(); } catch (e) {}
+            setTimeout(kickVideo, 350 * tries);
+          }
+        });
+      };
+      kickVideo();
+    } catch (e) {}
     const playerPop = typeof isPlayerRole === 'function' && isPlayerRole();
     // Physically remove chrome so it cannot reappear or stay clickable
     // DM share popout: KEEP .map-toolbar so FoW tools work; player popout: strip toolbar
@@ -14042,6 +14949,16 @@ function escapeHtml(str) {
         if (map0 && map0.tokens && guardVer) guardTokens = JSON.parse(JSON.stringify(map0.tokens));
       } catch (err) {}
       try { if (typeof load === 'function') load(); } catch (err) {}
+      // Popout: localStorage has no blob URL — reload video from IDB after state sync
+      try {
+        if (typeof ensureActiveMapVideo === 'function') {
+          ensureActiveMapVideo().then(function(ok) {
+            if (ok) {
+              try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e2) {}
+            }
+          });
+        }
+      } catch (err) {}
       try {
         if (guardTokens && guardVer) {
           const map1 = typeof getCombatMap === 'function' ? getCombatMap() : null;
@@ -14183,9 +15100,101 @@ function escapeHtml(str) {
     const c = getActive();
     const combat = c ? getCombat(c) : null;
     const list = (combat && combat.combatants) || [];
+    const prev = sel.value;
     sel.innerHTML = list.map((cb, i) =>
       `<option value="${escapeAttr(cb.id || String(i))}">${escapeHtml(cb.name || ('#' + i))}</option>`
     ).join('') || '<option value="">No combatants</option>';
+    if (prev && [...sel.options].some(function(o) { return o.value === prev; })) sel.value = prev;
+    try { syncMapTokenSizeSelect(); } catch (e) {}
+  }
+  function syncMapTokenSizeSelect() {
+    const sizeSel = document.getElementById('map-token-size');
+    const tokSel = document.getElementById('map-token-combatant');
+    if (!sizeSel || !tokSel) return;
+    const id = tokSel.value;
+    if (!id) return;
+    const c = getActive();
+    const combat = c ? getCombat(c) : null;
+    const list = (combat && combat.combatants) || [];
+    const cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+    if (!cb) return;
+    const sz = String(cb.size || 'Medium');
+    const opts = ['Tiny','Small','Medium','Large','Huge','Gargantuan'];
+    var match = opts.find(function(o) { return o.toLowerCase() === sz.toLowerCase(); });
+    if (!match && cb.tokenSize != null) {
+      var n = Number(cb.tokenSize);
+      if (n <= 0.5) match = 'Tiny';
+      else if (n <= 1) match = 'Medium';
+      else if (n <= 2) match = 'Large';
+      else if (n <= 3) match = 'Huge';
+      else match = 'Gargantuan';
+    }
+    sizeSel.value = match || 'Medium';
+  }
+  function applyMapTokenSizeFromSelect() {
+    const sizeSel = document.getElementById('map-token-size');
+    const tokSel = document.getElementById('map-token-combatant');
+    if (!sizeSel || !tokSel) return;
+    const id = tokSel.value;
+    if (!id) return;
+    const c = getActive();
+    if (!c) return;
+    const combat = getCombat(c);
+    const list = (combat && combat.combatants) || [];
+    var cb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+    // Fallback: match by name from selected option text
+    if (!cb && tokSel.selectedOptions && tokSel.selectedOptions[0]) {
+      var nm = tokSel.selectedOptions[0].textContent || '';
+      cb = list.find(function(x) { return x && x.name && nm.indexOf(x.name) === 0; });
+    }
+    if (!cb) {
+      try { if (typeof toast === 'function') toast('No combatant selected for size'); } catch (e) {}
+      return;
+    }
+    const sz = sizeSel.value || 'Medium';
+    cb.size = sz;
+    cb.tokenSize = Number(typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(sz) : 1);
+    // Stamp size onto map token so paint always sees it
+    try {
+      var map = getCombatMap();
+      if (map) {
+        map.tokens = map.tokens || {};
+        var tid = String(cb.id != null ? cb.id : id);
+        var pos = map.tokens[tid] || map.tokens[cb.id];
+        if (!pos) {
+          // try any key matching combatant
+          Object.keys(map.tokens).forEach(function(k) {
+            if (!pos && (k === tid || k === String(cb.charId))) pos = map.tokens[k];
+          });
+        }
+        if (pos) {
+          pos.tokenSize = cb.tokenSize;
+          pos.size = cb.size;
+        } else {
+          try { if (typeof toast === 'function') toast('Place the token on the map first, then set size'); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    // Keep size on linked source character if any
+    try {
+      var srcId = cb.sourceId || cb.charId;
+      if (srcId && typeof getActive === 'function') {
+        var camp = getActive();
+        var lists = [].concat((camp && camp.party) || [], (camp && camp.villains) || []);
+        var src = lists.find(function(x) { return x && String(x.id) === String(srcId); });
+        if (src) { src.size = sz; src.tokenSize = cb.tokenSize; }
+      }
+    } catch (e) {}
+    // Light persist only — NEVER call save() here (save broadcasts token positions → lag)
+    try {
+      var payload = typeof cloneStateForLocalStorage === 'function'
+        ? cloneStateForLocalStorage()
+        : { campaigns: state.campaigns, activeCampaignId: state.activeCampaignId };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (e) {}
+    // Local redraw only
+    try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    try { if (typeof toast === 'function') toast((cb.name || 'Token') + ' size → ' + sz + ' (' + cb.tokenSize + ' sq)'); } catch (e) {}
   }
 
   
@@ -14242,14 +15251,22 @@ function escapeHtml(str) {
       // Shared/player popouts: never show enemy AC (and hideHp already covers HP)
       const hideAc = isEnemy && (playerMode || popout);
       const acPart = hideAc ? '' : (' · AC ' + (cb.ac != null ? cb.ac : '—'));
+      const sizeLabel = (function() {
+        try {
+          const sz = cb.size || 'Medium';
+          const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+          return escapeHtml(String(sz)) + ' · ' + sq + ' sq';
+        } catch (e) { return 'Medium · 1 sq'; }
+      })();
       return `<div class="map-roster-card ${sideClass}${sel}" data-id="${escapeAttr(id)}" data-idx="${idx}">
         <div class="mr-name">${escapeHtml(cb.name || 'Combatant')}</div>
-        <div class="mr-meta">Init ${escapeHtml(String(init))}${acPart} · ${escapeHtml(sideClass)}${placed ? '' : ' · <em>not on map</em>'}</div>
+        <div class="mr-meta">Init ${escapeHtml(String(init))}${acPart} · ${escapeHtml(sideClass)} · ${sizeLabel}${placed ? '' : ' · <em>not on map</em>'}</div>
         <div class="mr-hp${(!hide && hp < hpMax * 0.5) ? ' hurt' : ''}">${hide ? '' : (hp + '/' + hpMax + ' HP')}</div>
         <div class="mr-bar">${hide ? '' : `<span style="width:${pct}%"></span>`}</div>
         <div class="tool-btns" style="margin-top:0.3rem">
           <button type="button" class="btn secondary btn-tiny mr-place" data-id="${escapeAttr(id)}">${placed ? 'Re-place' : 'Place'}</button>
           <button type="button" class="btn secondary btn-tiny mr-focus" data-id="${escapeAttr(id)}">Select</button>
+          <button type="button" class="btn secondary btn-tiny mr-center" data-id="${escapeAttr(id)}" title="Center map on token">Center</button>
         </div>
       </div>`;
     }).join('');
@@ -14283,6 +15300,70 @@ function escapeHtml(str) {
         selectCombatantById(btn.getAttribute('data-id'));
         renderMapRoster();
         renderBattleMap();
+      });
+    });
+    listEl.querySelectorAll('.mr-center').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-id');
+        try { selectCombatantById(id); } catch (err) {}
+        try { centerMapOnCombatant(id); } catch (err) {}
+      });
+    });
+    try { renderMapInitStrip(); } catch (e) {}
+  }
+
+  function renderMapInitStrip() {
+    var el = document.getElementById('map-init-strip');
+    if (!el) return;
+    var c = getActive();
+    var combat = c ? getCombat(c) : null;
+    var list = (combat && combat.combatants) ? combat.combatants.slice() : [];
+    if (!list.length) {
+      el.innerHTML = '';
+      el.style.display = 'none';
+      return;
+    }
+    list.sort(function(a, b) {
+      var ia = Number(a.init != null ? a.init : a.initiative);
+      var ib = Number(b.init != null ? b.init : b.initiative);
+      if (isNaN(ia)) ia = -99;
+      if (isNaN(ib)) ib = -99;
+      return ib - ia;
+    });
+    var cur = combat.current != null ? combat.current : combat.turnIndex;
+    var curId = null;
+    try {
+      if (typeof cur === 'number' && list[cur]) curId = list[cur].id;
+      else if (combat.combatants && combat.combatants[combat.turnIndex]) curId = combat.combatants[combat.turnIndex].id;
+    } catch (e) {}
+    // Prefer combat.combatants order for "current" marker by matching turnPhase active
+    var active = (combat.combatants || []).find(function(x) { return x && x.turnPhase === 'active'; });
+    if (active) curId = active.id;
+    el.style.display = 'flex';
+    el.style.flexWrap = 'wrap';
+    el.style.gap = '0.25rem';
+    el.style.padding = '0.35rem 0.4rem';
+    el.style.borderBottom = '1px solid rgba(196,163,90,0.25)';
+    el.style.fontSize = '0.72rem';
+    el.innerHTML = list.map(function(cb) {
+      var init = cb.init != null ? cb.init : (cb.initiative != null ? cb.initiative : '—');
+      var side = String(cb.side || '').toLowerCase();
+      var col = (side === 'enemy' || side === 'villain') ? '#c45' : (side === 'ally' ? '#6a8' : '#c4a35a');
+      var on = String(cb.id) === String(curId);
+      var name = (cb.name || '?');
+      if (name.length > 12) name = name.slice(0, 11) + '…';
+      var style = 'border:1px solid ' + col + ';border-radius:6px;';
+      if (on) style += 'background:rgba(196,163,90,0.4);font-weight:800;box-shadow:0 0 0 2px rgba(196,163,90,0.55);color:#fff8e0;';
+      return '<button type="button" class="btn ghost btn-tiny map-init-chip" data-id="' +
+        (typeof escapeAttr === 'function' ? escapeAttr(String(cb.id)) : String(cb.id)) +
+        '" style="' + style + '">' + (on ? '▶ ' : '') + init + ' · ' + (typeof escapeHtml === 'function' ? escapeHtml(name) : name) + '</button>';
+    }).join('');
+    el.querySelectorAll('.map-init-chip').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        try { selectCombatantById(btn.getAttribute('data-id')); } catch (e) {}
+        try { centerMapOnCombatant(btn.getAttribute('data-id')); } catch (e) {}
+        try { renderMapRoster(); } catch (e) {}
       });
     });
   }
@@ -14343,6 +15424,72 @@ function escapeHtml(str) {
     const gy = Math.floor((wy - oy) / g);
     return gx + ',' + gy;
   }
+  /** 5e size label → footprint in grid squares (Medium = 1). Stable-checkpoint: size+VTT polish. */
+  function sizeToTokenSquares(size) {
+    const s = String(size || '').toLowerCase().trim();
+    if (s === 'tiny') return 0.5;
+    if (s === 'small' || s === 'medium' || s === 'med' || s === '') return 1;
+    if (s === 'large') return 2;
+    if (s === 'huge') return 3;
+    if (s === 'gargantuan' || s === 'gargantua') return 4;
+    const n = Number(size);
+    if (!isNaN(n) && n > 0) return n;
+    return 1;
+  }
+  function combatantTokenSquares(cb) {
+    if (!cb) return 1;
+    if (cb.tokenSize != null && cb.tokenSize !== '' && !isNaN(Number(cb.tokenSize))) {
+      return Math.max(0.5, Math.min(8, Number(cb.tokenSize)));
+    }
+    if (cb.size) return sizeToTokenSquares(cb.size);
+    return 1;
+  }
+  /** Pixel radius for drawing/hit-test (circle fits footprint). */
+  function tokenRadiusForCombatant(map, cb, scale, pos) {
+    const g = (Number(map && map.gridSize) || 70) * (scale || 1);
+    var sq = combatantTokenSquares(cb);
+    // Prefer size stamped on the token position (survives list mismatches)
+    if (pos && pos.tokenSize != null && !isNaN(Number(pos.tokenSize))) {
+      sq = Math.max(0.5, Math.min(8, Number(pos.tokenSize)));
+    }
+    // Fill nearly the full footprint so Large/Huge is obvious
+    return Math.max(10, g * sq * 0.5 * 0.92);
+  }
+  function findCombatantByTokenId(id) {
+    try {
+      const c = getActive();
+      const list = (c && getCombat(c).combatants) || [];
+      return list.find(function(x) {
+        return x && (String(x.id) === String(id) || String(x.charId) === String(id));
+      }) || null;
+    } catch (e) { return null; }
+  }
+  /** Scroll map viewport to a token and briefly highlight it (no sync side-effects). */
+  function centerMapOnCombatant(id) {
+    try {
+      const map = getCombatMap();
+      if (!map) return;
+      const cb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(id) : null;
+      let pos = null;
+      if (typeof getCombatantTokenPos === 'function' && cb) pos = getCombatantTokenPos(cb, map);
+      if (!pos && map.tokens) pos = map.tokens[String(id)] || (cb && map.tokens[String(cb.id)]);
+      if (!pos) {
+        try { if (typeof toast === 'function') toast('Token not on map'); } catch (e) {}
+        return;
+      }
+      const scale = map.scale || 1;
+      const wrap = document.querySelector('.map-canvas-wrap');
+      if (wrap) {
+        const x = Number(pos.x) * scale;
+        const y = Number(pos.y) * scale;
+        wrap.scrollLeft = Math.max(0, x - wrap.clientWidth / 2);
+        wrap.scrollTop = Math.max(0, y - wrap.clientHeight / 2);
+      }
+      window.__mapFocusTokenId = String(id);
+      window.__mapFocusUntil = Date.now() + 1400;
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+    } catch (e) {}
+  }
   function getFogBrushSize(map) {
     const fromInput = parseInt(document.getElementById('map-fog-brush')?.value, 10);
     if (!isNaN(fromInput) && fromInput >= 1) return Math.min(12, fromInput);
@@ -14388,8 +15535,8 @@ function escapeHtml(str) {
     const goy = (Number(map.gridOffsetY) || 0) * scale;
     const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
     const isVideoMap = map && map.mediaType === 'video';
-    // Player / shared mapPopout: solid black; DM: translucent (darker on video so FoW is obvious)
-    ctx.fillStyle = playerView ? 'rgba(0,0,0,0.96)' : (isVideoMap ? 'rgba(0,0,0,0.78)' : 'rgba(0,0,0,0.55)');
+    // Player / shared mapPopout: fully opaque black; DM main: translucent
+    ctx.fillStyle = playerView ? 'rgba(0,0,0,1)' : (isVideoMap ? 'rgba(0,0,0,0.82)' : 'rgba(0,0,0,0.62)');
     const cols = Math.ceil(canvas.width / g) + 2;
     const rows = Math.ceil(canvas.height / g) + 2;
     const startCol = Math.floor(-gox / g) - 1;
@@ -15056,7 +16203,7 @@ function escapeHtml(str) {
         );
         if (!local) return;
         const fields = [
-          'hp','hpMax','tempHp','conditions','concentrating','dead',
+          'hp','hpMax','tempHp','conditions','concentrating','dead','size','tokenSize',
           'turnState','turnPhase','actionUsed','actionsUsed','actionsMax','bonusUsed','reactionUsed','moveUsed',
           'attacksUsed','attacksMax','lastAction','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
@@ -15524,6 +16671,25 @@ function escapeHtml(str) {
       console.error(e);
       body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
     }
+    // Ping from player combat panel
+    try {
+      if (!body.querySelector('#pc-map-ping')) {
+        var pingRow = document.createElement('div');
+        pingRow.style.cssText = 'margin:0.4rem 0;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center';
+        pingRow.innerHTML = '<button type="button" class="btn secondary btn-tiny" id="pc-map-ping" title="Ping your token on the map">Ping my token</button>';
+        body.insertBefore(pingRow, body.firstChild);
+        pingRow.querySelector('#pc-map-ping').addEventListener('click', function() {
+          try {
+            var map = getCombatMap();
+            if (!map || !map.tokens) { toast('No map'); return; }
+            var pos = map.tokens[String(me.id)] || map.tokens[me.id];
+            if (!pos) { toast('Your token is not on the map'); return; }
+            broadcastMapPing(pos.x, pos.y);
+            toast('Ping sent');
+          } catch (err) { console.warn(err); }
+        });
+      }
+    } catch (e) {}
     try { applyRollAttackButtonState(body, me); } catch (e) {}
     try { restorePlayerRollResult(me); } catch (e) {}
     try {
@@ -15652,6 +16818,37 @@ function escapeHtml(str) {
       }
     }
 
+
+    // Map pings / pointers
+    try {
+      var pings = window.__mapPings || [];
+      var now = Date.now();
+      pings = pings.filter(function(p) { return now - p.at < 2200; });
+      window.__mapPings = pings;
+      pings.forEach(function(p) {
+        var age = (now - p.at) / 2200;
+        var px = p.x * scale, py = p.y * scale;
+        var rad = 12 + age * 48;
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 220, 80,' + (1 - age).toFixed(2) + ')';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(px, py, rad, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(px, py, 5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255, 220, 80,' + (1 - age * 0.5).toFixed(2) + ')';
+        ctx.fill();
+        if (p.name) {
+          ctx.font = '600 11px system-ui,sans-serif';
+          ctx.fillStyle = 'rgba(255,240,180,' + (1 - age).toFixed(2) + ')';
+          ctx.textAlign = 'center';
+          ctx.fillText(String(p.name), px, py - rad - 6);
+        }
+        ctx.restore();
+      });
+    } catch (e) {}
+
     // walls
     if (map.walls && map.walls.length) {
       ctx.strokeStyle = 'rgba(255,80,80,0.55)';
@@ -15678,15 +16875,53 @@ function escapeHtml(str) {
       const resolved = typeof tokenPosForCombatant === 'function' ? tokenPosForCombatant(map, cb, idx) : null;
       const pos = resolved ? resolved.pos : (map.tokens[id]);
       if (!pos) return;
-      // Player / shared popout: hide tokens in unrevealed fog cells
-      // Only true player clients hide tokens in fog; DM mapPopout must see all tokens to move them
+      // Player clients: hide tokens in unrevealed fog (DM mapPopout still sees all so DM can move them)
       const hideFogTokens = typeof isPlayerRole === 'function' && isPlayerRole();
       if (hideFogTokens && map.fogEnabled) {
-        const cell = worldToFogCell(map, pos.x, pos.y);
-        if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+        try {
+          // Always show the player's own claimed token
+          var claimed = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null;
+          var isSelf = claimed && (String(claimed.id) === String(cb.id) || claimed.name === cb.name);
+          if (!isSelf) {
+            const cell = worldToFogCell(map, pos.x, pos.y);
+            if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+          }
+        } catch (e) {
+          const cell = worldToFogCell(map, pos.x, pos.y);
+          if (!map.fogRevealed || !map.fogRevealed[cell]) return;
+        }
       }
       const x = pos.x * scale, y = pos.y * scale;
-      const r = Math.max(8, (Number(map.gridSize) || 70) * scale * 0.35);
+      // Size footprint → radius (read-only; do not mutate combatant during paint)
+      const r = typeof tokenRadiusForCombatant === 'function'
+        ? tokenRadiusForCombatant(map, cb, scale, pos)
+        : Math.max(10, (Number(map.gridSize) || 70) * scale * 0.46 * (Number((pos && pos.tokenSize) || (cb && cb.tokenSize) || 1)));
+      try {
+        const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        if (sq >= 2) {
+          const g = (Number(map.gridSize) || 70) * scale;
+          const sidePx = g * sq;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 220, 120, 0.45)';
+          ctx.lineWidth = Math.max(1, 2 * scale);
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x - sidePx / 2, y - sidePx / 2, sidePx, sidePx);
+          ctx.setLineDash([]);
+          ctx.restore();
+        }
+      } catch (e) {}
+      try {
+        if (window.__mapFocusTokenId && String(cb.id) === String(window.__mapFocusTokenId)
+            && window.__mapFocusUntil && Date.now() < window.__mapFocusUntil) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 230, 80, 0.95)';
+          ctx.lineWidth = Math.max(2, 3 * scale);
+          ctx.beginPath();
+          ctx.arc(x, y, r + 6, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      } catch (e) {}
       const side = String(cb.side || '').toLowerCase();
       const isEnemy = side === 'enemy' || side === 'villain' || side === 'enemies';
       const isAlly = side === 'ally' || side === 'allies';
@@ -15763,6 +16998,18 @@ function escapeHtml(str) {
       ctx.fill(); ctx.stroke();
       ctx.fillStyle = '#efe6d6';
       ctx.fillText(label, x, ly + 1);
+      // Size badge for non-Medium creatures
+      try {
+        var sqBadge = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        if (pos && pos.tokenSize != null) sqBadge = Math.max(sqBadge, Number(pos.tokenSize) || 1);
+        var sizeNm = (pos && pos.size) || cb.size || '';
+        if (sqBadge > 1 || (sizeNm && !/^medium$/i.test(String(sizeNm)))) {
+          ctx.font = '600 9px system-ui,sans-serif';
+          ctx.fillStyle = '#e8c878';
+          ctx.fillText(String(sizeNm || ('×' + sqBadge)), x, ly + lh + 1);
+          ly += 11;
+        }
+      } catch (e) {}
       if (cb.concentrating) {
         ctx.font = '600 9px system-ui,sans-serif';
         ctx.fillStyle = '#9ec9ff';
@@ -15800,24 +17047,32 @@ function escapeHtml(str) {
       const x1 = r.x1 * scale, y1 = r.y1 * scale;
       const x2 = (r.x2 != null ? r.x2 : r.x1) * scale;
       const y2 = (r.y2 != null ? r.y2 : r.y1) * scale;
-      ctx.strokeStyle = 'rgba(255,220,100,0.95)';
-      ctx.fillStyle = 'rgba(255,220,100,0.95)';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
+      // Dark underlay for contrast on bright maps
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.lineWidth = 5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,220,100,0.98)';
+      ctx.fillStyle = 'rgba(255,220,100,0.98)';
+      ctx.lineWidth = 3;
+      ctx.setLineDash([8, 5]);
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.beginPath(); ctx.arc(x1, y1, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.beginPath(); ctx.arc(x2, y2, 4, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x1, y1, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x2, y2, 6, 0, Math.PI * 2); ctx.fill();
       const dx = (r.x2 != null ? r.x2 : r.x1) - r.x1;
       const dy = (r.y2 != null ? r.y2 : r.y1) - r.y1;
       const distPx = Math.sqrt(dx * dx + dy * dy);
       const ft = distPx / ((Number(map.gridSize) || 70) / 5);
       const label = (Math.round(ft * 2) / 2) + ' ft';
       const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      ctx.font = 'bold 13px system-ui,sans-serif';
+      ctx.font = 'bold 14px system-ui,sans-serif';
       ctx.textAlign = 'center';
       const tw = ctx.measureText(label).width + 10;
       ctx.fillStyle = 'rgba(0,0,0,0.75)';
@@ -15833,14 +17088,17 @@ function escapeHtml(str) {
       const ft = a.ft || 20;
       const pxPerFt = ((Number(map.gridSize) || 70) * scale) / 5; // 5 ft square
       const rad = (ft) * pxPerFt;
-      ctx.fillStyle = 'rgba(100,160,255,0.25)';
-      ctx.strokeStyle = 'rgba(100,180,255,0.9)';
-      ctx.lineWidth = 2;
+      ctx.fillStyle = 'rgba(80,150,255,0.28)';
+      ctx.strokeStyle = 'rgba(180,220,255,0.98)';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = 'rgba(0,0,0,0.45)';
+      ctx.shadowBlur = 4;
       if (a.shape === 'sphere' || a.shape === 'cube') {
       if (a.shape === 'sphere') {
         ctx.beginPath();
         ctx.arc(ox, oy, rad, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
+        ctx.fill();
+        ctx.shadowBlur = 0; ctx.stroke();
       } else {
         ctx.fillRect(ox - rad, oy - rad, rad * 2, rad * 2);
         ctx.strokeRect(ox - rad, oy - rad, rad * 2, rad * 2);
@@ -15875,7 +17133,10 @@ function escapeHtml(str) {
       if (dragId && map.tokens && map.tokens[dragId]) {
         const pos = map.tokens[dragId];
         const x = pos.x * scale, y = pos.y * scale;
-        const r = Math.max(10, (Number(map.gridSize) || 70) * scale * 0.35);
+        const dragCb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(dragId) : null;
+        const r = typeof tokenRadiusForCombatant === 'function'
+          ? tokenRadiusForCombatant(map, dragCb || {}, scale)
+          : Math.max(10, (Number(map.gridSize) || 70) * scale * 0.35);
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255, 210, 74, 0.95)';
@@ -15976,6 +17237,20 @@ function escapeHtml(str) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const map = getCombatMap();
+    // Popout / second window: blob URLs are not shared — restore video from IDB once
+    try {
+      if (map && map.mediaType === 'video' && !map.videoObjectUrl && (map.hasVideoInIdb || map.mediaType === 'video')) {
+        if (!window.__videoRestoreInflight) {
+          window.__videoRestoreInflight = true;
+          ensureActiveMapVideo().then(function(ok) {
+            window.__videoRestoreInflight = false;
+            if (ok) {
+              try { renderBattleMap(); } catch (e) {}
+            }
+          }).catch(function() { window.__videoRestoreInflight = false; });
+        }
+      }
+    } catch (e) {}
     const status = document.getElementById('map-status');
     const videoEl = document.getElementById('map-video');
     const hasVideo = !!(map && map.mediaType === 'video' && map.videoObjectUrl);
@@ -16420,6 +17695,49 @@ function escapeHtml(str) {
       toast('AoE / ruler cleared');
     };
     document.getElementById('map-clear-aoe')?.addEventListener('click', clearMeasures);
+    document.getElementById('map-token-combatant')?.addEventListener('change', () => {
+      try { syncMapTokenSizeSelect(); } catch (e) {}
+    });
+    document.getElementById('map-token-size')?.addEventListener('change', () => {
+      try { applyMapTokenSizeFromSelect(); } catch (e) {}
+    });
+    if (!window.__mapTokenSizeDelegated) {
+      window.__mapTokenSizeDelegated = true;
+      document.addEventListener('change', function(ev) {
+        if (ev.target && ev.target.id === 'map-token-size') {
+          try { applyMapTokenSizeFromSelect(); } catch (e) {}
+        }
+      }, true);
+    }
+    document.getElementById('map-reveal-token')?.addEventListener('click', function() {
+      try { revealFogAroundSelectedToken(); } catch (e) { console.warn(e); }
+    });
+    document.getElementById('map-reveal-pcs')?.addEventListener('click', function() {
+      try { revealFogAroundAllPcs(); } catch (e) { console.warn(e); }
+    });
+    if (!window.__clogFilterBound) {
+      window.__clogFilterBound = true;
+      document.addEventListener('click', function(ev) {
+        var btn = ev.target && ev.target.closest && ev.target.closest('.clog-filter');
+        if (!btn) return;
+        window.__clogFilter = btn.getAttribute('data-filter') || 'all';
+        document.querySelectorAll('.clog-filter').forEach(function(b) {
+          b.classList.toggle('active', b === btn);
+        });
+        try { renderSharedCombatLog(); } catch (e) {}
+      });
+    }
+    document.querySelectorAll('.map-fog-preset').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var n = parseInt(btn.getAttribute('data-brush'), 10) || 1;
+        var inp = document.getElementById('map-fog-brush');
+        if (inp) { inp.value = String(n); inp.dispatchEvent(new Event('change', { bubbles: true })); }
+        try {
+          var map = getCombatMap();
+          if (map) map.fogBrush = n;
+        } catch (e) {}
+      });
+    });
     document.addEventListener('keydown', (ev) => {
       if (ev.key !== 'Escape') return;
       try {
@@ -16443,11 +17761,13 @@ function bindMapCanvasInteractions(force) {
     };
     const hitToken = (map, x, y) => {
       const g = Number(map.gridSize) || 70;
-      const hitR = Math.max(g * 0.55, 24);
       let found = null, best = Infinity;
       Object.keys(map.tokens || {}).forEach((id) => {
         const p = map.tokens[id];
         if (!p) return;
+        const cb = typeof findCombatantByTokenId === 'function' ? findCombatantByTokenId(id) : null;
+        const sq = typeof combatantTokenSquares === 'function' ? combatantTokenSquares(cb) : 1;
+        const hitR = Math.max(g * 0.45 * sq, 16);
         const d = Math.hypot((p.x || 0) - x, (p.y || 0) - y);
         if (d <= hitR && d < best) { found = id; best = d; }
       });
@@ -16511,6 +17831,19 @@ function bindMapCanvasInteractions(force) {
         paintNow();
         return;
       }
+      if (tool && String(tool).indexOf('aoe-') === 0) {
+        var shape = String(tool).slice(4) || 'sphere';
+        var ftInp = document.getElementById('map-aoe-ft');
+        var ft = parseInt(ftInp && ftInp.value, 10) || 20;
+        map.aoe = { x: x, y: y, ft: ft, shape: shape, angle: -Math.PI / 2 };
+        window.__aoeDrag = { startX: x, startY: y, shape: shape };
+        paintNow();
+        return;
+      }
+      if (tool === 'ping') {
+        try { broadcastMapPing(x, y); } catch (e) {}
+        return;
+      }
 
       if (tool === 'token' || tool === 'pan' || !tool) {
         const found = hitToken(map, x, y);
@@ -16521,6 +17854,11 @@ function bindMapCanvasInteractions(force) {
           window.__mapDragId = found;
           window.__tokenDragActive = true;
           window.__tokenDragStartedAt = Date.now();
+          try {
+            var map0 = getCombatMap();
+            var p0 = map0 && map0.tokens && map0.tokens[found];
+            window.__tokenDragFrom = p0 ? { x: p0.x, y: p0.y, id: found } : { id: found };
+          } catch (e) { window.__tokenDragFrom = { id: found }; }
           try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
           paintNow();
           return;
@@ -16538,7 +17876,18 @@ function bindMapCanvasInteractions(force) {
           }
           if (!id) return;
           map.tokens = map.tokens || {};
-          map.tokens[id] = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
+          var placed = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x: x, y: y };
+          // Carry creature size onto the token so draw scale works even if list lookup fails
+          try {
+            var combat = getCombat(getActive());
+            var list = (combat && combat.combatants) || [];
+            var pcb = list.find(function(x, i) { return String(x.id || i) === String(id); });
+            if (pcb) {
+              placed.tokenSize = pcb.tokenSize != null ? Number(pcb.tokenSize) : (typeof sizeToTokenSquares === 'function' ? sizeToTokenSquares(pcb.size || 'Medium') : 1);
+              placed.size = pcb.size || 'Medium';
+            }
+          } catch (e) {}
+          map.tokens[id] = placed;
           try { save(); } catch (e) {}
           try { broadcastTokenPositions('place'); } catch (e) {}
           paintNow();
@@ -16569,6 +17918,21 @@ function bindMapCanvasInteractions(force) {
         paintNow();
         return;
       }
+      if (window.__aoeDrag && map.aoe) {
+        var ang = Math.atan2(y - map.aoe.y, x - map.aoe.x);
+        map.aoe.angle = ang;
+        var shape = map.aoe.shape || window.__aoeDrag.shape;
+        if (shape === 'sphere' || shape === 'cube') {
+          var g = Number(map.gridSize) || 70;
+          var dist = Math.hypot(x - map.aoe.x, y - map.aoe.y);
+          var ftFromDist = Math.max(5, Math.round((dist / g) * 5 / 5) * 5);
+          var ftInp2 = document.getElementById('map-aoe-ft');
+          var baseFt = parseInt(ftInp2 && ftInp2.value, 10) || 20;
+          map.aoe.ft = Math.max(baseFt, ftFromDist);
+        }
+        paintNow();
+        return;
+      }
       if (!window.__mapDragId) return;
       map.tokens = map.tokens || {};
       const pos = (typeof snapWorldToGrid === 'function') ? snapWorldToGrid(map, x, y) : { x, y };
@@ -16594,16 +17958,26 @@ function bindMapCanvasInteractions(force) {
     };
 
     const onUp = (ev) => {
-      const had = window.__mapDragId || window.__fogDrag || window.__gridDrag || window.__rulerDrag;
+      const hadToken = !!window.__mapDragId;
+      const hadFog = !!window.__fogDrag;
+      const hadGrid = !!window.__gridDrag;
+      const hadRuler = !!window.__rulerDrag;
+      const hadAoe = !!window.__aoeDrag;
       window.__mapDragId = null;
       window.__tokenDragActive = false;
       window.__fogDrag = null;
       window.__gridDrag = null;
       window.__rulerDrag = false;
-      if (had) {
-        // Tokens first (works for player — does not depend on player save())
+      window.__aoeDrag = null;
+      if (hadToken) {
         try { broadcastTokenPositions('up'); } catch (e) {}
+        try { checkOpportunityAttacksAfterMove(window.__tokenDragFrom); } catch (e) {}
         try { save(); } catch (e) {}
+        paintNow();
+      } else if (hadFog || hadGrid) {
+        try { save(); } catch (e) {}
+        paintNow();
+      } else if (hadRuler || hadAoe) {
         paintNow();
       }
     };
@@ -17037,7 +18411,9 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             if (c && c.id) {
               try {
                 await idbSetMapVideo(c.id, blob);
+                try { await idbSetMapVideo('active', blob); } catch (e2) {}
                 map.hasVideoInIdb = true;
+                map.mediaType = 'video';
               } catch (e) {
                 console.warn('video IDB', e);
               }
