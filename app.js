@@ -2856,52 +2856,75 @@ function requestMapVideoFromPeers() {
   }
 
 
+  function isHostileSide(a, b) {
+    function team(s) {
+      s = String(s || '').toLowerCase();
+      if (s === 'enemy' || s === 'villain' || s === 'foe' || s === 'hostile') return 'enemy';
+      if (s === 'party' || s === 'ally' || s === 'pc' || s === 'player' || s === 'friendly') return 'party';
+      return s || 'party';
+    }
+    return team(a) !== team(b);
+  }
+
+  function findTokenPos(map, combatant) {
+    if (!map || !map.tokens || !combatant) return null;
+    var id = String(combatant.id);
+    if (map.tokens[id]) return map.tokens[id];
+    if (combatant.id != null && map.tokens[combatant.id]) return map.tokens[combatant.id];
+    // fallback: match any key
+    var keys = Object.keys(map.tokens);
+    for (var i = 0; i < keys.length; i++) {
+      if (String(keys[i]) === id) return map.tokens[keys[i]];
+    }
+    return null;
+  }
+
   function checkOpportunityAttacksAfterMove(fromInfo) {
     try {
-      if (!fromInfo || !fromInfo.id) return;
+      if (!fromInfo || fromInfo.id == null) return;
       if (typeof isPlayerRole === 'function' && isPlayerRole()) return; // DM resolves OA
       var map = getCombatMap();
       if (!map || !map.tokens) return;
       var id = String(fromInfo.id);
       var to = map.tokens[id];
+      if (!to) {
+        // try numeric/string mismatch
+        Object.keys(map.tokens).forEach(function(k) {
+          if (!to && String(k) === id) to = map.tokens[k];
+        });
+      }
       if (!to) return;
       var g = Number(map.gridSize) || 70;
       var fromX = fromInfo.x, fromY = fromInfo.y;
       if (fromX == null || fromY == null) return;
-      // If barely moved (< half cell), skip
       var distPx = Math.hypot((to.x - fromX), (to.y - fromY));
-      if (distPx < g * 0.45) return;
+      // Need a real move (at least ~0.4 cell)
+      if (distPx < g * 0.4) return;
       var combat = getCombat(getActive());
       var list = (combat && combat.combatants) || [];
-      var mover = list.find(function(c) { return String(c.id) === id; });
+      var mover = list.find(function(c) { return c && String(c.id) === id; });
       if (!mover) return;
-      var reach = 5; // ft default melee
-      var reachPx = (reach / 5) * g * 1.15;
+      // Melee reach ~5 ft (1 cell) with small padding for grid centers
+      var reachPx = g * 1.35;
       var threats = [];
-      list.forEach(function(enemy) {
-        if (!enemy || String(enemy.id) === id) return;
-        if ((Number(enemy.hp) || 0) <= 0) return;
-        if (enemy.reactionUsed) return;
-        var es = String(enemy.side || '').toLowerCase();
-        var ms = String(mover.side || '').toLowerCase();
-        var hostile = (es === 'enemy' || es === 'villain') !== (ms === 'enemy' || ms === 'villain');
-        if (!hostile && es !== ms) hostile = true;
-        if (es === ms || (ms !== 'enemy' && ms !== 'villain' && es !== 'enemy' && es !== 'villain')) {
-          // allies don't OA each other
-          if (!((es === 'enemy' || es === 'villain') ^ (ms === 'enemy' || ms === 'villain'))) return;
-        }
-        var ep = map.tokens[String(enemy.id)];
-        if (!ep) return;
+      list.forEach(function(other) {
+        if (!other || String(other.id) === id) return;
+        // Only skip clearly dead combatants (missing HP is OK)
+        if (other.hp != null && other.hp !== '' && Number(other.hp) <= 0) return;
+        if (other.reactionUsed) return;
+        if (!isHostileSide(other.side, mover.side)) return;
+        var ep = findTokenPos(map, other);
+        if (!ep || ep.x == null || ep.y == null) return;
         var dFrom = Math.hypot(ep.x - fromX, ep.y - fromY);
         var dTo = Math.hypot(ep.x - to.x, ep.y - to.y);
-        // Was in reach, now out of reach
+        // Left their reach
         if (dFrom <= reachPx && dTo > reachPx) {
-          threats.push(enemy);
+          threats.push(other);
         }
       });
       if (!threats.length) return;
       threats.forEach(function(en) {
-        try { offerOpportunityAttackPrompt(en, mover); } catch (e) {}
+        try { offerOpportunityAttackPrompt(en, mover); } catch (e) { console.warn(e); }
       });
     } catch (e) { console.warn('OA check', e); }
   }
@@ -17857,8 +17880,10 @@ function bindMapCanvasInteractions(force) {
           try {
             var map0 = getCombatMap();
             var p0 = map0 && map0.tokens && map0.tokens[found];
-            window.__tokenDragFrom = p0 ? { x: p0.x, y: p0.y, id: found } : { id: found };
-          } catch (e) { window.__tokenDragFrom = { id: found }; }
+            window.__tokenDragFrom = p0 && p0.x != null
+              ? { x: Number(p0.x), y: Number(p0.y), id: String(found) }
+              : { id: String(found) };
+          } catch (e) { window.__tokenDragFrom = { id: String(found) }; }
           try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
           paintNow();
           return;
@@ -17887,9 +17912,13 @@ function bindMapCanvasInteractions(force) {
               placed.size = pcb.size || 'Medium';
             }
           } catch (e) {}
+          var prevPos = map.tokens[id] ? { x: map.tokens[id].x, y: map.tokens[id].y, id: id } : null;
           map.tokens[id] = placed;
           try { save(); } catch (e) {}
           try { broadcastTokenPositions('place'); } catch (e) {}
+          try {
+            if (prevPos && prevPos.x != null) checkOpportunityAttacksAfterMove(prevPos);
+          } catch (e) {}
           paintNow();
         }
       }
