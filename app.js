@@ -2904,48 +2904,76 @@ function requestMapVideoFromPeers() {
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
       var map = getCombatMap();
-      if (!map || !map.tokens) return;
-      var combat = getCombat(getActive());
+      if (!map || !map.tokens) {
+        return;
+      }
+      var c = typeof getActive === 'function' ? getActive() : null;
+      var combat = c && typeof getCombat === 'function' ? getCombat(c) : (c && c.combat);
       var list = (combat && combat.combatants) || [];
       if (!list.length) return;
 
       var g = Number(map.gridSize) || 70;
-      var reachPx = Math.max(g * 1.25, 40);
+      var reachPx = g * 1.5; // generous: 1.5 cells
 
-      // Build list of moves to evaluate
+      function posOf(id) {
+        id = String(id);
+        if (map.tokens[id]) return map.tokens[id];
+        var ks = Object.keys(map.tokens);
+        for (var i = 0; i < ks.length; i++) if (String(ks[i]) === id) return map.tokens[ks[i]];
+        return null;
+      }
+      function team(s) {
+        s = String(s || '').toLowerCase();
+        if (/enemy|villain|foe|hostile/.test(s)) return 'enemy';
+        if (/party|ally|pc|player|friendly/.test(s)) return 'party';
+        return 'other';
+      }
+      function hostile(a, b) {
+        var ta = team(a), tb = team(b);
+        if (ta === 'other' || tb === 'other') return ta !== tb || (ta === 'other' && tb === 'other' && a !== b);
+        return ta !== tb;
+      }
+
+      // Resolve move list
       var moves = [];
       if (fromInfo && fromInfo.id != null && fromInfo.x != null && fromInfo.y != null) {
-        var id0 = String(fromInfo.id);
-        var to0 = findTokenPos(map, id0);
-        if (to0) moves.push({ id: id0, from: { x: fromInfo.x, y: fromInfo.y }, to: to0 });
-      } else if (window.__tokenPrevPos) {
-        // Compare all tokens to previous snapshot
+        var to = posOf(fromInfo.id);
+        if (to) moves.push({ id: String(fromInfo.id), fx: Number(fromInfo.x), fy: Number(fromInfo.y), tx: Number(to.x), ty: Number(to.y) });
+      }
+      // Always also scan snapshot diffs (catches missed drag-from)
+      if (window.__tokenPrevPos) {
         Object.keys(map.tokens).forEach(function(k) {
           var prev = window.__tokenPrevPos[String(k)];
           var cur = map.tokens[k];
-          if (!prev || !cur || cur.x == null) return;
-          var d = Math.hypot(cur.x - prev.x, cur.y - prev.y);
-          if (d >= g * 0.4) moves.push({ id: String(k), from: { x: prev.x, y: prev.y }, to: cur });
+          if (!prev || !cur || cur.x == null || prev.x == null) return;
+          if (Math.hypot(cur.x - prev.x, cur.y - prev.y) < g * 0.35) return;
+          if (moves.some(function(m) { return m.id === String(k); })) return;
+          moves.push({ id: String(k), fx: Number(prev.x), fy: Number(prev.y), tx: Number(cur.x), ty: Number(cur.y) });
         });
       }
       if (!moves.length) return;
 
       moves.forEach(function(mv) {
-        var mover = list.find(function(c) { return c && String(c.id) === mv.id; });
+        var mover = list.find(function(x) { return x && String(x.id) === mv.id; });
         if (!mover) return;
-        var distPx = Math.hypot(mv.to.x - mv.from.x, mv.to.y - mv.from.y);
-        if (distPx < g * 0.4) return;
+        if (Math.hypot(mv.tx - mv.fx, mv.ty - mv.fy) < g * 0.35) return;
         list.forEach(function(other) {
           if (!other || String(other.id) === mv.id) return;
           if (other.hp != null && other.hp !== '' && Number(other.hp) <= 0) return;
           if (other.reactionUsed) return;
-          if (!isHostileSide(other.side, mover.side)) return;
-          var ep = findTokenPos(map, other);
+          // Hostile OR unknown sides (still prompt — DM can dismiss)
+          var hs = hostile(other.side, mover.side);
+          if (!hs && team(other.side) === 'other' && team(mover.side) === 'other') hs = true;
+          if (!hs) return;
+          var ep = posOf(other.id);
           if (!ep || ep.x == null) return;
-          var dFrom = Math.hypot(ep.x - mv.from.x, ep.y - mv.from.y);
-          var dTo = Math.hypot(ep.x - mv.to.x, ep.y - mv.to.y);
-          if (dFrom <= reachPx && dTo > reachPx) {
-            try { offerOpportunityAttackPrompt(other, mover); } catch (e) { console.warn(e); }
+          var dFrom = Math.hypot(ep.x - mv.fx, ep.y - mv.fy);
+          var dTo = Math.hypot(ep.x - mv.tx, ep.y - mv.ty);
+          // Left reach OR was adjacent and moved at least 1 cell away
+          var leftReach = (dFrom <= reachPx && dTo > reachPx);
+          var wasCloseMoved = (dFrom <= reachPx && Math.hypot(mv.tx - mv.fx, mv.ty - mv.fy) >= g * 0.9 && dTo >= dFrom + g * 0.5);
+          if (leftReach || wasCloseMoved) {
+            try { offerOpportunityAttackPrompt(other, mover); } catch (err) { console.warn(err); }
           }
         });
       });
@@ -2956,7 +2984,7 @@ function offerOpportunityAttackPrompt(attacker, mover) {
     if (!attacker || !mover) return;
     var key = String(attacker.id) + '>' + String(mover.id);
     window.__oaPromptAt = window.__oaPromptAt || {};
-    if (window.__oaPromptAt[key] && Date.now() - window.__oaPromptAt[key] < 2500) return;
+    if (window.__oaPromptAt[key] && Date.now() - window.__oaPromptAt[key] < 1000) return;
     window.__oaPromptAt[key] = Date.now();
     var aName = attacker.name || 'Enemy';
     var mName = mover.name || 'creature';
@@ -15733,6 +15761,16 @@ function escapeHtml(str) {
 
   function broadcastTokenPositions(reason) {
     try {
+      // OA: run on end of drag / place (most reliable hook — always fires when tokens move)
+      try {
+        var rs = String(reason || '');
+        if (rs === 'up' || rs === 'place') {
+          checkOpportunityAttacksAfterMove(window.__tokenDragFrom || null);
+          snapshotTokenPositions();
+        } else if (rs === 'drag' && !window.__tokenPrevPos) {
+          snapshotTokenPositions();
+        }
+      } catch (e) {}
       const c = getActive();
       if (!c || !c.combatMap) return;
       const at = Date.now();
@@ -17757,6 +17795,21 @@ function escapeHtml(str) {
         }
       }, true);
     }
+    
+    document.getElementById('map-test-oa')?.addEventListener('click', function() {
+      try {
+        var combat = getCombat(getActive());
+        var list = (combat && combat.combatants) || [];
+        var map = getCombatMap();
+        if (!list.length) { toast('No combatants'); return; }
+        var a = list.find(function(x) { return /enemy|villain/i.test(String(x.side||'')); }) || list[0];
+        var b = list.find(function(x) { return x && String(x.id) !== String(a.id); }) || list[0];
+        // Ensure both "on map" virtually for prompt
+        offerOpportunityAttackPrompt(a, b);
+        toast('Test OA prompt fired');
+      } catch (e) { console.warn(e); toast('Test OA failed'); }
+    });
+
     document.getElementById('map-reveal-token')?.addEventListener('click', function() {
       try { revealFogAroundSelectedToken(); } catch (e) { console.warn(e); }
     });
