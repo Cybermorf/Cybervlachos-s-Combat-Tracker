@@ -3002,19 +3002,7 @@ function offerOpportunityAttackPrompt(attacker, mover) {
       '<button type="button" class="btn ghost btn-tiny" data-oa="skip">Skip</button>';
     document.body.appendChild(el);
     el.querySelector('[data-oa="use"]').onclick = function() {
-      attacker.reactionUsed = true;
-      try { appendSharedCombatLog(aName + ' takes an Opportunity Attack against ' + mName); } catch (e) {}
-      try {
-        // Select attacker and open combat detail for the roll
-        var combat = getCombat(getActive());
-        if (combat && combat.combatants) {
-          var idx = combat.combatants.findIndex(function(c) { return String(c.id) === String(attacker.id); });
-          if (idx >= 0) combat.selectedIndex = idx;
-        }
-        if (typeof showCombatDetail === 'function') showCombatDetail(attacker);
-      } catch (e) {}
-      try { save(); } catch (e) {}
-      try { toast(aName + ' — OA: Roll Attack now'); } catch (e) {}
+      try { grantOpportunityAttack(attacker, mover, window.__combatDetailPanel || document); } catch (e) { console.warn(e); }
       el.remove();
     };
     el.querySelector('[data-oa="skip"]').onclick = function() { el.remove(); };
@@ -3060,6 +3048,82 @@ function offerOpportunityAttackPrompt(attacker, mover) {
       }
     } catch (e) {}
     try { if (typeof renderCombat === 'function') renderCombat(); } catch (e) {}
+    return true;
+  }
+
+
+  /** Grant a real Opportunity Attack: reaction spend + one attack vs target (off-turn). */
+  function grantOpportunityAttack(attacker, target, panel) {
+    if (!attacker) {
+      try { toast('Select the attacker (who takes the OA)'); } catch (e) {}
+      return false;
+    }
+    if (attacker.reactionUsed) {
+      try { toast((attacker.name || 'Combatant') + ' already used their reaction'); } catch (e) {}
+      return false;
+    }
+    if (attacker.hp != null && attacker.hp !== '' && Number(attacker.hp) <= 0) {
+      try { toast('Attacker is down'); } catch (e) {}
+      return false;
+    }
+    // Spend reaction and unlock one attack (same pattern as Legendary Action)
+    attacker.reactionUsed = true;
+    attacker.opportunityAttackReady = true;
+    attacker.legendaryActionReady = false; // don't mix
+    try {
+      var c = getActive();
+      var combat = c ? getCombat(c) : null;
+      if (combat && Array.isArray(combat.combatants)) {
+        var idx = combat.combatants.findIndex(function(x) { return x && String(x.id) === String(attacker.id); });
+        if (idx >= 0) combat.selectedIndex = idx;
+        // Prefer target for damage application
+        if (target) {
+          combat.oaTargetId = target.id;
+          try {
+            // Prefill attack roller target if present
+            window.__oaPendingTargetId = String(target.id);
+          } catch (e) {}
+        }
+      }
+    } catch (e) {}
+    try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(attacker); } catch (e) {}
+    try { save(); } catch (e) {}
+    try {
+      appendSharedCombatLog(
+        (attacker.name || 'Combatant') + ' takes an Opportunity Attack' +
+        (target ? (' vs ' + (target.name || 'target')) : '') + ' (reaction)'
+      );
+    } catch (e) {}
+    try {
+      if (typeof showCombatDetail === 'function') {
+        showCombatDetail(attacker, panel || window.__combatDetailPanel);
+      }
+    } catch (e) {}
+    try {
+      var p = panel || window.__combatDetailPanel || document;
+      if (typeof applyCombatTurnPhaseLocks === 'function') applyCombatTurnPhaseLocks(p, attacker);
+      if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(p, attacker);
+      ['cr-roll-btn'].forEach(function(id) {
+        var el = p.querySelector('#' + id);
+        if (el) { el.disabled = false; el.removeAttribute('disabled'); el.classList.remove('turn-locked'); }
+      });
+      // Select target in target list if possible
+      if (target) {
+        var sel = p.querySelector('#cr-targets, #cr-target, select[id*="target"]');
+        if (sel && sel.options) {
+          for (var i = 0; i < sel.options.length; i++) {
+            if (String(sel.options[i].value) === String(target.id) || (sel.options[i].textContent || '').indexOf(target.name || '') >= 0) {
+              sel.selectedIndex = i;
+              break;
+            }
+          }
+        }
+      }
+    } catch (e) {}
+    try {
+      toast('OA ready: ' + (attacker.name || 'Attacker') + ' — Roll Attack' +
+        (target ? (' vs ' + target.name) : ''));
+    } catch (e) {}
     return true;
   }
 
@@ -3139,8 +3203,8 @@ function grantLegendaryAction(cb, panel) {
 function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
-    // Legendary Action "Use" grants one attack outside (or after) normal budget
-    if (cb.legendaryActionReady) return 1;
+    // Legendary Action or Opportunity Attack grants one attack outside normal budget
+    if (cb.legendaryActionReady || cb.opportunityAttackReady) return 1;
     const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
     const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
     const atkUsed = Math.max(Number(cb.attacksUsed) || 0, sess);
@@ -3174,7 +3238,11 @@ function remainingWeaponAttacks(cb) {
     // Keep enabled so click can show a toast (disabled buttons do not fire click)
     btn.disabled = false;
     btn.removeAttribute('disabled');
-    if (cb.legendaryActionReady) {
+    if (cb.opportunityAttackReady) {
+      btn.title = 'Opportunity Attack — roll attack';
+      btn.classList.remove('is-budget-locked');
+      btn.dataset.budgetLocked = '0';
+    } else if (cb.legendaryActionReady) {
       btn.title = 'Legendary Action — roll attack';
       btn.classList.remove('is-budget-locked');
       btn.dataset.budgetLocked = '0';
@@ -3201,6 +3269,16 @@ function remainingWeaponAttacks(cb) {
     const atkMax = Number(cb.attacksMax) || 1;
     const atkUsed = Number(cb.attacksUsed) || 0;
 
+    // Opportunity Attack: one free weapon attack (reaction already spent when granted)
+    if (cb.opportunityAttackReady) {
+      cb.opportunityAttackReady = false;
+      cb.lastAction = label || 'Opportunity Attack';
+      try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
+      try { appendSharedCombatLog((cb.name || 'Combatant') + ' resolves Opportunity Attack'); } catch (e) {}
+      try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(cb); } catch (e) {}
+      try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
+      return true;
+    }
     // Legendary Action: one free attack or cast (does not spend the creature's normal turn Action)
     if (cb.legendaryActionReady) {
       cb.legendaryActionReady = false;
@@ -3320,6 +3398,7 @@ function spendAction(cb, label) {
       if (row.bonusUsed != null) cb.bonusUsed = !!(cb.bonusUsed || row.bonusUsed);
       if (row.reactionUsed != null) cb.reactionUsed = !!(cb.reactionUsed || row.reactionUsed);
       if (row.legendaryActionReady) cb.legendaryActionReady = true;
+      if (row.opportunityAttackReady) cb.opportunityAttackReady = true;
       if (row.legendaryActionsUsed != null) cb.legendaryActionsUsed = Math.max(Number(cb.legendaryActionsUsed) || 0, Number(row.legendaryActionsUsed) || 0);
       if (row.legendaryActionsLeft != null) cb.legendaryActionsLeft = Number(row.legendaryActionsLeft);
       if (row.turnPhase != null) {
@@ -3918,8 +3997,9 @@ function beginCombatantTurn(cb, ch) {
     const lockedUntilStart = phase === 'ready' || phase === 'pending' || !phase;
     const turnEnded = phase === 'ended';
     const laReady = !!cb.legendaryActionReady || phase === 'legendary';
+    const oaReady = !!cb.opportunityAttackReady;
     const allowMain = phase === 'active';
-    const allowLegendaryAct = laReady; // Roll Attack / Cast while a LA is pending
+    const allowLegendaryAct = laReady || oaReady; // Roll Attack while LA or OA pending
     const allowReaction = phase === 'active' || turnEnded || lockedUntilStart || laReady;
     // Clarify rules:
     // - Before Start turn: block move/action/bonus/object/cast/attack (except reaction if not used)
@@ -4034,7 +4114,10 @@ function beginCombatantTurn(cb, ch) {
       if (board) board.insertBefore(banner, board.firstChild);
     }
     if (banner) {
-      if (laReady) {
+      if (oaReady) {
+        banner.textContent = 'Opportunity Attack ready — Roll Attack (uses reaction, not their turn Action).';
+        banner.className = 'turn-phase-banner ok small';
+      } else if (laReady) {
         banner.textContent = 'Legendary Action ready — use Roll Attack or Cast a spell (does not use their normal turn Action).';
         banner.className = 'turn-phase-banner ok small';
       } else if (lockedUntilStart) {
@@ -8629,12 +8712,12 @@ function parseAttackLines(ch) {
     const atkMaxGate = Math.max(1, Number(cb.attacksMax) || 1);
     const sessGate = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
     // Legendary Action ready bypasses normal/session attack budget for one attack
-    if (sessGate >= atkMaxGate && !cb.legendaryActionReady) {
+    if (sessGate >= atkMaxGate && !cb.legendaryActionReady && !cb.opportunityAttackReady) {
       try { toast('No weapon attacks left this turn (' + sessGate + '/' + atkMaxGate + ')'); } catch (e) {}
       try { if (typeof applyRollAttackButtonState === 'function') applyRollAttackButtonState(document, cb); } catch (e) {}
       return;
     }
-    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb) && !cb.legendaryActionReady) {
+    if (typeof canRollWeaponAttack === 'function' && !canRollWeaponAttack(cb) && !cb.legendaryActionReady && !cb.opportunityAttackReady) {
       try { toast('No actions / weapon attacks left this turn'); } catch (e) {}
       return;
     }
@@ -17796,18 +17879,29 @@ function escapeHtml(str) {
       }, true);
     }
     
-    document.getElementById('map-test-oa')?.addEventListener('click', function() {
+    document.getElementById('combat-oa-btn')?.addEventListener('click', function() {
       try {
         var combat = getCombat(getActive());
         var list = (combat && combat.combatants) || [];
-        var map = getCombatMap();
-        if (!list.length) { toast('No combatants'); return; }
-        var a = list.find(function(x) { return /enemy|villain/i.test(String(x.side||'')); }) || list[0];
-        var b = list.find(function(x) { return x && String(x.id) !== String(a.id); }) || list[0];
-        // Ensure both "on map" virtually for prompt
-        offerOpportunityAttackPrompt(a, b);
-        toast('Test OA prompt fired');
-      } catch (e) { console.warn(e); toast('Test OA failed'); }
+        if (!list.length) { toast('No combatants in combat'); return; }
+        var idx = combat.selectedIndex != null ? combat.selectedIndex : 0;
+        var attacker = list[idx] || list[0];
+        // Target: prefer explicit selection / different side
+        var target = null;
+        if (window.__oaPendingTargetId) {
+          target = list.find(function(x) { return String(x.id) === String(window.__oaPendingTargetId); });
+        }
+        if (!target) {
+          target = list.find(function(x) {
+            return x && String(x.id) !== String(attacker.id) && isHostileSide(x.side, attacker.side);
+          });
+        }
+        if (!target) {
+          target = list.find(function(x) { return x && String(x.id) !== String(attacker.id); });
+        }
+        if (!target) { toast('Need an attacker and a target in combat'); return; }
+        grantOpportunityAttack(attacker, target, window.__combatDetailPanel || document);
+      } catch (e) { console.warn(e); toast('Opportunity Attack failed'); }
     });
 
     document.getElementById('map-reveal-token')?.addEventListener('click', function() {
