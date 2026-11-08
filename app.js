@@ -15475,6 +15475,14 @@ function escapeHtml(str) {
   function renderMapInitStrip() {
     var el = document.getElementById('map-init-strip');
     if (!el) return;
+    // Player popup: hide initiative chip strip (keeps roster list only)
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole()) {
+        el.innerHTML = '';
+        el.style.display = 'none';
+        return;
+      }
+    } catch (e) {}
     var c = getActive();
     var combat = c ? getCombat(c) : null;
     var list = (combat && combat.combatants) ? combat.combatants.slice() : [];
@@ -16840,12 +16848,14 @@ function escapeHtml(str) {
       console.error(e);
       body.innerHTML = '<p class="muted">Error loading combat panel.</p>';
     }
-    // Ping from player combat panel
+    // Ping + Opportunity Attack from player combat panel
     try {
       if (!body.querySelector('#pc-map-ping')) {
         var pingRow = document.createElement('div');
         pingRow.style.cssText = 'margin:0.4rem 0;display:flex;gap:0.35rem;flex-wrap:wrap;align-items:center';
-        pingRow.innerHTML = '<button type="button" class="btn secondary btn-tiny" id="pc-map-ping" title="Ping your token on the map">Ping my token</button>';
+        pingRow.innerHTML =
+          '<button type="button" class="btn secondary btn-tiny" id="pc-map-ping" title="Ping your token on the map">Ping my token</button>' +
+          '<button type="button" class="btn secondary btn-tiny" id="pc-oa-btn" title="Take an Opportunity Attack (uses your reaction)">Opportunity Attack</button>';
         body.insertBefore(pingRow, body.firstChild);
         pingRow.querySelector('#pc-map-ping').addEventListener('click', function() {
           try {
@@ -16856,6 +16866,25 @@ function escapeHtml(str) {
             broadcastMapPing(pos.x, pos.y);
             toast('Ping sent');
           } catch (err) { console.warn(err); }
+        });
+        pingRow.querySelector('#pc-oa-btn').addEventListener('click', function() {
+          try {
+            if (me.reactionUsed) { toast('You already used your reaction'); return; }
+            var combat = getCombat(getActive());
+            var list = (combat && combat.combatants) || [];
+            var target = null;
+            // Prefer hostile with token / selected enemy
+            target = list.find(function(x) {
+              return x && String(x.id) !== String(me.id) &&
+                (typeof isHostileSide === 'function' ? isHostileSide(x.side, me.side) : /enemy|villain/i.test(String(x.side||'')));
+            });
+            if (!target) target = list.find(function(x) { return x && String(x.id) !== String(me.id); });
+            if (!target) { toast('No target available for OA'); return; }
+            grantOpportunityAttack(me, target, body);
+            // Sync to DM
+            try { if (typeof playerPersistAndSyncCombat === 'function') playerPersistAndSyncCombat(); } catch (e) {}
+            try { if (typeof save === 'function') save(); } catch (e) {}
+          } catch (err) { console.warn(err); toast('Opportunity Attack failed'); }
         });
       }
     } catch (e) {}
@@ -16884,6 +16913,7 @@ function escapeHtml(str) {
 
     const hideSel = [
       '#view-combat', '#view-tools', '#sidebar', '#menu-toggle', '.menu-toggle',
+      '#map-init-strip',
       '#sidebar-collapse-btn', '.sidebar-collapse-btn',
       '.app-header', 'header.app-header', 'header', '.view-desc',
       '#vtt-create-room', '#vtt-join-player', '#vtt-room-code',

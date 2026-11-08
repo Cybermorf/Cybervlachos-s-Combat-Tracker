@@ -4236,3 +4236,9 @@ body.vtt-player .slot-stepper .slot-inc {
 @keyframes con-spin{from{transform:rotate(0)}to{transform:rotate(12deg)}}
 .con-check-actions{display:flex;flex-direction:column;gap:.5rem;margin-top:1rem}
 .con-check-result{margin-top:.75rem;font-size:1.05rem}
+
+/* Player popup: hide initiative strip */
+body.vtt-player #map-init-strip,
+body.map-popout.vtt-player #map-init-strip {
+  display: none !important;
+}
