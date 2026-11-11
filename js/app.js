@@ -2729,7 +2729,7 @@ function requestMapVideoFromPeers() {
       cb.attacksUsed = atkUsed;
       // Legendary Action ready → show at least 1 attack available without rewriting turn budget
       var atkLeft = Math.max(0, atkMax - atkUsed);
-      if (cb.legendaryActionReady) atkLeft = Math.max(atkLeft, 1);
+      if (cb.legendaryActionReady || cb.opportunityAttackReady) atkLeft = Math.max(atkLeft, 1);
       let actMax = Math.max(1, Number(cb.actionsMax) || 1);
       let actUsed = Math.max(Number(cb.actionsUsed) || 0, mirrorAct || 0);
       if (!cb.legendaryActionReady && atkUsed > 0 && actUsed < 1) {
@@ -3070,6 +3070,18 @@ function offerOpportunityAttackPrompt(attacker, mover) {
     attacker.reactionUsed = true;
     attacker.opportunityAttackReady = true;
     attacker.legendaryActionReady = false; // don't mix
+    try { sessionStorage.setItem('cyber_oa_' + String(attacker.id || attacker.name || ''), '1'); } catch (e) {}
+    try {
+      var _cLive = getActive();
+      var _combatLive = _cLive ? getCombat(_cLive) : null;
+      var _live = _combatLive && (_combatLive.combatants || []).find(function(x) {
+        return x && (String(x.id) === String(attacker.id) || x.name === attacker.name);
+      });
+      if (_live && _live !== attacker) {
+        _live.reactionUsed = true;
+        _live.opportunityAttackReady = true;
+      }
+    } catch (e) {}
     try {
       var c = getActive();
       var combat = c ? getCombat(c) : null;
@@ -3097,6 +3109,15 @@ function offerOpportunityAttackPrompt(attacker, mover) {
     try {
       if (typeof showCombatDetail === 'function') {
         showCombatDetail(attacker, panel || window.__combatDetailPanel);
+      }
+    } catch (e) {}
+    try { attacker.opportunityAttackReady = true; } catch (e) {}
+    try { if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(attacker); } catch (e) {}
+    try {
+      if (typeof isPlayerRole === 'function' && isPlayerRole() && typeof renderPlayerCombatPanel === 'function') {
+        renderPlayerCombatPanel();
+        attacker.opportunityAttackReady = true;
+        if (typeof refreshTurnEconomyUI === 'function') refreshTurnEconomyUI(attacker);
       }
     } catch (e) {}
     try {
@@ -3204,6 +3225,11 @@ function remainingWeaponAttacks(cb) {
     if (!cb) return 0;
     try { if (typeof restoreTurnEconomy === 'function') restoreTurnEconomy(cb); } catch (e) {}
     // Legendary Action or Opportunity Attack grants one attack outside normal budget
+    try {
+      if (!cb.opportunityAttackReady && typeof sessionStorage !== 'undefined' && sessionStorage.getItem('cyber_oa_' + String(cb.id || cb.name || '')) === '1') {
+        cb.opportunityAttackReady = true;
+      }
+    } catch (e) {}
     if (cb.legendaryActionReady || cb.opportunityAttackReady) return 1;
     const atkMax = Math.max(1, Number(cb.attacksMax) || 1);
     const sess = typeof getSessionAttacksUsed === 'function' ? getSessionAttacksUsed(cb) : 0;
@@ -3272,6 +3298,7 @@ function remainingWeaponAttacks(cb) {
     // Opportunity Attack: one free weapon attack (reaction already spent when granted)
     if (cb.opportunityAttackReady) {
       cb.opportunityAttackReady = false;
+      try { sessionStorage.removeItem('cyber_oa_' + String(cb.id || cb.name || '')); } catch (e) {}
       cb.lastAction = label || 'Opportunity Attack';
       try { if (typeof persistTurnEconomy === 'function') persistTurnEconomy(cb); } catch (e) {}
       try { appendSharedCombatLog((cb.name || 'Combatant') + ' resolves Opportunity Attack'); } catch (e) {}
@@ -3373,6 +3400,8 @@ function spendAction(cb, label) {
         lastAction: cb.lastAction || null,
         bonusUsed: !!cb.bonusUsed,
         reactionUsed: !!cb.reactionUsed,
+        legendaryActionReady: !!cb.legendaryActionReady,
+        opportunityAttackReady: !!cb.opportunityAttackReady,
         turnPhase: cb.turnPhase || 'active',
         extraActionsGranted: Number(cb.extraActionsGranted) || 0
       };
@@ -4280,7 +4309,14 @@ function beginCombatantTurn(cb, ch) {
     const _playerBudgetSimple = (typeof isPlayerRole === 'function' && isPlayerRole());
     const max = cb.attacksMax != null ? cb.attacksMax : 1;
     const used = cb.attacksUsed || 0;
-    const left = Math.max(0, max - used);
+    var left = Math.max(0, max - used);
+    try {
+      if (cb.opportunityAttackReady || cb.legendaryActionReady) left = Math.max(left, 1);
+      else if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('cyber_oa_' + String(cb.id || cb.name || '')) === '1') {
+        cb.opportunityAttackReady = true;
+        left = Math.max(left, 1);
+      }
+    } catch (e) {}
     // Actions budget (1 base + Haste + Action Surge grants, etc.)
     if (cb.actionsMax == null) cb.actionsMax = (typeof actionsMaxForCombatant === 'function') ? actionsMaxForCombatant(cb, ch) : 1;
     if (cb.actionsUsed == null) cb.actionsUsed = cb.actionUsed ? 1 : 0;
@@ -10402,6 +10438,9 @@ function parseAttackLines(ch) {
         if (local.actionsMax != null) r.actionsMax = Math.max(Number(r.actionsMax) || 0, Number(local.actionsMax) || 0);
         r.bonusUsed = local.bonusUsed || r.bonusUsed;
         r.reactionUsed = local.reactionUsed || r.reactionUsed;
+        if (local.opportunityAttackReady) r.opportunityAttackReady = true;
+        if (local.legendaryActionReady) r.legendaryActionReady = true;
+        if (local.opportunityAttackReady === false) r.opportunityAttackReady = false;
         r.moveUsed = Math.max(Number(r.moveUsed) || 0, Number(local.moveUsed) || 0);
         r.attacksUsed = Math.max(Number(r.attacksUsed) || 0, Number(local.attacksUsed) || 0);
         if (local.attacksMax != null) r.attacksMax = Math.max(Number(r.attacksMax) || 1, Number(local.attacksMax) || 1);
@@ -16382,7 +16421,7 @@ function escapeHtml(str) {
         const fields = [
           'hp','hpMax','tempHp','conditions','concentrating','dead','size','tokenSize',
           'turnState','turnPhase','actionUsed','actionsUsed','actionsMax','bonusUsed','reactionUsed','moveUsed',
-          'attacksUsed','attacksMax','lastAction','combatSpellSlots','combatResources','spellSlots','deathSaves'
+          'attacksUsed','attacksMax','lastAction','opportunityAttackReady','legendaryActionReady','combatSpellSlots','combatResources','spellSlots','deathSaves'
         ];
         fields.forEach(f => {
           // concentrating:false must apply (do not skip null/false)
