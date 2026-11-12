@@ -123,7 +123,15 @@
       const db = await openMapDb();
       await new Promise((resolve, reject) => {
         const tx = db.transaction(MAP_IDB_STORE, 'readwrite');
-        tx.objectStore(MAP_IDB_STORE).put(imageDataUrl || null, 'map:' + workspaceId);
+        const store = tx.objectStore(MAP_IDB_STORE);
+        const key = 'map:' + workspaceId;
+        if (imageDataUrl) store.put(imageDataUrl, key);
+        else store.delete(key);
+        // Shared key so other tabs (player / DM popout) can load the same map
+        if (String(workspaceId) !== 'active') {
+          if (imageDataUrl) store.put(imageDataUrl, 'map:active');
+          else store.delete('map:active');
+        }
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -1205,7 +1213,7 @@ function revealFogAroundSelectedToken() {
 
 function requestMapVideoFromPeers() {
     try {
-      setupMapVideoBridge();
+      setupMapVideoBridge(); try { setupMapMediaBridge(); } catch (e) {}
       var ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
       if (ch) ch.postMessage({ type: 'vtt-request-map-video', at: Date.now() });
     } catch (e) {}
@@ -14679,7 +14687,7 @@ function escapeHtml(str) {
     try { applyCompendiumToRuntime(); } catch (e) { console.warn(e); }
     try {
       restoreMapImagesAfterLoad().then(() => {
-        try { setupMapVideoBridge(); } catch (e) {}
+        try { setupMapVideoBridge(); try { setupMapMediaBridge(); } catch (e) {} } catch (e) {}
         try { setupMapPingBridge(); } catch (e) {}
         try {
           if (typeof isMapPopoutMode === 'function' && isMapPopoutMode()) applyMapPopoutMode();
@@ -14931,7 +14939,7 @@ function escapeHtml(str) {
     if (!isMapPopoutMode()) return;
     document.body.classList.add('map-popout');
     document.title = 'Battle Map (shared)';
-    try { setupMapVideoBridge(); } catch (e) {}
+    try { setupMapVideoBridge(); try { setupMapMediaBridge(); } catch (e) {} } catch (e) {}
     try { setupMapPingBridge(); } catch (e) {}
     try {
       if (typeof isPlayerRole === 'function' && isPlayerRole()) {
@@ -15782,7 +15790,12 @@ function escapeHtml(str) {
       fogRevealed: Object.assign({}, map.fogRevealed || {}),
       fogBrush: map.fogBrush || 1,
       hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
-      mediaType: map.mediaType || null
+      mediaType: map.mediaType || null,
+      mediaRev: map.mediaRev || 0,
+      hasMapImage: !!(map.mediaType === 'image' && (map.imageDataUrl || map.hasImageInIdb)),
+      hasMapVideo: !!(map.mediaType === 'video' || map.hasVideoInIdb),
+      width: map.width || null,
+      height: map.height || null
     } : null;
     return {
       type: 'vtt-state',
@@ -16075,6 +16088,185 @@ function escapeHtml(str) {
     }
   }
 
+
+  function unloadLocalMapMedia(map) {
+    if (!map) return;
+    try {
+      if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) URL.revokeObjectURL(map.videoObjectUrl);
+    } catch (e) {}
+    map.imageDataUrl = null;
+    map.videoObjectUrl = null;
+    map.mediaType = null;
+    map.hasImageInIdb = false;
+    map.hasVideoInIdb = false;
+    map._fitSrcW = null;
+    map._fitSrcH = null;
+    map.scale = null;
+    window.__mapStaticImg = null;
+    window.__mapVideoSrc = null;
+    window.__mapVideoTicking = false;
+    try { if (window.__mapRaf) { cancelAnimationFrame(window.__mapRaf); window.__mapRaf = null; } } catch (e) {}
+    const videoEl = document.getElementById('map-video');
+    if (videoEl) {
+      try { videoEl.pause(); } catch (e) {}
+      try { videoEl.removeAttribute('src'); videoEl.removeAttribute('data-src'); videoEl.load(); } catch (e) {}
+    }
+  }
+
+  async function applyRemoteMapMedia(meta) {
+    // MAP-MEDIA-SYNC-2026
+    if (!meta) return;
+    if (meta.clientId && window.__vttClientId && meta.clientId === window.__vttClientId) return;
+    const c = typeof getActive === 'function' ? getActive() : null;
+    if (!c) return;
+    const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
+    if (!map) return;
+    const rev = Number(meta.mediaRev) || 0;
+    const incomingType = meta.mediaType || null;
+    const wantImage = !!(meta.hasMapImage || incomingType === 'image');
+    const wantVideo = !!(meta.hasMapVideo || incomingType === 'video');
+    const clearing = meta.reason === 'map-clear' || (!wantImage && !wantVideo && (rev || meta.reason === 'map-media'));
+    if (!clearing && rev && Number(map.mediaRev) === rev && map.mediaType === incomingType) {
+      if (wantImage && map.imageDataUrl) return;
+      if (wantVideo && map.videoObjectUrl) return;
+    }
+    if (rev) map.mediaRev = rev;
+    if (meta.width) map.width = meta.width;
+    if (meta.height) map.height = meta.height;
+    if (clearing) {
+      unloadLocalMapMedia(map);
+      try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+      try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+      return;
+    }
+    if (wantVideo && !wantImage) {
+      map.imageDataUrl = null;
+      window.__mapStaticImg = null;
+      map.mediaType = 'video';
+      map.hasVideoInIdb = true;
+      if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+        try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+      }
+      map.videoObjectUrl = null;
+      try { if (typeof ensureActiveMapVideo === 'function') await ensureActiveMapVideo(); } catch (e) {}
+      try { if (typeof requestMapVideoFromPeers === 'function') requestMapVideoFromPeers(); } catch (e) {}
+      try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+      return;
+    }
+    let data = meta.imageDataUrl || null;
+    if (!data) {
+      try { data = await idbGetMapImage('active'); } catch (e) {}
+      if (!data && c.id) { try { data = await idbGetMapImage(c.id); } catch (e) {} }
+    }
+    if (!data) {
+      try {
+        var tries = Number(meta._tries) || 0;
+        if (tries < 6 && !window.__mapMediaRetry) {
+          var again = Object.assign({}, meta, { _tries: tries + 1 });
+          window.__mapMediaRetry = setTimeout(function() {
+            window.__mapMediaRetry = null;
+            applyRemoteMapMedia(again);
+          }, 350);
+        }
+      } catch (e) {}
+      return;
+    }
+    if (map.videoObjectUrl && String(map.videoObjectUrl).startsWith('blob:')) {
+      try { URL.revokeObjectURL(map.videoObjectUrl); } catch (e) {}
+    }
+    map.videoObjectUrl = null;
+    map.hasVideoInIdb = false;
+    map.mediaType = 'image';
+    map.imageDataUrl = data;
+    map.hasImageInIdb = true;
+    const videoEl = document.getElementById('map-video');
+    if (videoEl) {
+      try { videoEl.pause(); } catch (e) {}
+      try { videoEl.removeAttribute('src'); videoEl.load(); } catch (e) {}
+    }
+    try {
+      const img = new Image();
+      img.onload = function() {
+        window.__mapStaticImg = img;
+        try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
+        try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+      };
+      img.src = data;
+      window.__mapStaticImg = img;
+    } catch (e) {}
+    try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
+  }
+
+  async function publishMapMedia(reason) {
+    if (typeof isPlayerRole === 'function' && isPlayerRole()) return;
+    const c = typeof getActive === 'function' ? getActive() : null;
+    if (!c) return;
+    const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
+    if (!map) return;
+    map.mediaRev = Date.now();
+    const mt = map.mediaType || null;
+    try {
+      if (mt === 'image' && map.imageDataUrl) {
+        await idbSetMapImage(c.id || 'active', map.imageDataUrl);
+        try { await idbSetMapVideo(c.id || 'active', null); } catch (e) {}
+      } else if (mt === 'video') {
+        try { await idbSetMapImage(c.id || 'active', null); } catch (e) {}
+      } else {
+        try { await idbSetMapImage(c.id || 'active', null); } catch (e) {}
+        try { await idbSetMapVideo(c.id || 'active', null); } catch (e) {}
+      }
+    } catch (e) { console.warn('publishMapMedia', e); }
+    try { if (typeof save === 'function') save(); } catch (e) {}
+    try { if (typeof broadcastVttState === 'function') broadcastVttState(reason || 'map-media'); } catch (e) {}
+    try {
+      const msg = {
+        type: 'vtt-map-media',
+        clientId: window.__vttClientId || null,
+        room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '',
+        reason: reason || 'map-media',
+        at: map.mediaRev,
+        mediaRev: map.mediaRev,
+        mediaType: mt,
+        hasMapImage: mt === 'image' && !!map.imageDataUrl,
+        hasMapVideo: mt === 'video',
+        width: map.width || null,
+        height: map.height || null,
+        gridSize: map.gridSize || null,
+        imageDataUrl: (mt === 'image' && map.imageDataUrl && String(map.imageDataUrl).length < 1500000) ? map.imageDataUrl : null
+      };
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) { try { ch.postMessage(msg); } catch (e) {} }
+      try {
+        const lite = Object.assign({}, msg);
+        delete lite.imageDataUrl;
+        localStorage.setItem('cybervlachos_vtt_map_media', JSON.stringify(lite));
+      } catch (e) {}
+    } catch (e) { console.warn('publishMapMedia bc', e); }
+  }
+
+  function setupMapMediaBridge() {
+    if (window.__mapMediaBridgeBound) return;
+    window.__mapMediaBridgeBound = true;
+    try {
+      const ch = typeof getVttChannel === 'function' ? getVttChannel() : null;
+      if (ch) {
+        ch.addEventListener('message', function(ev) {
+          const msg = ev && ev.data;
+          if (!msg || msg.type !== 'vtt-map-media') return;
+          const room = typeof getVttRoomCode === 'function' ? getVttRoomCode() : '';
+          if (room && msg.room && String(room).toUpperCase() !== String(msg.room).toUpperCase()) return;
+          applyRemoteMapMedia(msg);
+        });
+      }
+    } catch (e) {}
+    try {
+      window.addEventListener('storage', function(ev) {
+        if (ev.key !== 'cybervlachos_vtt_map_media' || !ev.newValue) return;
+        try { applyRemoteMapMedia(JSON.parse(ev.newValue)); } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
   function broadcastVttState(reason) {
     if (isPlayerRole()) return; // only DM host pushes
     try {
@@ -16141,6 +16333,8 @@ function escapeHtml(str) {
           if (msg.map.walls) map.walls = msg.map.walls;
           if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
           if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
+          if (msg.map.mediaRev != null) map.mediaRev = msg.map.mediaRev;
+          try { applyRemoteMapMedia(Object.assign({ reason: msg.reason }, msg.map)); } catch (e) {}
         }
       }
       try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
@@ -17836,6 +18030,7 @@ function escapeHtml(str) {
               renderBattleMap();
               try { bindMapCanvasInteractions(false); } catch (e) {}
               toast('Map image loaded');
+              try { publishMapMedia('map-image'); } catch (e) {}
             });
             return;
           };
@@ -18424,7 +18619,7 @@ function bindMapCanvasInteractions(force) {
         }
       } catch (e) {}
       try { save(); } catch (err) {}
-      try { broadcastVttState('map-clear'); } catch (e) {}
+      try { publishMapMedia('map-clear'); } catch (e) {}
       renderBattleMap();
       toast('Map cleared');
     });
@@ -18627,6 +18822,7 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             try { save(); } catch (err) { console.warn(err); }
             renderBattleMap();
             toast('Map image loaded');
+              try { publishMapMedia('map-image'); } catch (e) {}
           };
           reader.onerror = () => toast('Failed to read image');
           reader.readAsDataURL(f);
@@ -18707,6 +18903,7 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             }
             renderBattleMap();
             toast('Video map loaded — loops muted (' + (f.name || mime) + ')');
+            try { publishMapMedia('map-video'); } catch (e) {}
           } catch (err) {
             console.warn(err);
             toast('Could not load video: ' + (err && err.message ? err.message : err));
