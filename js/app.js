@@ -135,6 +135,9 @@
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
+      if (imageDataUrl && window.__mapMediaGen && arguments[2] != null && arguments[2] !== window.__mapMediaGen) {
+        await idbSetMapImage(workspaceId, null);
+      }
     } catch (e) {
       console.warn('Map IDB save failed', e);
     }
@@ -165,6 +168,7 @@
         const store = tx.objectStore(MAP_IDB_STORE);
         if (blob) store.put(blob, 'mapvideo:' + workspaceId);
         else store.delete('mapvideo:' + workspaceId);
+        if (!blob && String(workspaceId) !== 'active') store.delete('mapvideo:active');
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       });
@@ -931,10 +935,22 @@
     try {
       for (const c of (state.campaigns || [])) {
         if (!c.combatMap) c.combatMap = {};
-        if (!c.combatMap.imageDataUrl) {
+        if (c.combatMap.mediaCleared) {
+          c.combatMap.imageDataUrl = null;
+          c.combatMap.videoObjectUrl = null;
+          c.combatMap.mediaType = null;
+          c.combatMap.hasImageInIdb = false;
+          c.combatMap.hasVideoInIdb = false;
+          continue;
+        }
+        if (!c.combatMap.imageDataUrl && (c.combatMap.hasImageInIdb || c.combatMap.mediaType === 'image')) {
           const img = await idbGetMapImage(c.id);
-          if (img) {
-            c.combatMap.imageDataUrl = img;
+          if (!img) {
+            try { /* fall through */ } catch (e) {}
+          }
+          const img2 = img || await idbGetMapImage('active');
+          if (img2 && !c.combatMap.mediaCleared) {
+            c.combatMap.imageDataUrl = img2;
             c.combatMap.hasImageInIdb = true;
             if (!c.combatMap.mediaType) c.combatMap.mediaType = 'image';
           }
@@ -963,9 +979,9 @@
       if (!c || !c.combatMap) return false;
       const map = c.combatMap;
       if (map.videoObjectUrl) return true;
-      var wantVideo = !!(map.hasVideoInIdb || map.mediaType === 'video' || map.videoName ||
-        (!map.imageDataUrl && !map.hasImageInIdb));
-      if (!wantVideo && map.mediaType === 'image') return false;
+      if (map.mediaCleared) return false;
+      var wantVideo = !!(map.hasVideoInIdb || map.mediaType === 'video' || map.videoName);
+      if (!wantVideo) return false;
 
       var keys = [];
       if (c.id) keys.push(c.id);
@@ -1338,7 +1354,12 @@ function requestMapVideoFromPeers() {
     try {
       const c = (state.campaigns || []).find(x => x.id === state.activeCampaignId);
       if (c && c.combatMap) {
-        if (c.combatMap.imageDataUrl) idbSetMapImage(c.id, c.combatMap.imageDataUrl);
+        if (c.combatMap.mediaCleared || (!c.combatMap.imageDataUrl && !c.combatMap.hasImageInIdb)) {
+          idbSetMapImage(c.id, null);
+          try { idbSetMapVideo(c.id, null); } catch (e) {}
+        } else if (c.combatMap.imageDataUrl) {
+          idbSetMapImage(c.id, c.combatMap.imageDataUrl, window.__mapMediaGen);
+        }
         // video blob saved at import time via idbSetMapVideo
       }
     } catch (e) {}
@@ -15157,7 +15178,9 @@ function escapeHtml(str) {
       try { if (typeof load === 'function') load(); } catch (err) {}
       // Popout: localStorage has no blob URL — reload video from IDB after state sync
       try {
-        if (typeof ensureActiveMapVideo === 'function') {
+        var _mapSync = typeof getCombatMap === 'function' ? getCombatMap() : null;
+        var _wantVid = _mapSync && !_mapSync.mediaCleared && (_mapSync.mediaType === 'video' || _mapSync.hasVideoInIdb);
+        if (_wantVid && typeof ensureActiveMapVideo === 'function') {
           ensureActiveMapVideo().then(function(ok) {
             if (ok) {
               try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e2) {}
@@ -15793,8 +15816,9 @@ function escapeHtml(str) {
       hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
       mediaType: map.mediaType || null,
       mediaRev: map.mediaRev || 0,
-      hasMapImage: !!(map.mediaType === 'image' && (map.imageDataUrl || map.hasImageInIdb)),
-      hasMapVideo: !!(map.mediaType === 'video' || map.hasVideoInIdb),
+      mediaCleared: !!map.mediaCleared,
+      hasMapImage: !!(map.mediaType === 'image' && (map.imageDataUrl || map.hasImageInIdb) && !map.mediaCleared),
+      hasMapVideo: !!((map.mediaType === 'video' || map.hasVideoInIdb) && !map.mediaCleared),
       width: map.width || null,
       height: map.height || null
     } : null;
@@ -16126,7 +16150,10 @@ function escapeHtml(str) {
     const incomingType = meta.mediaType || null;
     const wantImage = !!(meta.hasMapImage || incomingType === 'image');
     const wantVideo = !!(meta.hasMapVideo || incomingType === 'video');
-    const clearing = meta.reason === 'map-clear' || (!wantImage && !wantVideo && (rev || meta.reason === 'map-media'));
+    const clearing = meta.reason === 'map-clear' || meta.mediaCleared === true || (!wantImage && !wantVideo && (meta.reason === 'map-clear' || meta.reason === 'map-media'));
+    if (map.mediaCleared && !clearing && meta.reason !== 'map-image' && meta.reason !== 'map-video' && meta.reason !== 'map-uvtt') {
+      if (!rev || rev <= Number(map.mediaRev || 0)) return;
+    }
     if (!clearing && rev && Number(map.mediaRev) === rev && map.mediaType === incomingType) {
       if (wantImage && map.imageDataUrl) return;
       if (wantVideo && map.videoObjectUrl) return;
@@ -16143,7 +16170,14 @@ function escapeHtml(str) {
     if (meta.width) map.width = meta.width;
     if (meta.height) map.height = meta.height;
     if (clearing) {
+      map.mediaCleared = true;
       unloadLocalMapMedia(map);
+      try {
+        const cid = c && c.id;
+        if (cid) { idbSetMapImage(cid, null); idbSetMapVideo(cid, null); }
+        idbSetMapImage('active', null);
+        idbSetMapVideo('active', null);
+      } catch (e) {}
       try { if (typeof renderBattleMap === 'function') renderBattleMap(); } catch (e) {}
       try { if (typeof paintMapFrame === 'function') paintMapFrame(); } catch (e) {}
       return;
@@ -16213,7 +16247,20 @@ function escapeHtml(str) {
     const map = typeof getCombatMap === 'function' ? getCombatMap() : null;
     if (!map) return;
     map.mediaRev = Date.now();
+    window.__mapMediaGen = (Number(window.__mapMediaGen) || 0) + 1;
+    map.mediaGen = window.__mapMediaGen;
     const mt = map.mediaType || null;
+    if (reason === 'map-clear') {
+      map.mediaCleared = true;
+      map.mediaType = null;
+      map.imageDataUrl = null;
+      map.videoObjectUrl = null;
+      map.hasImageInIdb = false;
+      map.hasVideoInIdb = false;
+      try { window.__mapStaticImg = null; } catch (e) {}
+    } else if (reason === 'map-image' || reason === 'map-video' || reason === 'map-uvtt') {
+      map.mediaCleared = false;
+    }
     // New map: FoW on and fully covered for DM popout + player popout
     if (reason === 'map-image' || reason === 'map-video' || reason === 'map-uvtt') {
       map.fogEnabled = true;
@@ -16242,6 +16289,7 @@ function escapeHtml(str) {
         at: map.mediaRev,
         fogEnabled: !!map.fogEnabled,
         fogRevealed: Object.assign({}, map.fogRevealed || {}),
+        mediaCleared: !!map.mediaCleared,
         mediaRev: map.mediaRev,
         mediaType: mt,
         hasMapImage: mt === 'image' && !!map.imageDataUrl,
@@ -18626,6 +18674,9 @@ function bindMapCanvasInteractions(force) {
       map.aoe = null;
       map.fogRevealed = {};
       map.fogEnabled = false;
+      map.mediaCleared = true;
+      window.__mapMediaGen = (Number(window.__mapMediaGen) || 0) + 1;
+      try { window.__mapStaticImg = null; window.__mapVideoSrc = null; } catch (e) {}
       // Reset video element
       const videoEl = document.getElementById('map-video');
       if (videoEl) {
