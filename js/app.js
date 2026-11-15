@@ -15788,6 +15788,7 @@ function escapeHtml(str) {
       scale: map.scale || 1,
       fogEnabled: !!map.fogEnabled,
       fogRevealed: Object.assign({}, map.fogRevealed || {}),
+      fogUserSet: !!map.fogUserSet,
       fogBrush: map.fogBrush || 1,
       hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
       mediaType: map.mediaType || null,
@@ -16131,6 +16132,14 @@ function escapeHtml(str) {
       if (wantVideo && map.videoObjectUrl) return;
     }
     if (rev) map.mediaRev = rev;
+    if (meta.reason === 'map-image' || meta.reason === 'map-video' || meta.reason === 'map-uvtt') {
+      map.fogEnabled = true;
+      if (meta.fogRevealed && typeof meta.fogRevealed === 'object') map.fogRevealed = meta.fogRevealed;
+      else map.fogRevealed = {};
+    } else if (meta.fogEnabled != null && meta.reason === 'fog') {
+      map.fogEnabled = !!meta.fogEnabled;
+      if (meta.fogRevealed && typeof meta.fogRevealed === 'object') map.fogRevealed = meta.fogRevealed;
+    }
     if (meta.width) map.width = meta.width;
     if (meta.height) map.height = meta.height;
     if (clearing) {
@@ -16205,6 +16214,12 @@ function escapeHtml(str) {
     if (!map) return;
     map.mediaRev = Date.now();
     const mt = map.mediaType || null;
+    // New map: FoW on and fully covered for DM popout + player popout
+    if (reason === 'map-image' || reason === 'map-video' || reason === 'map-uvtt') {
+      map.fogEnabled = true;
+      map.fogRevealed = {};
+      map.fogUserSet = false;
+    }
     try {
       if (mt === 'image' && map.imageDataUrl) {
         await idbSetMapImage(c.id || 'active', map.imageDataUrl);
@@ -16225,6 +16240,8 @@ function escapeHtml(str) {
         room: (typeof getVttRoomCode === 'function' ? getVttRoomCode() : '') || '',
         reason: reason || 'map-media',
         at: map.mediaRev,
+        fogEnabled: !!map.fogEnabled,
+        fogRevealed: Object.assign({}, map.fogRevealed || {}),
         mediaRev: map.mediaRev,
         mediaType: mt,
         hasMapImage: mt === 'image' && !!map.imageDataUrl,
@@ -16332,6 +16349,7 @@ function escapeHtml(str) {
           map.aoe = msg.map.aoe;
           if (msg.map.walls) map.walls = msg.map.walls;
           if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
+          if (msg.map.fogUserSet != null) map.fogUserSet = !!msg.map.fogUserSet;
           if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
           if (msg.map.mediaRev != null) map.mediaRev = msg.map.mediaRev;
           try { applyRemoteMapMedia(Object.assign({ reason: msg.reason }, msg.map)); } catch (e) {}
@@ -16395,6 +16413,7 @@ function escapeHtml(str) {
           ensureMapFog(map);
           if (id === 'map-fog-toggle') {
             map.fogEnabled = !map.fogEnabled;
+            map.fogUserSet = true;
             toast(map.fogEnabled ? 'Fog ON — Reveal/Hide brush on map' : 'Fog OFF');
           } else if (id === 'map-fog-reset') {
             map.fogRevealed = {};
@@ -18065,6 +18084,9 @@ function escapeHtml(str) {
             try { save(); } catch (err) { console.warn(err); }
             renderBattleMap();
             toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+            try {
+              if (map.imageDataUrl || map.mediaType === 'image' || map.mediaType === 'video') publishMapMedia('map-uvtt');
+            } catch (e) {}
           } catch (err) {
             console.warn(err);
             toast('Could not parse UVTT: ' + (err.message || err));
@@ -18097,6 +18119,7 @@ function escapeHtml(str) {
             try { if (typeof persistMapMediaToIdb === 'function') persistMapMediaToIdb(); } catch (err) {}
             renderBattleMap();
             toast('Video map loaded (looping)');
+            try { publishMapMedia('map-video'); } catch (e) {}
           } catch (err) {
             console.error(err);
             toast('Video import failed: ' + (err.message || err));
@@ -18848,6 +18871,9 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             try { save(); } catch (err) { console.warn(err); }
             renderBattleMap();
             toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+            try {
+              if (map.imageDataUrl || map.mediaType === 'image' || map.mediaType === 'video') publishMapMedia('map-uvtt');
+            } catch (e) {}
           } catch (err) {
             console.warn(err);
             toast('Could not parse UVTT: ' + (err.message || err));
