@@ -10629,11 +10629,14 @@ function parseAttackLines(ch) {
       : (map.tokens && (map.tokens[String(target.id)] || map.tokens[target.id]));
     // Has a map but token not placed yet — hide from player/popup lists
     if (!pos) return false;
-    // Token on map + FoW: must be in a revealed cell
-    if (!map.fogEnabled) return true;
+    // Token on map + FoW: revealed cell, or line of sight when walls exist
+    if (!map.fogEnabled && !(map.walls && map.walls.length)) return true;
     try {
       ensureMapFog(map);
+      const los = (map.walls && map.walls.length) ? computeLosCells(map) : null;
       const cell = worldToFogCell(map, pos.x, pos.y);
+      if (los) return !!los[cell];
+      if (!map.fogEnabled) return true;
       return !!(map.fogRevealed && map.fogRevealed[cell]);
     } catch (e) { return false; }
   }
@@ -15763,14 +15766,125 @@ function escapeHtml(str) {
       }
     } catch (e) {}
   }
+
+  function segmentsBlockSight(ax, ay, bx, by, cx, cy, dx, dy) {
+    const rx = bx - ax, ry = by - ay;
+    const sx = dx - cx, sy = dy - cy;
+    const denom = rx * sy - ry * sx;
+    if (Math.abs(denom) < 1e-6) return false;
+    const qpx = cx - ax, qpy = cy - ay;
+    const tt = (qpx * sy - qpy * sx) / denom;
+    const u = (qpx * ry - qpy * rx) / denom;
+    return tt > 0.04 && tt < 0.98 && u >= 0 && u <= 1;
+  }
+
+  function mapVisionFeet(map) {
+    try {
+      const el = document.getElementById('map-vision-ft');
+      if (el && !(typeof isPlayerRole === 'function' && isPlayerRole())) {
+        const n = parseInt(el.value, 10);
+        if (n > 0) map.visionFt = n;
+      }
+    } catch (e) {}
+    return Number(map.visionFt) || 30;
+  }
+
+  function visionOriginsForView(map) {
+    const origins = [];
+    const combat = (typeof getActive === 'function' && typeof getCombat === 'function')
+      ? getCombat(getActive()) : null;
+    const list = (combat && combat.combatants) || [];
+    const player = typeof isPlayerRole === 'function' && isPlayerRole();
+    if (player) {
+      let me = null;
+      try { me = typeof getClaimedCombatant === 'function' ? getClaimedCombatant() : null; } catch (e) {}
+      const pos = me && typeof getCombatantTokenPos === 'function' ? getCombatantTokenPos(me, map) : null;
+      if (pos && pos.x != null) origins.push({ x: Number(pos.x), y: Number(pos.y), id: me && me.id });
+      return origins;
+    }
+    list.forEach(function(cb) {
+      if (!cb) return;
+      const side = String(cb.side || '').toLowerCase();
+      if (/enemy|villain|foe|hostile/.test(side)) return;
+      const pos = typeof getCombatantTokenPos === 'function' ? getCombatantTokenPos(cb, map) : null;
+      if (pos && pos.x != null) origins.push({ x: Number(pos.x), y: Number(pos.y), id: cb.id });
+    });
+    return origins;
+  }
+
+  /** Cells the current view can see. null = use manual fog. {} = see nothing. */
+  function computeLosCells(map) {
+    if (!map || !map.walls || !map.walls.length) return null;
+    const walls = map.walls.filter(function(w) { return w && !w.door && w.x1 != null; });
+    if (!walls.length) return null;
+    const facing = typeof isPlayerFacingView === 'function' && isPlayerFacingView();
+    if (!facing) return null;
+    const origins = visionOriginsForView(map);
+    if (!origins.length) return {};
+    const ft = mapVisionFeet(map);
+    const g = Number(map.gridSize) || 70;
+    const ox = Number(map.gridOffsetX) || 0;
+    const oy = Number(map.gridOffsetY) || 0;
+    const reach = Math.max(1, Math.round(ft / 5));
+    const key = origins.map(function(o) { return Math.round(o.x) + ',' + Math.round(o.y); }).join('|')
+      + '#' + ft + '#' + walls.length + '#' + g + '#' + ox + '#' + oy;
+    if (window.__losKey === key && window.__losCells) return window.__losCells;
+    const visible = {};
+    origins.forEach(function(o) {
+      const ocx = Math.floor((o.x - ox) / g);
+      const ocy = Math.floor((o.y - oy) / g);
+      for (let dy = -reach; dy <= reach; dy++) {
+        for (let dx = -reach; dx <= reach; dx++) {
+          if (dx * dx + dy * dy > reach * reach) continue;
+          const gx = ocx + dx, gy = ocy + dy;
+          const tx = ox + (gx + 0.5) * g;
+          const ty = oy + (gy + 0.5) * g;
+          let blocked = false;
+          for (let i = 0; i < walls.length; i++) {
+            const w = walls[i];
+            if (segmentsBlockSight(o.x, o.y, tx, ty, Number(w.x1), Number(w.y1), Number(w.x2), Number(w.y2))) {
+              blocked = true;
+              break;
+            }
+          }
+          if (!blocked) visible[gx + ',' + gy] = true;
+        }
+      }
+    });
+    window.__losKey = key;
+    window.__losCells = visible;
+    return visible;
+  }
+
+  function drawWallOverlay(ctx, map, scale) {
+    if (!ctx || !map || !map.walls || !map.walls.length) return;
+    if (typeof isPlayerFacingView === 'function' && isPlayerFacingView()) return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(120, 210, 255, 0.55)';
+    ctx.lineWidth = Math.max(1, 2 * (scale || 1));
+    map.walls.forEach(function(w) {
+      if (!w || w.door || w.x1 == null) return;
+      ctx.beginPath();
+      ctx.moveTo(Number(w.x1) * scale, Number(w.y1) * scale);
+      ctx.lineTo(Number(w.x2) * scale, Number(w.y2) * scale);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+
   function drawFogOfWar(ctx, canvas, map, scale) {
     ensureMapFog(map);
-    if (!map.fogEnabled) return;
+    const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
+    window.__losCellsActive = null;
+    try {
+      if (playerView) window.__losCellsActive = computeLosCells(map);
+    } catch (e) { window.__losCellsActive = null; }
+    // DM main: manual fog only. Popouts: wall LOS even if the fog toggle is off.
+    if (!map.fogEnabled && !window.__losCellsActive) return;
     const g = (Number(map.gridSize) || 70) * scale;
     if (g < 4) return;
     const gox = (Number(map.gridOffsetX) || 0) * scale;
     const goy = (Number(map.gridOffsetY) || 0) * scale;
-    const playerView = typeof usePlayerFogView === 'function' ? usePlayerFogView() : (typeof isPlayerRole === 'function' && isPlayerRole());
     const isVideoMap = map && map.mediaType === 'video';
     // Player / shared mapPopout: fully opaque black; DM main: translucent
     ctx.fillStyle = playerView ? 'rgba(0,0,0,1)' : (isVideoMap ? 'rgba(0,0,0,0.82)' : 'rgba(0,0,0,0.62)');
@@ -15781,7 +15895,9 @@ function escapeHtml(str) {
     for (let gy = startRow; gy < startRow + rows; gy++) {
       for (let gx = startCol; gx < startCol + cols; gx++) {
         const key = gx + ',' + gy;
-        if (map.fogRevealed[key]) continue;
+        if (window.__losCellsActive) {
+          if (window.__losCellsActive[key]) continue;
+        } else if (map.fogRevealed[key]) continue;
         const x = gox + gx * g;
         const y = goy + gy * g;
         ctx.fillRect(x, y, g + 0.5, g + 0.5);
@@ -15813,6 +15929,7 @@ function escapeHtml(str) {
       fogRevealed: Object.assign({}, map.fogRevealed || {}),
       fogUserSet: !!map.fogUserSet,
       fogBrush: map.fogBrush || 1,
+      visionFt: Number(map.visionFt) || 30,
       hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
       mediaType: map.mediaType || null,
       mediaRev: map.mediaRev || 0,
@@ -16398,6 +16515,7 @@ function escapeHtml(str) {
           if (msg.map.walls) map.walls = msg.map.walls;
           if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
           if (msg.map.fogUserSet != null) map.fogUserSet = !!msg.map.fogUserSet;
+          if (msg.map.visionFt != null) map.visionFt = Number(msg.map.visionFt) || map.visionFt;
           if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
           if (msg.map.mediaRev != null) map.mediaRev = msg.map.mediaRev;
           try { applyRemoteMapMedia(Object.assign({ reason: msg.reason }, msg.map)); } catch (e) {}
@@ -17624,6 +17742,7 @@ function escapeHtml(str) {
     }
 
     // Fog of war (on top of map/tokens in unrevealed cells)
+    try { drawWallOverlay(ctx, map, scale); } catch (e) {}
     try { drawFogOfWar(ctx, canvas, map, scale); } catch (e) {}
 
     // Dragged token always on top of fog so DM sees live movement
@@ -18241,6 +18360,17 @@ function escapeHtml(str) {
 
     document.getElementById('map-reveal-token')?.addEventListener('click', function() {
       try { revealFogAroundSelectedToken(); } catch (e) { console.warn(e); }
+    });
+    document.getElementById('map-vision-ft')?.addEventListener('change', function(ev) {
+      try {
+        const map = getCombatMap();
+        if (!map) return;
+        map.visionFt = parseInt(ev.target && ev.target.value, 10) || 30;
+        window.__losKey = null;
+        try { save(); } catch (e) {}
+        try { broadcastVttState('vision'); } catch (e) {}
+        try { paintMapFrame(); } catch (e) {}
+      } catch (e) {}
     });
     document.getElementById('map-reveal-pcs')?.addEventListener('click', function() {
       try { revealFogAroundAllPcs(); } catch (e) { console.warn(e); }
