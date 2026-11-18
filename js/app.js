@@ -10636,7 +10636,7 @@ function parseAttackLines(ch) {
       const los = (map.walls && map.walls.length) ? computeLosCells(map) : null;
       const cell = worldToFogCell(map, pos.x, pos.y);
       if (los) return !!los[cell];
-      if (!map.fogEnabled) return true;
+      if (!map.fogEnabled || map.fogRevealAll) return true;
       return !!(map.fogRevealed && map.fogRevealed[cell]);
     } catch (e) { return false; }
   }
@@ -15008,7 +15008,7 @@ function escapeHtml(str) {
       '.view-desc', '#view-map .view-header', '#dice-toggle', '#dice-panel'
     ];
     if (playerPop) {
-      strip.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush');
+      strip.push('.map-toolbar', '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-reveal-all', '#map-los-toggle', '#map-fog-brush');
     }
     // DM share map: no player combat panel. Player clients use role=player.
     if (!playerPop) {
@@ -15038,7 +15038,7 @@ function escapeHtml(str) {
             }
           });
           // keep fog-related visible
-          ['map-fog-toggle','map-fog-reveal','map-fog-hide','map-fog-reset','map-fog-brush'].forEach(fid => {
+          ['map-fog-toggle','map-fog-reveal','map-fog-hide','map-fog-reset','map-fog-reveal-all','map-los-toggle','map-fog-brush'].forEach(fid => {
             const el = document.getElementById(fid);
             if (el) {
               el.style.removeProperty('display');
@@ -15836,7 +15836,7 @@ function escapeHtml(str) {
 
   /** Cells the current view can see. null = use manual fog. {} = see nothing. */
   function computeLosCells(map) {
-    if (!map || !map.walls || !map.walls.length) return null;
+    if (!map || map.losEnabled === false || !map.walls || !map.walls.length) return null;
     const walls = map.walls.filter(function(w) {
       return w && w.x1 != null && !(w.door && w.closed === false);
     });
@@ -15923,7 +15923,7 @@ function escapeHtml(str) {
         const key = gx + ',' + gy;
         if (window.__losCellsActive) {
           if (window.__losCellsActive[key]) continue;
-        } else if (map.fogRevealed[key]) continue;
+        } else if (map.fogRevealAll || map.fogRevealed[key]) continue;
         const x = gox + gx * g;
         const y = goy + gy * g;
         ctx.fillRect(x, y, g + 0.5, g + 0.5);
@@ -15956,6 +15956,8 @@ function escapeHtml(str) {
       fogUserSet: !!map.fogUserSet,
       fogBrush: map.fogBrush || 1,
       visionFt: Number(map.visionFt) || 30,
+      fogRevealAll: !!map.fogRevealAll,
+      losEnabled: map.losEnabled !== false,
       hasImage: !!(map.imageDataUrl || map.videoObjectUrl),
       mediaType: map.mediaType || null,
       mediaRev: map.mediaRev || 0,
@@ -16542,6 +16544,15 @@ function escapeHtml(str) {
           if (msg.map.fogEnabled != null) map.fogEnabled = msg.map.fogEnabled;
           if (msg.map.fogUserSet != null) map.fogUserSet = !!msg.map.fogUserSet;
           if (msg.map.visionFt != null) map.visionFt = Number(msg.map.visionFt) || map.visionFt;
+          if (msg.map.fogRevealAll != null) map.fogRevealAll = !!msg.map.fogRevealAll;
+          if (msg.map.losEnabled != null) {
+            map.losEnabled = !!msg.map.losEnabled;
+            window.__losKey = null;
+            try {
+              const btn = document.getElementById('map-los-toggle');
+              if (btn) btn.textContent = map.losEnabled ? 'Wall sight on' : 'Wall sight off';
+            } catch (e) {}
+          }
           if (msg.map.fogRevealed) map.fogRevealed = msg.map.fogRevealed;
           if (msg.map.mediaRev != null) map.mediaRev = msg.map.mediaRev;
           try { applyRemoteMapMedia(Object.assign({ reason: msg.reason }, msg.map)); } catch (e) {}
@@ -16565,7 +16576,7 @@ function escapeHtml(str) {
     document.addEventListener('click', (ev) => {
       const t = ev.target && ev.target.closest && (ev.target.closest('#vtt-create-room') || ev.target.closest('#vtt-join-player') ||
         ev.target.closest('#map-fog-toggle') || ev.target.closest('#map-fog-reveal') ||
-        ev.target.closest('#map-fog-hide') || ev.target.closest('#map-fog-reset'));
+        ev.target.closest('#map-fog-hide') || ev.target.closest('#map-fog-reset') || ev.target.closest('#map-fog-reveal-all') || ev.target.closest('#map-los-toggle'));
       if (!t) return;
       const id = t.id;
       try {
@@ -16597,7 +16608,7 @@ function escapeHtml(str) {
           try { broadcastVttState('player-open'); } catch (e) {}
           return;
         }
-        if (id === 'map-fog-toggle' || id === 'map-fog-reveal' || id === 'map-fog-hide' || id === 'map-fog-reset') {
+        if (id === 'map-fog-toggle' || id === 'map-fog-reveal' || id === 'map-fog-hide' || id === 'map-fog-reset' || id === 'map-fog-reveal-all' || id === 'map-los-toggle') {
           if (typeof isPlayerRole === 'function' && isPlayerRole()) { toast('Players cannot edit fog'); return; }
           ensureCombatWorkspace();
           const map = getCombatMap();
@@ -16610,7 +16621,19 @@ function escapeHtml(str) {
           } else if (id === 'map-fog-reset') {
             map.fogRevealed = {};
             map.fogEnabled = true;
+            map.fogRevealAll = false;
             toast('Map fully fogged');
+          } else if (id === 'map-fog-reveal-all') {
+            map.fogRevealed = {};
+            map.fogRevealAll = true;
+            map.fogEnabled = false;
+            toast(map.losEnabled === false ? 'Map fully revealed' : 'Map revealed — turn Wall sight off to show it through walls');
+          } else if (id === 'map-los-toggle') {
+            map.losEnabled = map.losEnabled === false;
+            window.__losKey = null;
+            const btn = document.getElementById('map-los-toggle');
+            if (btn) btn.textContent = map.losEnabled ? 'Wall sight on' : 'Wall sight off';
+            toast(map.losEnabled ? 'Wall sight ON' : 'Wall sight OFF — manual fog only');
           } else if (id === 'map-fog-reveal') {
             window.__mapFogTool = window.__mapFogTool === 'reveal' ? null : 'reveal';
             if (window.__mapFogTool) map.fogEnabled = true;
@@ -17361,7 +17384,7 @@ function escapeHtml(str) {
       '#sidebar-collapse-btn', '.sidebar-collapse-btn',
       '.app-header', 'header.app-header', 'header', '.view-desc',
       '#vtt-create-room', '#vtt-join-player', '#vtt-room-code',
-      '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-brush',
+      '#map-fog-toggle', '#map-fog-reveal', '#map-fog-hide', '#map-fog-reset', '#map-fog-reveal-all', '#map-los-toggle', '#map-fog-brush',
       '#map-file-image', '#map-file-uvtt', '#map-import-image', '#map-import-uvtt',
       '#dice-toggle', '#dice-panel', '.map-toolbar', 'nav', '.app-nav'
     ];
