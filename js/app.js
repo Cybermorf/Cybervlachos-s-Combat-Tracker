@@ -15282,46 +15282,68 @@ function escapeHtml(str) {
     return c.combatMap;
   }
 
+  function uvttPt(pt) {
+    if (!pt) return null;
+    if (Array.isArray(pt) && pt.length >= 2) return { x: Number(pt[0]), y: Number(pt[1]) };
+    if (typeof pt === 'object' && pt.x != null && pt.y != null) return { x: Number(pt.x), y: Number(pt.y) };
+    return null;
+  }
+
   function parseUvttFile(text) {
     const data = JSON.parse(text);
-    // Universal VTT / dd2vtt shapes vary slightly
-    const img = data.image || data.map_image || (data.resolution && data.resolution.map_origin) || null;
+    const img = data.image || data.map_image || null;
     let dataUrl = null;
-    if (typeof img === 'string') {
+    if (typeof img === 'string' && img.length > 32) {
       if (img.startsWith('data:')) dataUrl = img;
-      else dataUrl = 'data:image/png;base64,' + img.replace(/^base64,/, '');
+      else {
+        const mime = img.startsWith('/9j/') ? 'image/jpeg' : 'image/png';
+        dataUrl = 'data:' + mime + ';base64,' + img.replace(/^base64,/, '');
+      }
     }
-    const pixels = data.resolution
-      ? (data.resolution.pixels_per_grid || data.resolution.pixels_per_square || 70)
-      : (data.pixels_per_grid || data.gridSize || 70);
-    const walls = [];
+    const res = data.resolution || {};
+    const pixels = Number(res.pixels_per_grid || res.pixels_per_square || data.pixels_per_grid || data.gridSize || 70) || 70;
+    const mapSize = res.map_size || {};
+    const rawPts = [];
     const los = data.line_of_sight || data.walls || data.los || [];
     (Array.isArray(los) ? los : []).forEach(poly => {
-      if (Array.isArray(poly)) {
-        for (let i = 0; i < poly.length - 1; i++) {
-          const a = poly[i], b = poly[i + 1];
-          if (a && b && a.length >= 2 && b.length >= 2) {
-            walls.push({ x1: a[0], y1: a[1], x2: b[0], y2: b[1] });
-          }
-        }
-      } else if (poly && poly.c != null) {
-        // some formats
-      }
+      const pts = Array.isArray(poly) ? poly : (poly && Array.isArray(poly.points) ? poly.points : null);
+      if (!pts) return;
+      pts.forEach(pt => { const q = uvttPt(pt); if (q) rawPts.push(q); });
     });
-    // portals sometimes as wall segments
-    const portals = data.portals || [];
-    (Array.isArray(portals) ? portals : []).forEach(p => {
-      if (p.bounds && p.bounds.length >= 2) {
-        const a = p.bounds[0], b = p.bounds[1];
-        walls.push({ x1: a.x || a[0], y1: a.y || a[1], x2: b.x || b[0], y2: b.y || b[1], door: true });
-      }
+    (Array.isArray(data.portals) ? data.portals : []).forEach(p => {
+      (p.bounds || []).forEach(pt => { const q = uvttPt(pt); if (q) rawPts.push(q); });
+    });
+    let maxC = 0;
+    rawPts.forEach(q => { maxC = Math.max(maxC, Math.abs(q.x), Math.abs(q.y)); });
+    const gridSpan = Math.max(Number(mapSize.x) || 0, Number(mapSize.y) || 0, 1);
+    // Dungeon Alchemist stores walls in grid squares. Dungeondraft often stores pixels.
+    const gridSpace = maxC > 0 && maxC <= gridSpan * 2.5;
+    const mul = gridSpace ? pixels : 1;
+    const walls = [];
+    function pushSeg(a, b, extra) {
+      const pa = uvttPt(a), pb = uvttPt(b);
+      if (!pa || !pb) return;
+      walls.push(Object.assign({
+        x1: pa.x * mul, y1: pa.y * mul, x2: pb.x * mul, y2: pb.y * mul
+      }, extra || {}));
+    }
+    (Array.isArray(los) ? los : []).forEach(poly => {
+      const pts = Array.isArray(poly) ? poly : (poly && Array.isArray(poly.points) ? poly.points : null);
+      if (!pts) return;
+      for (let i = 0; i < pts.length - 1; i++) pushSeg(pts[i], pts[i + 1], null);
+    });
+    (Array.isArray(data.portals) ? data.portals : []).forEach(p => {
+      if (!p.bounds || p.bounds.length < 2) return;
+      pushSeg(p.bounds[0], p.bounds[1], { door: true, closed: p.closed !== false });
     });
     return {
       imageDataUrl: dataUrl,
-      gridSize: Number(pixels) || 70,
+      gridSize: pixels,
       walls,
-      width: data.resolution ? (data.resolution.map_size && data.resolution.map_size.x) : 0,
-      height: data.resolution ? (data.resolution.map_size && data.resolution.map_size.y) : 0,
+      wallCount: walls.filter(w => !w.door).length,
+      doorCount: walls.filter(w => w.door).length,
+      width: (Number(mapSize.x) || 0) * pixels,
+      height: (Number(mapSize.y) || 0) * pixels,
       raw: data
     };
   }
@@ -15815,7 +15837,9 @@ function escapeHtml(str) {
   /** Cells the current view can see. null = use manual fog. {} = see nothing. */
   function computeLosCells(map) {
     if (!map || !map.walls || !map.walls.length) return null;
-    const walls = map.walls.filter(function(w) { return w && !w.door && w.x1 != null; });
+    const walls = map.walls.filter(function(w) {
+      return w && w.x1 != null && !(w.door && w.closed === false);
+    });
     if (!walls.length) return null;
     const facing = typeof isPlayerFacingView === 'function' && isPlayerFacingView();
     if (!facing) return null;
@@ -15863,7 +15887,9 @@ function escapeHtml(str) {
     ctx.strokeStyle = 'rgba(120, 210, 255, 0.55)';
     ctx.lineWidth = Math.max(1, 2 * (scale || 1));
     map.walls.forEach(function(w) {
-      if (!w || w.door || w.x1 == null) return;
+      if (!w || w.x1 == null) return;
+      if (w.door && w.closed === false) return;
+      ctx.strokeStyle = w.door ? 'rgba(255, 186, 72, 0.9)' : 'rgba(120, 210, 255, 0.55)';
       ctx.beginPath();
       ctx.moveTo(Number(w.x1) * scale, Number(w.y1) * scale);
       ctx.lineTo(Number(w.x2) * scale, Number(w.y2) * scale);
@@ -18250,7 +18276,7 @@ function escapeHtml(str) {
             if (gs) gs.value = String(map.gridSize);
             try { save(); } catch (err) { console.warn(err); }
             renderBattleMap();
-            toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+            toast('UVTT imported (' + ((map.walls||[]).filter(function(w){return w && !w.door;}).length) + ' walls, ' + ((map.walls||[]).filter(function(w){return w && w.door;}).length) + ' doors)');
             try {
               if (map.imageDataUrl || map.mediaType === 'image' || map.mediaType === 'video') publishMapMedia('map-uvtt');
             } catch (e) {}
@@ -19051,7 +19077,7 @@ getElementById('map-clear-aoe')?.addEventListener('click', () => {
             if (gs) gs.value = String(map.gridSize);
             try { save(); } catch (err) { console.warn(err); }
             renderBattleMap();
-            toast('UVTT imported (' + (map.walls.length||0) + ' walls)');
+            toast('UVTT imported (' + ((map.walls||[]).filter(function(w){return w && !w.door;}).length) + ' walls, ' + ((map.walls||[]).filter(function(w){return w && w.door;}).length) + ' doors)');
             try {
               if (map.imageDataUrl || map.mediaType === 'image' || map.mediaType === 'video') publishMapMedia('map-uvtt');
             } catch (e) {}
